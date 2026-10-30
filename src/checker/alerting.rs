@@ -1,13 +1,13 @@
 use serde_json::{json, Value};
 use crate::notifier::AlertPayload;
 
-/// Apple status colors used for Discord rich embeds.
-pub const COLOR_APPLE_GREEN: u32 = 0x30D158; // #30D158
-pub const COLOR_APPLE_RED: u32 = 0xFF453A;   // #FF453A
+/// Status colors used for Discord rich embeds.
+pub const COLOR_STATUS_GREEN: u32 = 0x30D158; // #30D158
+pub const COLOR_STATUS_RED: u32 = 0xFF453A;   // #FF453A
 
 /// Formats the built-in default Discord rich embed notification.
 ///
-/// Features Apple status colors (#30D158 Green for UP, #FF453A Red for DOWN),
+/// Features status colors (#30D158 Green for UP, #FF453A Red for DOWN),
 /// service name, target URL, latency in ms, HTTP status code, and timestamp.
 pub fn format_discord_default(payload: &AlertPayload) -> Value {
     if payload.new_status == "UP" && payload.old_status == "DOWN" {
@@ -15,7 +15,7 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
     }
 
     let is_up = payload.new_status.to_uppercase() == "UP";
-    let color = if is_up { COLOR_APPLE_GREEN } else { COLOR_APPLE_RED };
+    let color = if is_up { COLOR_STATUS_GREEN } else { COLOR_STATUS_RED };
     let icon = if is_up { "🟢" } else { "🔴" };
     let title = format!("{icon} {} is {}", payload.monitor_name, payload.new_status);
 
@@ -59,7 +59,7 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
 /// Formats the built-in default Discord rich embed for incident recovery (DOWN → UP).
 pub fn format_discord_recovery(payload: &AlertPayload) -> Value {
     let title = format!("[RESOLVED] {} is back online", payload.monitor_name);
-    let color = COLOR_APPLE_GREEN;
+    let color = COLOR_STATUS_GREEN;
 
     let latency_str = payload
         .response_time_ms
@@ -316,7 +316,7 @@ mod tests {
     fn test_format_discord_default_colors() {
         let up = sample_payload(true);
         let discord_up = format_discord_default(&up);
-        assert_eq!(discord_up["embeds"][0]["color"], COLOR_APPLE_GREEN);
+        assert_eq!(discord_up["embeds"][0]["color"], COLOR_STATUS_GREEN);
         assert_eq!(discord_up["embeds"][0]["title"], "[RESOLVED] API Service is back online");
         let fields = discord_up["embeds"][0]["fields"].as_array().unwrap();
         assert_eq!(fields[0]["name"], "Downtime Duration");
@@ -329,7 +329,7 @@ mod tests {
 
         let down = sample_payload(false);
         let discord_down = format_discord_default(&down);
-        assert_eq!(discord_down["embeds"][0]["color"], COLOR_APPLE_RED);
+        assert_eq!(discord_down["embeds"][0]["color"], COLOR_STATUS_RED);
     }
 
     #[test]

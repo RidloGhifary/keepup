@@ -32,7 +32,8 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     // ── Public status endpoints (unprotected) ─────────────────────────
     let public_api = Router::new()
         .route("/status", get(status::public_status))
-        .route("/monitors/:id/history", get(logs::public_history));
+        .route("/monitors/:id/history", get(logs::public_history))
+        .route("/badge/:id", get(public::badge));
 
     // ── Direct /api administrative routes (protected with require_auth) ──
     let api_direct_protected = Router::new()

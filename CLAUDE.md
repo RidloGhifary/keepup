@@ -25,22 +25,22 @@
    - API endpoints must return standard JSON error responses (`StatusCode` + JSON error payload).
    - Background Tokio tasks must log errors with `tracing::error!` and never panic.
 
-## UI Design Guidelines: Apple Human Interface Aesthetics
+## UI Design Guidelines: Clean Minimalist Aesthetics
 
 ### 1. Color Palette & Backgrounds
 
 - **Dark Mode Background:** Crisp dark gray (`#000000` or `#0b0b0c`), NOT muddy blue-gray.
 - **Card/Container Surface:** Translucent dark or white with backdrop blur (`bg-white/5` or `bg-neutral-900/60` + `backdrop-blur-xl`).
 - **Hairline Borders:** Subtle 1px borders for depth (`border border-white/10` or `border-black/5`).
-- **Apple Accent Colors:**
+- **Status & Accent Colors:**
   - Status Green: `#30d158` (Operational)
   - Status Yellow: `#ffd60a` (Degraded)
   - Status Red: `#ff453a` (Down)
-  - Apple Blue: `#0a84ff` (Primary actions/buttons)
+  - Primary Blue: `#0a84ff` (Primary actions/buttons)
 
 ### 2. Typography & Layout
 
-- **Font Stack:** `-apple-system, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif`.
+- **Font Stack:** `system-ui, BlinkMacSystemFont, "SF Pro Display", "SF Pro Text", "Helvetica Neue", sans-serif`.
 - **Corner Radii:** Continuous curvature corners — cards use `rounded-2xl` (16px–24px), buttons use `rounded-full` or `rounded-xl`.
 - **Spacing:** Generous inner padding (`p-6` to `p-8`) with soft grid gaps (`gap-6`).
 

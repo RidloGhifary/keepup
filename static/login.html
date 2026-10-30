@@ -6,10 +6,7 @@
   <title>KeepUp — Administrator Login</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="manifest" href="/manifest.json">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-title" content="KeepUp">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#0b0b0c">
   <script src="https://cdn.tailwindcss.com"></script>
   <script>
@@ -18,7 +15,7 @@
       theme: {
         extend: {
           colors: {
-            apple: {
+            status: {
               bg: '#0b0b0c',
               green: '#30d158',
               red: '#ff453a',
@@ -27,7 +24,7 @@
             }
           },
           fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'system-ui', 'sans-serif'],
+            sans: ['system-ui', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'sans-serif'],
             mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
           }
         }
@@ -43,7 +40,7 @@
         radial-gradient(circle at 20% 80%, rgba(10, 132, 255, 0.03) 0%, transparent 40%);
       background-attachment: fixed;
     }
-    .apple-glass {
+    .glass-card {
       background: rgba(22, 22, 24, 0.85);
       backdrop-filter: blur(40px);
       -webkit-backdrop-filter: blur(40px);
@@ -56,7 +53,7 @@
 
   <!-- Main Container -->
   <main class="flex-1 flex items-center justify-center p-4 sm:p-6">
-    <div class="apple-glass rounded-3xl max-w-md w-full p-8 sm:p-10 space-y-7 relative transition-all duration-300">
+    <div class="glass-card rounded-3xl max-w-md w-full p-8 sm:p-10 space-y-7 relative transition-all duration-300">
       
       <!-- Brand & Header -->
       <div class="text-center space-y-3">

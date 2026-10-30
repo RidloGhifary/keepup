@@ -1,0 +1,457 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>Documentation — KeepUp Uptime Engine</title>
+  <meta name="description" content="Comprehensive documentation and configuration guide for KeepUp, the ultra-lightweight Rust uptime monitor and status page engine.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+</head>
+<body>
+
+  <!-- ── Header Navigation ───────────────────────────────────────────────── -->
+  <header class="site-header sticky top-0 z-50 w-full transition-all duration-300 ease-in-out bg-transparent border-b border-transparent">
+    <div class="container nav-wrapper">
+      <a href="index.html" class="brand">
+        <svg width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="#141416" stroke="rgba(255,255,255,0.15)" stroke-width="1" />
+          <path d="M6 17H11L14 11L18 21L21 15H26" stroke="#ffffff" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="25" cy="8" r="2.5" fill="#30D158" />
+        </svg>
+        <span>KeepUp Docs</span>
+      </a>
+
+      <nav class="nav-links">
+        <a href="index.html" class="nav-link">Home</a>
+        <a href="index.html#features" class="nav-link">Features</a>
+        <a href="docs.html" class="nav-link active">Documentation</a>
+        <a href="https://github.com/rdlghifary/keepup" target="_blank" rel="noopener noreferrer" class="nav-link">GitHub</a>
+      </nav>
+
+      <div class="nav-actions">
+        <a href="#quickstart" class="btn btn-primary">
+          <span>Quickstart</span>
+        </a>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── Documentation Body ──────────────────────────────────────────────── -->
+  <div class="container docs-layout">
+    <!-- Sidebar Navigation -->
+    <aside class="docs-sidebar">
+      <div class="docs-nav-group">
+        <div class="docs-group-title">Getting Started</div>
+        <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#overview">Overview</a></li>
+          <li class="docs-nav-item"><a href="#quickstart">Docker Quickstart</a></li>
+          <li class="docs-nav-item"><a href="#docker-compose">Docker Compose</a></li>
+          <li class="docs-nav-item"><a href="#building-source">Building from Source</a></li>
+        </ul>
+      </div>
+
+      <div class="docs-nav-group">
+        <div class="docs-group-title">Configuration</div>
+        <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#env-vars">Environment Variables</a></li>
+          <li class="docs-nav-item"><a href="#storage-wal">SQLite &amp; WAL Storage</a></li>
+        </ul>
+      </div>
+
+      <div class="docs-nav-group">
+        <div class="docs-group-title">Health Check Engine</div>
+        <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#probes-http">HTTP &amp; HTTPS Probes</a></li>
+          <li class="docs-nav-item"><a href="#probes-tcp">TCP Port Pings</a></li>
+          <li class="docs-nav-item"><a href="#retry-thresholds">Failure &amp; Retry Logic</a></li>
+          <li class="docs-nav-item"><a href="#ssl-monitoring">SSL Expiration Alerts</a></li>
+        </ul>
+      </div>
+
+      <div class="docs-nav-group">
+        <div class="docs-group-title">Alerting &amp; Webhooks</div>
+        <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#alerts-discord">Discord Embeds</a></li>
+          <li class="docs-nav-item"><a href="#alerts-slack">Slack Block Kit</a></li>
+          <li class="docs-nav-item"><a href="#alerts-generic">Generic Webhooks</a></li>
+          <li class="docs-nav-item"><a href="#alerts-recovery">Recovery Notifications</a></li>
+        </ul>
+      </div>
+
+      <div class="docs-nav-group">
+        <div class="docs-group-title">Public Status Page</div>
+        <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#status-timeline">7-Day Uptime Timeline</a></li>
+          <li class="docs-nav-item"><a href="#status-latency">24-Hour Latency Chart</a></li>
+          <li class="docs-nav-item"><a href="#status-themes">Theme Customization</a></li>
+        </ul>
+      </div>
+
+      <div class="docs-nav-group">
+        <div class="docs-group-title">Architecture</div>
+        <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#arch-internals">Async Tokio Runtime</a></li>
+          <li class="docs-nav-item"><a href="#arch-security">Auth &amp; Rate Limiting</a></li>
+        </ul>
+      </div>
+    </aside>
+
+    <!-- Main Content Area -->
+    <main class="docs-content">
+      <section id="overview">
+        <h1>KeepUp Documentation</h1>
+        <p>
+          <strong>KeepUp</strong> is an ultra-lightweight, zero-dependency uptime monitor and public status page engine written in asynchronous Rust. It compiles all frontend assets, database migrations, and alerting routines into a single binary that idles with under 15MB of RAM.
+        </p>
+      </section>
+
+      <!-- Getting Started -->
+      <section id="quickstart">
+        <h2>Docker Quickstart</h2>
+        <p>
+          The fastest way to deploy KeepUp in production is using the official lightweight container image (~25MB total image size):
+        </p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>docker run -d \
+  --name keepup \
+  -p 3000:3000 \
+  -v ./data:/app/data \
+  -e ADMIN_USER=admin \
+  -e ADMIN_PASSWORD=supersecret \
+  ghcr.io/yourusername/keepup:latest</code></pre>
+        </div>
+
+        <p>Once started, access the two endpoints:</p>
+        <ul>
+          <li><strong>Admin Dashboard:</strong> <code>http://localhost:3000/</code> (Login with your configured credentials)</li>
+          <li><strong>Public Status Page:</strong> <code>http://localhost:3000/status</code> (Customer-facing, no authentication required)</li>
+        </ul>
+      </section>
+
+      <section id="docker-compose">
+        <h2>Docker Compose</h2>
+        <p>For automated deployments with persistent storage and automatic restarts, create a <code>docker-compose.yml</code>:</p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>version: '3.8'
+
+services:
+  keepup:
+    image: ghcr.io/yourusername/keepup:latest
+    container_name: keepup
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3000
+      - KEEPUP_DB_PATH=/app/data/keepup.db
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=change_this_to_strong_password
+      - JWT_SECRET=generate_a_random_32_character_secret_here
+      - RUST_LOG=keepup=info</code></pre>
+        </div>
+
+        <p>Start the container in detached mode:</p>
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>docker compose up -d</code></pre>
+        </div>
+      </section>
+
+      <section id="building-source">
+        <h2>Building from Source</h2>
+        <p>KeepUp requires Rust 1.82+ to compile. Build the optimized release binary with Cargo:</p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code># Clone the repository
+git clone https://github.com/rdlghifary/keepup.git
+cd keepup
+
+# Compile optimized release binary
+cargo build --release
+
+# Run the standalone executable
+./target/release/keepup</code></pre>
+        </div>
+      </section>
+
+      <!-- Configuration -->
+      <section id="env-vars">
+        <h2>Environment Variables</h2>
+        <p>Configure KeepUp via environment variables or a local <code>.env</code> file:</p>
+
+        <div style="overflow-x: auto; margin-bottom: 1.5rem;">
+          <table class="spec-table">
+            <thead>
+              <tr>
+                <th>Variable</th>
+                <th>Default</th>
+                <th>Description</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>PORT</code></td>
+                <td><code>3000</code></td>
+                <td>HTTP port KeepUp listens on.</td>
+              </tr>
+              <tr>
+                <td><code>KEEPUP_DB_PATH</code></td>
+                <td><code>data/keepup.db</code></td>
+                <td>Filesystem path to the SQLite database file.</td>
+              </tr>
+              <tr>
+                <td><code>ADMIN_USER</code></td>
+                <td><code>admin</code></td>
+                <td>Username for dashboard authentication.</td>
+              </tr>
+              <tr>
+                <td><code>ADMIN_PASSWORD</code></td>
+                <td><code>admin123</code></td>
+                <td>Password for dashboard authentication.</td>
+              </tr>
+              <tr>
+                <td><code>JWT_SECRET</code></td>
+                <td><code>keepup_jwt_fallback_secret_key_32bytes</code></td>
+                <td>32+ character HMAC secret for signing session cookies.</td>
+              </tr>
+              <tr>
+                <td><code>STATUS_PAGE_THEME</code></td>
+                <td><code>default</code></td>
+                <td>Default status page aesthetic (<code>default</code>, <code>oled</code>, <code>midnight</code>, <code>light</code>).</td>
+              </tr>
+              <tr>
+                <td><code>RUST_LOG</code></td>
+                <td><code>keepup=info</code></td>
+                <td>Log verbosity filter (<code>trace</code>, <code>debug</code>, <code>info</code>, <code>warn</code>, <code>error</code>).</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </section>
+
+      <section id="storage-wal">
+        <h2>SQLite &amp; WAL Storage</h2>
+        <p>
+          KeepUp automatically initializes SQLite on startup with Write-Ahead Logging (<code>PRAGMA journal_mode=WAL;</code>) and <code>PRAGMA synchronous=NORMAL;</code>. This ensures high-throughput asynchronous writes from Tokio health check workers never block telemetry reads from the public status page or dashboard.
+        </p>
+      </section>
+
+      <!-- Health Check Engine -->
+      <section id="probes-http">
+        <h2>HTTP &amp; HTTPS Probes</h2>
+        <p>KeepUp supports flexible synthetic probes for web services and APIs:</p>
+        <ul>
+          <li><strong>Request Methods:</strong> GET, HEAD, POST with custom body payloads.</li>
+          <li><strong>Custom HTTP Headers:</strong> Send custom User-Agent, Authorization tokens, or API keys.</li>
+          <li><strong>Expected Status Code Ranges:</strong> Accepts ranges such as <code>200-299</code> or specific codes like <code>200,204,301</code>.</li>
+          <li><strong>Keyword Matching:</strong> Verifies that response body contains an expected string token (e.g. <code>"status":"ok"</code>).</li>
+        </ul>
+      </section>
+
+      <section id="probes-tcp">
+        <h2>TCP Port Pings</h2>
+        <p>
+          Validate reachability and connection latency for databases, caching layers, and game servers (Postgres <code>5432</code>, Redis <code>6379</code>, SSH <code>22</code>) using raw asynchronous TCP socket handshakes.
+        </p>
+      </section>
+
+      <section id="retry-thresholds">
+        <h2>Failure &amp; Retry Logic</h2>
+        <p>
+          To prevent false positive alerts caused by brief transient network blips, KeepUp tracks state transition counts. A service must fail consecutive checks equal to its configured <code>max_retries</code> (default: <code>3</code>) before triggering a state change from <code>UP</code> to <code>DOWN</code>.
+        </p>
+      </section>
+
+      <section id="ssl-monitoring">
+        <h2>SSL Expiration Alerts</h2>
+        <p>
+          HTTPS checks extract and validate the server certificate chain during the TLS handshake. KeepUp calculates days until expiry and triggers early warnings before certificates expire.
+        </p>
+      </section>
+
+      <!-- Alerting & Webhooks -->
+      <section id="alerts-discord">
+        <h2>Discord Embeds</h2>
+        <p>
+          KeepUp provides built-in rich Discord embeds using high-contrast status colors:
+        </p>
+        <ul>
+          <li><strong>UP / Resolved:</strong> Status Green (<code>#30D158</code>)</li>
+          <li><strong>DOWN / Outage:</strong> Outage Red (<code>#FF453A</code>)</li>
+        </ul>
+        <p>Includes service name, target URL, latency in ms, status code, and outage duration.</p>
+      </section>
+
+      <section id="alerts-slack">
+        <h2>Slack Block Kit</h2>
+        <p>
+          Default Slack integration formats messages using structured Block Kit cards featuring emoji status badges (<code>:white_check_mark:</code> for UP, <code>:rotating_light:</code> for DOWN), response time telemetry, and incident timestamps.
+        </p>
+      </section>
+
+      <section id="alerts-generic">
+        <h2>Generic Webhooks</h2>
+        <p>For custom PagerDuty, Opsgenie, or webhook integrations, KeepUp dispatches clean JSON payloads:</p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>{
+  "event": "monitor.status_change",
+  "monitor": {
+    "id": "mon_01h8",
+    "name": "Production API Gateway",
+    "url": "https://api.example.com/health",
+    "status": "DOWN",
+    "previous_status": "UP",
+    "latency_ms": 142,
+    "error_message": "HTTP 502 Bad Gateway"
+  },
+  "timestamp": "2026-10-30T20:00:00Z"
+}</code></pre>
+        </div>
+      </section>
+
+      <section id="alerts-recovery">
+        <h2>Recovery Notifications</h2>
+        <p>
+          When a failing service recovers, KeepUp automatically calculates the downtime duration (e.g., <code>"Downtime: 14 minutes, 20 seconds"</code>) and sends a resolution alert.
+        </p>
+      </section>
+
+      <!-- Public Status Page -->
+      <section id="status-timeline">
+        <h2>7-Day Uptime Timeline</h2>
+        <p>
+          The public status page renders a responsive 7-day interactive history bar for each public component. Each day represents the aggregated operational uptime percentage with tooltips showing exact percentages.
+        </p>
+      </section>
+
+      <section id="status-latency">
+        <h2>24-Hour Latency Chart</h2>
+        <p>
+          Monitors display a 24-slot hourly latency breakdown chart representing the past 24 hours chronologically. Bar heights scale proportionally to response latency, and bar colors reflect operational health.
+        </p>
+      </section>
+
+      <section id="status-themes">
+        <h2>Theme Customization</h2>
+        <p>
+          KeepUp status pages support 4 built-in aesthetic themes:
+        </p>
+        <ul>
+          <li><strong>System Dark (default):</strong> Deep dark <code>#0b0b0c</code> canvas with glassmorphic cards.</li>
+          <li><strong>OLED Pitch Black:</strong> Pure <code>#000000</code> high-contrast styling for OLED displays.</li>
+          <li><strong>Midnight Navy:</strong> Deep navy <code>#050B14</code> background with subtle cyan glass borders.</li>
+          <li><strong>Clean Light:</strong> Clean light gray <code>#F5F5F7</code> styling with white translucent cards.</li>
+        </ul>
+        <p>Visitors can toggle themes manually via the Sun/Moon button, or let the page match their OS mode via <code>prefers-color-scheme</code>.</p>
+      </section>
+
+      <!-- Architecture -->
+      <section id="arch-internals">
+        <h2>Async Tokio Runtime</h2>
+        <p>
+          KeepUp's health check scheduler runs within Tokio's multi-threaded asynchronous runtime. Check workers run concurrently without blocking HTTP serving or database updates.
+        </p>
+      </section>
+
+      <section id="arch-security">
+        <h2>Security &amp; Rate Limiting</h2>
+        <p>
+          KeepUp protects the admin dashboard against credential brute-forcing using <code>tower-governor</code>. Authentication utilizes constant-time string comparisons via the <code>subtle</code> crate, and issues 7-day signed <code>HttpOnly</code>, <code>SameSite=Lax</code> JWT session cookies.
+        </p>
+      </section>
+    </main>
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
+  <footer class="site-footer">
+    <div class="container footer-content">
+      <div>
+        <p style="font-weight: 600; color: #fff; margin-bottom: 0.25rem;">KeepUp</p>
+        <p>Ultra-lightweight uptime monitoring engine released under the MIT License.</p>
+      </div>
+      <div class="footer-links">
+        <a href="index.html">Home</a>
+        <a href="docs.html">Documentation</a>
+        <a href="#quickstart">Quickstart</a>
+        <a href="https://github.com/rdlghifary/keepup" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ── Code Copy & Active Link Script ──────────────────────────────────── -->
+  <script>
+    async function copyCode(btn) {
+      const wrapper = btn.closest('.code-wrapper');
+      const code = wrapper ? wrapper.querySelector('code') : null;
+      if (!code) return;
+      const text = code.innerText || code.textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        const originalText = btn.innerText;
+        btn.innerText = 'Copied!';
+        btn.style.color = '#30d158';
+        setTimeout(() => {
+          btn.innerText = originalText;
+          btn.style.color = '';
+        }, 2000);
+      } catch (_) {
+        const textarea = document.createElement('textarea');
+        textarea.value = text;
+        document.body.appendChild(textarea);
+        textarea.select();
+        document.execCommand('copy');
+        document.body.removeChild(textarea);
+        btn.innerText = 'Copied!';
+        setTimeout(() => { btn.innerText = 'Copy'; }, 2000);
+      }
+    }
+
+    // Sticky Header & Highlight active sidebar item on scroll
+    document.addEventListener('DOMContentLoaded', () => {
+      const header = document.querySelector('header');
+      const onHeaderScroll = () => {
+        if (!header) return;
+        if (window.scrollY > 16) {
+          header.classList.add('header-scrolled');
+          header.classList.remove('bg-transparent', 'border-transparent');
+        } else {
+          header.classList.remove('header-scrolled');
+          header.classList.add('bg-transparent', 'border-transparent');
+        }
+      };
+      window.addEventListener('scroll', onHeaderScroll, { passive: true });
+      onHeaderScroll();
+
+      const links = document.querySelectorAll('.docs-nav-item a');
+      const sections = [];
+      links.forEach(link => {
+        const id = link.getAttribute('href').substring(1);
+        const target = document.getElementById(id);
+        if (target) sections.push({ link, target });
+      });
+
+      window.addEventListener('scroll', () => {
+        const scrollPos = window.scrollY + 120;
+        let current = null;
+        for (const sec of sections) {
+          if (sec.target.offsetTop <= scrollPos) {
+            current = sec.link;
+          }
+        }
+        links.forEach(l => l.classList.remove('active'));
+        if (current) current.classList.add('active');
+      }, { passive: true });
+    });
+  </script>
+</body>
+</html>

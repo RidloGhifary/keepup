@@ -1,4 +1,4 @@
-// ── KeepUp Apple-Style Toast Notification & Centralized API Fetcher ─────────
+// ── KeepUp Toast Notification & Centralized API Fetcher ─────────
 
 /**
  * Ensures the container element for toasts exists in the DOM.
@@ -16,7 +16,7 @@ function getOrCreateToastContainer() {
 }
 
 /**
- * Display an Apple-styled glassmorphic toast notification.
+ * Display a glassmorphic toast notification.
  *
  * Supports both signatures:
  * - showToast({ title, message, type, duration })
@@ -57,7 +57,7 @@ function showToast(options, legacyType = 'info') {
   const container = getOrCreateToastContainer();
   const toast = document.createElement('div');
 
-  // Palette & SVG icon configuration matching Apple HIG
+  // Palette & SVG icon configuration
   let iconSvg = '';
   let badgeStyle = '';
 
@@ -158,7 +158,7 @@ let isRedirectingToLogin = false;
 
 /**
  * Centralized fetch wrapper handling 401 Unauthorized, 429 Rate Limiting,
- * and 5xx Server Errors with Apple-style toast alerts.
+ * and 5xx Server Errors with glassmorphic toast alerts.
  */
 async function apiFetch(url, options = {}) {
   try {

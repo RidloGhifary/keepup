@@ -17,7 +17,7 @@
       theme: {
         extend: {
           colors: {
-            apple: {
+            status: {
               bg: '#0b0b0c',
               green: '#30d158',
               red: '#ff453a',
@@ -26,7 +26,7 @@
             }
           },
           fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'system-ui', 'sans-serif'],
+            sans: ['system-ui', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'sans-serif'],
             mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
           }
         }
@@ -52,7 +52,7 @@
       --toggle-inactive: #3f3f46;
     }
 
-    /* Light Mode Palette (Apple HIG Compliant) */
+    /* Light Mode Palette (Clean Minimalist Palette) */
     [data-theme="light"] {
       --bg-main: #f5f5f7;
       --card-bg: rgba(255, 255, 255, 0.85);
@@ -111,7 +111,7 @@
       }
     }
 
-    #apple-modal-card {
+    #modal-card {
       background: var(--modal-bg) !important;
       border: 1px solid var(--card-border) !important;
       color: var(--text-primary) !important;
@@ -119,10 +119,10 @@
       transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
 
-    [data-theme="light"] #apple-modal-backdrop,
+    [data-theme="light"] #modal-backdrop,
     @media (prefers-color-scheme: light) {
-      :root:not([data-theme]) #apple-modal-backdrop,
-      :root[data-theme="auto"] #apple-modal-backdrop {
+      :root:not([data-theme]) #modal-backdrop,
+      :root[data-theme="auto"] #modal-backdrop {
         background-color: rgba(0, 0, 0, 0.35) !important;
       }
     }
@@ -156,9 +156,9 @@
 </head>
 <body class="min-h-screen bg-[var(--bg-main)] text-[var(--text-primary)] flex items-center justify-center p-4">
 
-  <!-- Apple-Style Modal Component for KeepUp -->
-  <div id="apple-modal-backdrop" class="fixed inset-0 z-50 backdrop-blur-md bg-black/60 flex items-center justify-center p-4 transition-all duration-300">
-    <div id="apple-modal-card" class="rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative space-y-5 transition-all duration-300 ease-out transform scale-100 opacity-100 border border-black/5 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/10">
+  <!-- Modal Component for KeepUp -->
+  <div id="modal-backdrop" class="fixed inset-0 z-50 backdrop-blur-md bg-black/60 flex items-center justify-center p-4 transition-all duration-300">
+    <div id="modal-card" class="rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative space-y-5 transition-all duration-300 ease-out transform scale-100 opacity-100 border border-black/5 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/10">
       
       <!-- Modal Header -->
       <div class="flex items-start justify-between">
@@ -290,7 +290,7 @@
         <div class="bg-black/[0.03] dark:bg-black/30 rounded-2xl p-3.5 border border-black/5 dark:border-white/5 flex items-center justify-between">
           <div>
             <div class="font-medium text-neutral-900 dark:text-white text-xs sm:text-sm">Use Default Template</div>
-            <div class="text-[11px] text-neutral-500 dark:text-white/40">Apply Apple HIG-styled embeds and structured Slack/Discord cards</div>
+            <div class="text-[11px] text-neutral-500 dark:text-white/40">Apply glassmorphic embeds and structured Slack/Discord cards</div>
           </div>
           <label class="relative inline-flex items-center cursor-pointer">
             <input id="w-use-default" type="checkbox" checked onchange="toggleTemplateMode()" class="sr-only peer">

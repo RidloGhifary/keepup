@@ -6,10 +6,7 @@
   <title>KeepUp — Status & Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="manifest" href="/manifest.json">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-title" content="KeepUp">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#0b0b0c">
   <script>
     // Immediate pre-render: Dashboard defaults to dark mode
@@ -36,7 +33,7 @@
       theme: {
         extend: {
           colors: {
-            apple: {
+            status: {
               bg: '#0b0b0c',
               green: '#30d158',
               red: '#ff453a',
@@ -45,7 +42,7 @@
             }
           },
           fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'system-ui', 'sans-serif'],
+            sans: ['system-ui', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'sans-serif'],
             mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
           }
         }
@@ -79,7 +76,7 @@
       --toggle-inactive: #3f3f46;
     }
 
-    /* Light Mode Palette (Apple HIG Compliant) */
+    /* Light Mode Palette (Clean Minimalist Palette) */
     [data-theme="light"] {
       --bg-main: #f5f5f7;
       --bg-primary: var(--bg-main);
@@ -205,7 +202,7 @@
     }
 
     /* Container Glass & Cards */
-    .apple-glass {
+    .glass-card {
       background: var(--card-bg);
       backdrop-filter: blur(40px);
       -webkit-backdrop-filter: blur(40px);
@@ -213,7 +210,7 @@
       box-shadow: var(--card-shadow);
       transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
     }
-    .apple-glass:hover {
+    .glass-card:hover {
       border-color: var(--card-hover-border);
     }
 
@@ -237,7 +234,7 @@
     }
 
     /* Global Modal Card & Backdrop Adaptations */
-    #apple-modal-card,
+    #modal-card,
     #logs-modal > div {
       background: var(--modal-bg) !important;
       border: 1px solid var(--card-border) !important;
@@ -245,7 +242,7 @@
       box-shadow: var(--card-shadow) !important;
       transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
     }
-    [data-theme="light"] #apple-modal-backdrop,
+    [data-theme="light"] #modal-backdrop,
     [data-theme="light"] #logs-modal {
       background-color: rgba(0, 0, 0, 0.35) !important;
     }
@@ -552,7 +549,7 @@
       <!-- 3 Summary Stat Cards -->
       <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
         <!-- 1. Active Monitors -->
-        <div class="apple-glass rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+        <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20">
           <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
             <span>Active Monitors</span>
             <svg class="w-4 h-4 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -564,7 +561,7 @@
         </div>
 
         <!-- 2. 24h Average Uptime -->
-        <div class="apple-glass rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+        <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20">
           <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
             <span>24h Average Uptime</span>
             <svg class="w-4 h-4 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -576,7 +573,7 @@
         </div>
 
         <!-- 3. Average Response Time -->
-        <div class="apple-glass rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+        <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20">
           <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
             <span>Average Latency</span>
             <svg class="w-4 h-4 text-[#ffd60a]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -625,7 +622,7 @@
       <!-- Dynamic Monitors Container (Grid / List) -->
       <div id="monitors-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
         <!-- Rendered dynamically by app.js -->
-        <div class="col-span-full apple-glass rounded-2xl p-12 text-center text-white/50 text-xs">
+        <div class="col-span-full glass-card rounded-2xl p-12 text-center text-white/50 text-xs">
           Loading health monitors...
         </div>
       </div>
@@ -665,9 +662,9 @@
     </div>
   </footer>
 
-  <!-- ── 6. Apple-Style Modal (Edit Monitors & Manage Webhooks) ─────────────── -->
-  <div id="apple-modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/60 flex items-center justify-center p-4 transition-all duration-300">
-    <div id="apple-modal-card" class="rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative space-y-5 transition-all duration-300 ease-out transform scale-95 opacity-0 border border-black/5 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/10">
+  <!-- ── 6. Modal (Edit Monitors & Manage Webhooks) ─────────────── -->
+  <div id="modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/60 flex items-center justify-center p-4 transition-all duration-300">
+    <div id="modal-card" class="rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative space-y-5 transition-all duration-300 ease-out transform scale-95 opacity-0 border border-black/5 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/10">
       
       <!-- Modal Header -->
       <div class="flex items-start justify-between">
@@ -799,7 +796,7 @@
         <div class="bg-black/[0.03] dark:bg-black/30 rounded-2xl p-3.5 border border-black/5 dark:border-white/5 flex items-center justify-between">
           <div>
             <div class="font-medium text-neutral-900 dark:text-white text-xs sm:text-sm">Use Default Template</div>
-            <div class="text-[11px] text-neutral-500 dark:text-white/40">Apply Apple HIG-styled embeds and structured Slack/Discord cards</div>
+            <div class="text-[11px] text-neutral-500 dark:text-white/40">Apply glassmorphic embeds and structured Slack/Discord cards</div>
           </div>
           <label class="relative inline-flex items-center cursor-pointer">
             <input id="w-use-default" type="checkbox" checked onchange="toggleTemplateMode()" class="sr-only peer">

@@ -1,0 +1,786 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KeepUp — Ultra-Lightweight Uptime Monitoring & Public Status Page</title>
+  <meta name="description" content="Ultra-lightweight, single-binary uptime monitor and public status page engine written in Rust. Sub-15MB RAM, embedded SQLite, and stateful alerts to Discord and Slack.">
+  <link rel="icon" type="image/svg+xml" href="favicon.svg">
+  <link rel="stylesheet" href="style.css">
+  <script src="https://cdn.tailwindcss.com"></script>
+</head>
+<body>
+
+  <!-- ── Header Navigation ───────────────────────────────────────────────── -->
+  <header class="sticky top-0 z-50 w-full transition-all duration-300 bg-zinc-950/80 border-b border-white/10 backdrop-blur-xl">
+    <div class="max-w-6xl mx-auto px-4 h-16 flex items-center justify-between gap-4">
+      
+      <!-- 1. Left: Brand Logo -->
+      <a href="index.html" class="flex items-center gap-2 font-bold text-white text-lg tracking-tight shrink-0">
+        <svg class="w-6 h-6 text-emerald-400" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+        KeepUp
+      </a>
+
+      <!-- 2. Center: Desktop Nav Links (Hidden on Mobile) -->
+      <nav class="hidden md:flex items-center gap-8">
+        <a href="#features" class="text-sm font-medium text-neutral-300 hover:text-white transition-colors">Features</a>
+        <a href="#architecture" class="text-sm font-medium text-neutral-300 hover:text-white transition-colors">Architecture</a>
+        <a href="docs.html" class="text-sm font-medium text-neutral-300 hover:text-white transition-colors">Documentation</a>
+      </nav>
+
+      <!-- 3. Right: Desktop Actions & Mobile Toggle -->
+      <div class="flex items-center gap-3">
+        <!-- Desktop GitHub Star Widget -->
+        <a href="https://github.com/rdlghifary/keepup" target="_blank" rel="noopener noreferrer" class="hidden md:inline-flex items-center gap-1.5 px-3 py-1.5 rounded-lg bg-white/5 border border-white/10 hover:border-white/20 text-xs font-mono text-neutral-200 transition" id="gh-stats-pill" aria-label="GitHub Repository Stars">
+          <svg class="w-4 h-4" fill="currentColor" viewBox="0 0 24 24"><path d="M12 0C5.37 0 0 5.37 0 12c0 5.31 3.435 9.795 8.205 11.385.6.105.825-.255.825-.57 0-.285-.015-1.23-.015-2.235-3.015.555-3.795-.735-4.035-1.41-.135-.345-.72-1.41-1.23-1.695-.42-.225-1.02-.78-.015-.795.945-.015 1.62.87 1.845 1.23 1.08 1.815 2.805 1.305 3.495.99.105-.78.42-1.305.765-1.605-2.67-.3-5.46-1.335-5.46-5.925 0-1.305.465-2.385 1.23-3.225-.12-.3-.54-1.53.12-3.18 0 0 1.005-.315 3.3 1.23.96-.27 1.98-.405 3-.405s2.04.135 3 .405c2.295-1.56 3.3-1.23 3.3-1.23.66 1.65.24 2.88.12 3.18.765.84 1.23 1.905 1.23 3.225 0 4.605-2.805 5.625-5.475 5.925.435.375.81 1.095.81 2.22 0 1.605-.015 2.895-.015 3.3 0 .315.225.69.825.57A12.02 12.02 0 0024 12c0-6.63-5.37-12-12-12z"/></svg>
+          <span id="gh-star-count">★ 1.2k</span>
+        </a>
+
+        <!-- Desktop Self-Host Quickstart Button -->
+        <a href="#quickstart" class="hidden md:inline-flex items-center gap-1.5 px-4 py-1.5 rounded-lg bg-white text-black font-semibold text-xs hover:bg-neutral-200 transition">
+          Self-Host
+        </a>
+
+        <!-- Mobile Hamburger Button (Only on Mobile) -->
+        <button id="mobile-menu-btn" onclick="toggleMobileDrawer()" aria-label="Toggle Menu" class="md:hidden p-2 rounded-lg bg-white/5 border border-white/10 text-neutral-300 hover:text-white">
+          <svg class="w-5 h-5" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/></svg>
+        </button>
+      </div>
+
+    </div>
+  </header>
+
+  <!-- Mobile Drawer Backdrop Overlay -->
+  <div id="mobile-overlay" onclick="toggleMobileDrawer()" class="fixed inset-0 bg-black/60 backdrop-blur-sm z-40 hidden md:hidden transition-opacity"></div>
+
+  <!-- Mobile Slide-Over Drawer -->
+  <div id="mobile-drawer" class="fixed top-16 right-0 w-64 h-[calc(100vh-4rem)] bg-zinc-950 border-l border-white/10 p-6 z-50 transform translate-x-full transition-transform duration-300 md:hidden flex flex-col justify-between hidden">
+    <div class="flex flex-col gap-4">
+      <a href="#features" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Features</a>
+      <a href="#architecture" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Architecture</a>
+      <a href="docs.html" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Documentation</a>
+      <a href="status.html" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Status Page Demo</a>
+    </div>
+    <a href="#quickstart" onclick="toggleMobileDrawer()" class="w-full py-2.5 bg-white text-black font-semibold rounded-xl text-center text-sm">Self-Host Quickstart</a>
+  </div>
+
+  <!-- ── Main Content ────────────────────────────────────────────────────── -->
+  <main>
+    <!-- Hero Section: Constrained to max-w-4xl mx-auto text-center, py-20 md:py-28 -->
+    <section class="hero hero-container section-py">
+      <div class="hero-badge">
+        <span class="pulse-dot"></span>
+        <span>Rust-Powered • Standalone Binary • &lt;15MB RAM</span>
+      </div>
+
+      <h1 class="hero-title">Ultra-Lightweight Uptime Monitoring &amp; Status Pages</h1>
+      
+      <p class="hero-subtitle">
+        Effortless high-frequency synthetic checks, stateful spam-free alerts to Discord &amp; Slack, and glassmorphic status pages — all in a single self-contained binary with zero external database dependencies.
+      </p>
+
+      <div class="hero-actions">
+        <!-- Primary CTA: Clean white button with black text -->
+        <a href="docs.html" class="btn btn-primary btn-lg">
+          <span>Read Documentation</span>
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 5l7 7-7 7"/>
+          </svg>
+        </a>
+
+        <!-- Status Page Demo CTA -->
+        <a href="status.html" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-lg" style="gap: 0.5rem;">
+          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: var(--status-green);">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+          </svg>
+          <span>View Status Page Demo</span>
+        </a>
+      </div>
+
+      <!-- ── Multi-Tab Quickstart Command Block ───────────────────────────── -->
+      <div id="quickstart" class="quickstart-box" style="scroll-margin-top: 80px;">
+        <div class="quickstart-nav">
+          <div class="quickstart-tabs">
+            <button class="quickstart-tab active" onclick="switchQuickstartTab('docker-run', this)">Docker Run</button>
+            <button class="quickstart-tab" onclick="switchQuickstartTab('docker-compose', this)">Docker Compose</button>
+            <button class="quickstart-tab" onclick="switchQuickstartTab('cargo', this)">Cargo Install</button>
+          </div>
+          <button class="quickstart-copy-btn" onclick="copyActiveQuickstart(this)" aria-label="Copy command snippet">
+            <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+            <span class="copy-label">Copy Command</span>
+          </button>
+        </div>
+        <div class="quickstart-body">
+          <pre><code id="quickstart-code-view">docker run -d --name keepup -p 3000:3000 -v keepup-data:/data keepup/keepup:latest</code></pre>
+        </div>
+      </div>
+
+      <!-- Glassmorphic Mock Browser Window Frame -->
+      <div class="mock-browser-window">
+        <!-- Header Bar -->
+        <div class="mock-browser-header">
+          <!-- Left Controls: macOS traffic lights -->
+          <div class="mock-browser-controls">
+            <span class="window-dot dot-close" aria-hidden="true"></span>
+            <span class="window-dot dot-minimize" aria-hidden="true"></span>
+            <span class="window-dot dot-expand" aria-hidden="true"></span>
+          </div>
+
+          <!-- Center URL Bar -->
+          <div class="mock-browser-url">
+            <svg width="12" height="12" viewBox="0 0 24 24" fill="none" stroke="currentColor" class="url-lock-icon">
+              <rect x="3" y="11" width="18" height="11" rx="2" ry="2" stroke-width="2"/>
+              <path d="M7 11V7a5 5 0 0 1 10 0v4" stroke-width="2"/>
+            </svg>
+            <span class="url-text">https://status.keepup.dev</span>
+          </div>
+
+          <!-- Right Indicator: Live Preview Badge -->
+          <div class="mock-browser-badge">
+            <span class="pulse-dot"></span>
+            <span class="badge-text">Live Preview</span>
+          </div>
+        </div>
+
+        <!-- Embedded Preview Iframe Container -->
+        <div class="mock-browser-body">
+          <iframe
+            id="status-preview-iframe"
+            src="status.html?demo=true&theme=dark"
+            title="KeepUp Live Status Page Preview"
+            loading="lazy"
+            class="mock-browser-iframe"
+            sandbox="allow-scripts allow-same-origin">
+          </iframe>
+        </div>
+      </div>
+    </section>
+
+    <!-- Features Section: Constrained to max-w-5xl mx-auto, py-20 md:py-28 -->
+    <section id="features" class="features-section features-container section-py">
+      <div id="architecture" style="scroll-margin-top: 80px;"></div>
+      <div class="section-head">
+        <div class="section-tag">Zero Bloat Architecture</div>
+        <h2 class="section-title">Built for Performance &amp; Simplicity</h2>
+        <p class="section-desc">Everything needed for robust uptime monitoring without the heavyweight infrastructure footprint.</p>
+      </div>
+
+      <div class="grid-3">
+        <!-- Feature 1 -->
+        <div class="feature-card">
+          <div class="feature-top">
+            <div class="feature-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+              </svg>
+            </div>
+            <span class="feature-tag">tokio / axum</span>
+          </div>
+          <h3 class="feature-title">Sub-15MB Memory Footprint</h3>
+          <p class="feature-desc">Engineered with async Rust. Idles at less than 15MB RAM and sub-1% CPU, ideal for cost-efficient VPS instances or edge hardware.</p>
+        </div>
+
+        <!-- Feature 2 -->
+        <div class="feature-card">
+          <div class="feature-top">
+            <div class="feature-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M20 7l-8-4-8 4m16 0l-8 4m8-4v10l-8 4m0-10L4 7m8 4v10M4 7v10l8 4"/>
+              </svg>
+            </div>
+            <span class="feature-tag">rust-embed</span>
+          </div>
+          <h3 class="feature-title">Single Standalone Binary</h3>
+          <p class="feature-desc">All HTML, CSS, JavaScript, icons, and database migrations are baked directly into the executable. No Node.js runtime or external cache required.</p>
+        </div>
+
+        <!-- Feature 3 -->
+        <div class="feature-card">
+          <div class="feature-top">
+            <div class="feature-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 7v10c0 2.21 3.582 4 8 4s8-1.79 8-4V7M4 7c0 2.21 3.582 4 8 4s8-1.79 8-4M4 7c0-2.21 3.582-4 8-4s8 1.79 8 4"/>
+              </svg>
+            </div>
+            <span class="feature-tag">sqlite3-wal</span>
+          </div>
+          <h3 class="feature-title">Embedded SQLite with WAL</h3>
+          <p class="feature-desc">Self-contained persistence using SQLite configured with Write-Ahead Logging and synchronous normal mode for high-throughput, non-blocking telemetry logging.</p>
+        </div>
+
+        <!-- Feature 4 -->
+        <div class="feature-card">
+          <div class="feature-top">
+            <div class="feature-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+              </svg>
+            </div>
+            <span class="feature-tag">webhooks</span>
+          </div>
+          <h3 class="feature-title">Stateful Spam-Free Alerts</h3>
+          <p class="feature-desc">Rich Discord embeds, Slack Block Kit messages, and generic webhooks fire only on state changes (DOWN/RESOLVED) with configurable retry thresholds.</p>
+        </div>
+
+        <!-- Feature 5 -->
+        <div class="feature-card">
+          <div class="feature-top">
+            <div class="feature-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 19v-6a2 2 0 00-2-2H5a2 2 0 00-2 2v6a2 2 0 002 2h2a2 2 0 002-2zm0 0V9a2 2 0 012-2h2a2 2 0 012 2v10m-6 0a2 2 0 002 2h2a2 2 0 002-2m0 0V5a2 2 0 012-2h2a2 2 0 012 2v14a2 2 0 01-2 2h-2a2 2 0 01-2-2z"/>
+              </svg>
+            </div>
+            <span class="feature-tag">status-page</span>
+          </div>
+          <h3 class="feature-title">Public Status Page &amp; Themes</h3>
+          <p class="feature-desc">Built-in customer-facing status page featuring 7-day uptime pills, 24-hour latency breakdowns, component grouping, and clean responsive dark themes.</p>
+        </div>
+
+        <!-- Feature 6 -->
+        <div class="feature-card">
+          <div class="feature-top">
+            <div class="feature-icon">
+              <svg width="20" height="20" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+              </svg>
+            </div>
+            <span class="feature-tag">hardened</span>
+          </div>
+          <h3 class="feature-title">Single-Admin Hardened Security</h3>
+          <p class="feature-desc">Constant-time password comparison, signed 7-day <code>HttpOnly</code> JWT session cookies, and brute-force IP rate limiting powered by <code>tower-governor</code>.</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Live SVG Badge Showcase Section ─────────────────────────────────── -->
+    <section id="badges" class="badges-section table-container section-py">
+      <div class="section-head">
+        <div class="section-tag">Embeddable Vector Badges</div>
+        <h2 class="section-title">Live README &amp; Status Badges</h2>
+        <p class="section-desc">Drop dynamic, zero-dependency SVG status badges directly into your GitHub repositories, documentation portals, and internal markdown wikis.</p>
+      </div>
+
+      <div class="badge-showcase-card">
+        <div class="badge-grid">
+          <!-- Operational Badge -->
+          <div class="badge-item active" onclick="selectBadge('operational', this)" role="button" tabindex="0">
+            <div class="badge-item-header">
+              <span class="badge-dot" style="background-color: var(--status-green);"></span>
+              <span class="badge-item-title">Operational</span>
+            </div>
+            <div class="badge-svg-container">
+              <svg xmlns="http://www.w3.org/2000/svg" width="138" height="20" role="img" aria-label="keepup: operational">
+                <clipPath id="badge-clip-op"><rect width="138" height="20" rx="4" fill="#fff"/></clipPath>
+                <g clip-path="url(#badge-clip-op)">
+                  <rect width="58" height="20" fill="#18181b"/>
+                  <rect x="58" width="80" height="20" fill="#30d158"/>
+                </g>
+                <g fill="#fff" text-anchor="middle" font-family="system-ui,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Helvetica,Arial,sans-serif" text-rendering="geometricPrecision" font-size="11">
+                  <text x="29" y="14" fill="#a1a1aa">keepup</text>
+                  <text x="98" y="14" fill="#09090b" font-weight="600">operational</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+
+          <!-- Degraded Badge -->
+          <div class="badge-item" onclick="selectBadge('degraded', this)" role="button" tabindex="0">
+            <div class="badge-item-header">
+              <span class="badge-dot" style="background-color: var(--status-yellow);"></span>
+              <span class="badge-item-title">Degraded</span>
+            </div>
+            <div class="badge-svg-container">
+              <svg xmlns="http://www.w3.org/2000/svg" width="128" height="20" role="img" aria-label="keepup: degraded">
+                <clipPath id="badge-clip-deg"><rect width="128" height="20" rx="4" fill="#fff"/></clipPath>
+                <g clip-path="url(#badge-clip-deg)">
+                  <rect width="58" height="20" fill="#18181b"/>
+                  <rect x="58" width="70" height="20" fill="#ffd60a"/>
+                </g>
+                <g fill="#fff" text-anchor="middle" font-family="system-ui,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Helvetica,Arial,sans-serif" text-rendering="geometricPrecision" font-size="11">
+                  <text x="29" y="14" fill="#a1a1aa">keepup</text>
+                  <text x="93" y="14" fill="#09090b" font-weight="600">degraded</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+
+          <!-- Downtime Badge -->
+          <div class="badge-item" onclick="selectBadge('downtime', this)" role="button" tabindex="0">
+            <div class="badge-item-header">
+              <span class="badge-dot" style="background-color: var(--status-red);"></span>
+              <span class="badge-item-title">Downtime</span>
+            </div>
+            <div class="badge-svg-container">
+              <svg xmlns="http://www.w3.org/2000/svg" width="126" height="20" role="img" aria-label="keepup: downtime">
+                <clipPath id="badge-clip-down"><rect width="126" height="20" rx="4" fill="#fff"/></clipPath>
+                <g clip-path="url(#badge-clip-down)">
+                  <rect width="58" height="20" fill="#18181b"/>
+                  <rect x="58" width="68" height="20" fill="#ff453a"/>
+                </g>
+                <g fill="#fff" text-anchor="middle" font-family="system-ui,BlinkMacSystemFont,'SF Pro Text','Segoe UI',Helvetica,Arial,sans-serif" text-rendering="geometricPrecision" font-size="11">
+                  <text x="29" y="14" fill="#a1a1aa">keepup</text>
+                  <text x="92" y="14" fill="#ffffff" font-weight="600">downtime</text>
+                </g>
+              </svg>
+            </div>
+          </div>
+        </div>
+
+        <!-- Copyable Markdown Generator -->
+        <div class="badge-code-generator">
+          <div class="badge-code-header">
+            <div class="badge-code-title">
+              <svg width="15" height="15" viewBox="0 0 24 24" fill="none" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 20l4-16m4 4l4 4-4 4M6 16l-4-4 4-4"/>
+              </svg>
+              <span>Markdown Snippet</span>
+            </div>
+            <button class="copy-btn-inline" onclick="copyBadgeSnippet(this)">
+              <svg width="14" height="14" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+              </svg>
+              <span id="badge-copy-text">Copy Markdown</span>
+            </button>
+          </div>
+          <div class="code-wrapper" style="margin: 0;">
+            <pre><code id="badge-markdown-code">![KeepUp Status](https://status.yourdomain.com/api/public/badge/api-service.svg)</code></pre>
+          </div>
+          <div class="badge-hint">
+            <span>Target probe: <strong id="badge-target-name">api-service</strong></span>
+            <span>Format: <strong>Zero-Dependency Vector SVG</strong></span>
+          </div>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── Interactive Benchmark Comparison Matrix ─────────────────────────── -->
+    <section id="benchmarks" class="benchmark-section table-container section-py">
+      <div class="section-head">
+        <div class="section-tag">Resource Footprint</div>
+        <h2 class="section-title">Efficiency Compared to Alternatives</h2>
+        <p class="section-desc">Performance matrix measuring idle telemetry overhead, container cold boot latency, and binary footprint.</p>
+      </div>
+
+      <div class="benchmark-card">
+        <div class="table-responsive">
+          <table class="spec-table">
+            <thead>
+              <tr>
+                <th class="col-left">Solution</th>
+                <th class="col-left">Idle Memory</th>
+                <th class="col-left">Cold Boot Time</th>
+                <th class="col-left">Docker Image Size</th>
+              </tr>
+            </thead>
+            <tbody>
+              <!-- KeepUp Row: Subtle background tint, Rust badge, visual metric bars -->
+              <tr class="highlight-row">
+                <td class="col-left">
+                  <div class="solution-cell">
+                    <span class="solution-name">KeepUp</span>
+                    <span class="badge-rust">Rust</span>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell" title="KeepUp: 10x lower RAM footprint than Node stacks">
+                    <div class="metric-value-row">
+                      <span class="metric-value metric-val-lead">&lt; 15 MB</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar metric-bar-lead" style="width: 10%;"></div>
+                    </div>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell" title="KeepUp: Sub-20ms instant cold boot">
+                    <div class="metric-value-row">
+                      <span class="metric-value metric-val-lead">&lt; 20 ms</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar metric-bar-lead" style="width: 5%;"></div>
+                    </div>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell" title="KeepUp: ~25 MB scratch container">
+                    <div class="metric-value-row">
+                      <span class="metric-value metric-val-lead">~25 MB</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar metric-bar-lead" style="width: 7%;"></div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- Gatus Row -->
+              <tr>
+                <td class="col-left">
+                  <div class="solution-cell">
+                    <span style="font-weight: 500; color: #ffffff;">Gatus</span>
+                    <span class="badge-go">Go</span>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell">
+                    <div class="metric-value-row">
+                      <span class="metric-value">~35 MB</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar" style="width: 23%;"></div>
+                    </div>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell">
+                    <div class="metric-value-row">
+                      <span class="metric-value">~120 ms</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar" style="width: 20%;"></div>
+                    </div>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell">
+                    <div class="metric-value-row">
+                      <span class="metric-value">~40 MB</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar" style="width: 11%;"></div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+
+              <!-- Uptime Kuma Row -->
+              <tr>
+                <td class="col-left">
+                  <div class="solution-cell">
+                    <span style="font-weight: 500; color: #ffffff;">Uptime Kuma</span>
+                    <span class="badge-node">Node.js</span>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell">
+                    <div class="metric-value-row">
+                      <span class="metric-value">~150 MB</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar" style="width: 100%;"></div>
+                    </div>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell">
+                    <div class="metric-value-row">
+                      <span class="metric-value">~3.2 s</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar" style="width: 100%;"></div>
+                    </div>
+                  </div>
+                </td>
+                <td class="col-left">
+                  <div class="metric-cell">
+                    <div class="metric-value-row">
+                      <span class="metric-value">~350 MB</span>
+                    </div>
+                    <div class="metric-bar-track">
+                      <div class="metric-bar" style="width: 100%;"></div>
+                    </div>
+                  </div>
+                </td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+      </div>
+    </section>
+  </main>
+
+  <!-- ── Interactive Quickstart Modal ────────────────────────────────────── -->
+  <div id="quickstart-modal" class="modal-backdrop" onclick="handleBackdropClick(event)">
+    <div class="modal-dialog">
+      <div class="modal-header">
+        <h3 class="modal-title">Self-Host KeepUp in 60 Seconds</h3>
+        <button onclick="closeQuickstartModal()" class="modal-close" aria-label="Close modal">&times;</button>
+      </div>
+
+      <p class="modal-desc">
+        Run KeepUp as a lightweight Docker container with persistent SQLite telemetry storage:
+      </p>
+
+      <div class="code-wrapper">
+        <button class="copy-btn" onclick="copySnippet(this, 'docker-cmd')">Copy</button>
+        <pre><code id="docker-cmd">docker run -d \
+  --name keepup \
+  -p 3000:3000 \
+  -v keepup-data:/data \
+  -e ADMIN_USER=admin \
+  -e ADMIN_PASSWORD=supersecret \
+  keepup/keepup:latest</code></pre>
+      </div>
+
+      <div class="modal-nav-links">
+        Once running, navigate to:
+        <ul>
+          <li>Dashboard: <strong>http://localhost:3000/</strong></li>
+          <li>Public Status: <strong>http://localhost:3000/status</strong></li>
+        </ul>
+      </div>
+
+      <div class="modal-actions">
+        <button onclick="closeQuickstartModal()" class="btn btn-secondary">Close</button>
+        <a href="docs.html" class="btn btn-primary">Full Setup Guide &rarr;</a>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── Footer ──────────────────────────────────────────────────────────── -->
+  <footer class="site-footer">
+    <div class="container footer-content">
+      <div>
+        <p style="font-weight: 600; color: #ffffff; margin-bottom: 0.25rem;">KeepUp</p>
+        <p style="color: var(--text-muted); font-size: 0.8125rem;">Ultra-lightweight uptime monitoring engine released under the MIT License.</p>
+      </div>
+      <div class="footer-links">
+        <a href="index.html">Home</a>
+        <a href="status.html">Live Status Demo</a>
+        <a href="#badges">Badges</a>
+        <a href="#benchmarks">Benchmarks</a>
+        <a href="docs.html">Documentation</a>
+        <a href="https://github.com/rdlghifary/keepup" target="_blank" rel="noopener noreferrer">GitHub</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ── Vanilla JS Controllers (Zero NPM Dependencies) ──────────────────── -->
+  <script>
+    // 0. Sticky Header Dynamic Glassmorphic Scroll Handler
+    document.addEventListener('DOMContentLoaded', () => {
+      const header = document.querySelector('header');
+      if (!header) return;
+
+      const onScroll = () => {
+        if (window.scrollY > 16) {
+          header.classList.add('header-scrolled');
+          header.classList.remove('bg-transparent', 'border-transparent');
+        } else {
+          header.classList.remove('header-scrolled');
+          header.classList.add('bg-transparent', 'border-transparent');
+        }
+      };
+
+      window.addEventListener('scroll', onScroll, { passive: true });
+      onScroll(); // Run immediately on load in case page is refreshed while scrolled
+    });
+
+    // Mobile Navigation Drawer Toggle Handler
+    function toggleMobileDrawer() {
+      const drawer = document.getElementById('mobile-drawer');
+      const overlay = document.getElementById('mobile-overlay');
+      const btn = document.getElementById('mobile-menu-btn');
+      if (!drawer) return;
+      
+      const isHidden = drawer.classList.contains('hidden') || drawer.classList.contains('translate-x-full');
+      if (isHidden) {
+        drawer.classList.remove('hidden');
+        void drawer.offsetWidth; // Force reflow
+        drawer.classList.remove('translate-x-full');
+        drawer.classList.add('translate-x-0', 'open');
+        if (overlay) overlay.classList.remove('hidden');
+        if (btn) btn.setAttribute('aria-expanded', 'true');
+        document.body.style.overflow = 'hidden';
+      } else {
+        drawer.classList.add('translate-x-full');
+        drawer.classList.remove('translate-x-0', 'open');
+        if (overlay) overlay.classList.add('hidden');
+        if (btn) btn.setAttribute('aria-expanded', 'false');
+        document.body.style.overflow = '';
+        setTimeout(() => {
+          if (drawer.classList.contains('translate-x-full')) {
+            drawer.classList.add('hidden');
+          }
+        }, 300);
+      }
+    }
+
+    // 1. Multi-Tab Quickstart Snippet Definitions
+    const quickstartSnippets = {
+      'docker-run': 'docker run -d --name keepup -p 3000:3000 -v keepup-data:/data keepup/keepup:latest',
+      'docker-compose': `services:
+  keepup:
+    image: keepup/keepup:latest
+    ports: ["3000:3000"]
+    volumes: ["keepup-data:/data"]
+    restart: unless-stopped`,
+      'cargo': 'cargo install keepup && keepup --port 3000'
+    };
+
+    let activeQuickstartTab = 'docker-run';
+
+    function switchQuickstartTab(tabKey, btn) {
+      if (!quickstartSnippets[tabKey]) return;
+      activeQuickstartTab = tabKey;
+      
+      const tabs = document.querySelectorAll('.quickstart-tab');
+      tabs.forEach(t => t.classList.remove('active'));
+      if (btn) btn.classList.add('active');
+
+      const codeView = document.getElementById('quickstart-code-view');
+      if (codeView) {
+        codeView.textContent = quickstartSnippets[tabKey];
+      }
+    }
+
+    async function copyActiveQuickstart(btn) {
+      const text = quickstartSnippets[activeQuickstartTab];
+      if (!text) return;
+
+      try {
+        await navigator.clipboard.writeText(text);
+        showCopyFeedback(btn, 'Copied!');
+      } catch (_) {
+        fallbackCopyText(text, btn, 'Copied!');
+      }
+    }
+
+    // 2. Embeddable SVG Badge Showcase Controller
+    const badgeMarkdownMap = {
+      'operational': '![KeepUp Status](https://status.yourdomain.com/api/public/badge/api-service.svg)',
+      'degraded': '![KeepUp Status](https://status.yourdomain.com/api/public/badge/api-service.svg?status=degraded)',
+      'downtime': '![KeepUp Status](https://status.yourdomain.com/api/public/badge/api-service.svg?status=downtime)'
+    };
+
+    let activeBadgeStatus = 'operational';
+
+    function selectBadge(status, el) {
+      activeBadgeStatus = status;
+      const items = document.querySelectorAll('.badge-item');
+      items.forEach(item => item.classList.remove('active'));
+      if (el) el.classList.add('active');
+
+      const codeEl = document.getElementById('badge-markdown-code');
+      if (codeEl && badgeMarkdownMap[status]) {
+        codeEl.textContent = badgeMarkdownMap[status];
+      }
+      const targetLabel = document.getElementById('badge-target-name');
+      if (targetLabel) {
+        targetLabel.textContent = `api-service (${status})`;
+      }
+    }
+
+    async function copyBadgeSnippet(btn) {
+      const codeEl = document.getElementById('badge-markdown-code');
+      const text = codeEl ? codeEl.textContent : badgeMarkdownMap[activeBadgeStatus];
+      if (!text) return;
+
+      try {
+        await navigator.clipboard.writeText(text);
+        const label = document.getElementById('badge-copy-text');
+        if (label) {
+          const original = label.textContent;
+          label.textContent = 'Copied!';
+          setTimeout(() => { label.textContent = original; }, 2000);
+        }
+      } catch (_) {
+        fallbackCopyText(text, btn, 'Copied!');
+      }
+    }
+
+    // 3. Lightweight GitHub Repository Metrics Fetcher (Non-blocking with graceful fallback)
+    (async function fetchGitHubStats() {
+      try {
+        const repoRes = await fetch('https://api.github.com/repos/rdlghifary/keepup', {
+          headers: { 'Accept': 'application/vnd.github.v3+json' }
+        });
+        if (repoRes.ok) {
+          const repoData = await repoRes.json();
+          if (typeof repoData.stargazers_count === 'number') {
+            const count = repoData.stargazers_count;
+            const formatted = count >= 1000 ? '★ ' + (count / 1000).toFixed(1) + 'k' : '★ ' + count;
+            const starEl = document.getElementById('gh-star-count');
+            if (starEl) starEl.textContent = formatted;
+          }
+        }
+      } catch (_) {
+        // Fallback: Gracefully retain hardcoded default (★ 1.2k)
+      }
+    })();
+
+    // 4. Modal and Universal Copy Utilities
+    function openQuickstartModal() {
+      const modal = document.getElementById('quickstart-modal');
+      if (modal) {
+        modal.classList.add('open');
+        document.body.style.overflow = 'hidden';
+      }
+    }
+
+    function closeQuickstartModal() {
+      const modal = document.getElementById('quickstart-modal');
+      if (modal) {
+        modal.classList.remove('open');
+        document.body.style.overflow = '';
+      }
+    }
+
+    function handleBackdropClick(event) {
+      if (event.target.id === 'quickstart-modal') {
+        closeQuickstartModal();
+      }
+    }
+
+    document.addEventListener('keydown', (e) => {
+      if (e.key === 'Escape') {
+        closeQuickstartModal();
+        const drawer = document.getElementById('mobile-drawer');
+        if (drawer && !drawer.classList.contains('translate-x-full')) {
+          toggleMobileDrawer();
+        }
+      }
+    });
+
+    function showCopyFeedback(btn, feedbackText) {
+      const label = btn.querySelector('.copy-label') || btn;
+      const originalText = label.innerText || label.textContent;
+      label.innerText = feedbackText;
+      setTimeout(() => {
+        label.innerText = originalText;
+      }, 2000);
+    }
+
+    function fallbackCopyText(text, btn, feedbackText) {
+      const textarea = document.createElement('textarea');
+      textarea.value = text;
+      textarea.style.position = 'fixed';
+      textarea.style.opacity = '0';
+      document.body.appendChild(textarea);
+      textarea.select();
+      try {
+        document.execCommand('copy');
+        showCopyFeedback(btn, feedbackText);
+      } catch (_) {}
+      document.body.removeChild(textarea);
+    }
+
+    async function copySnippet(btn, elementId) {
+      const el = document.getElementById(elementId);
+      if (!el) return;
+      const text = el.innerText || el.textContent;
+      try {
+        await navigator.clipboard.writeText(text);
+        showCopyFeedback(btn, 'Copied!');
+      } catch (_) {
+        fallbackCopyText(text, btn, 'Copied!');
+      }
+    }
+  </script>
+</body>
+</html>

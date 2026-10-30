@@ -1,4 +1,4 @@
-// ── KeepUp Main Dashboard Controller (Apple HIG Aesthetics) ──────────────
+// ── KeepUp Main Dashboard Controller (Clean Minimalist Aesthetics) ──────────────
 
 // Global apiFetch wrapper fallback with 401 redirect loop guard
 if (!window.apiFetch) {
@@ -215,7 +215,7 @@ function renderMonitors() {
   if (filtered.length === 0) {
     container.className = 'w-full';
     container.innerHTML = `
-      <div class="apple-glass rounded-2xl p-12 text-center text-white/50 space-y-3">
+      <div class="glass-card rounded-2xl p-12 text-center text-white/50 space-y-3">
         <svg class="w-10 h-10 mx-auto text-white/30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
         </svg>
@@ -242,20 +242,20 @@ function renderMonitorCard(m) {
   const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
 
-  let statusColor = '#30d158'; // Apple Green
+  let statusColor = '#30d158'; // Status Green
   let statusBadgeBg = 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20';
   let statusLabel = 'OPERATIONAL';
 
   if (isPaused) {
-    statusColor = '#8e8e93'; // Apple Gray
+    statusColor = '#8e8e93'; // Neutral Gray
     statusBadgeBg = 'bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20';
     statusLabel = 'PAUSED';
   } else if (!isUp) {
-    statusColor = '#ff453a'; // Apple Red
+    statusColor = '#ff453a'; // Outage Red
     statusBadgeBg = 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
     statusLabel = 'DOWN';
   } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
-    statusColor = '#ffd60a'; // Apple Yellow
+    statusColor = '#ffd60a'; // Degraded Yellow
     statusBadgeBg = 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20';
     statusLabel = 'DEGRADED';
   }
@@ -272,7 +272,7 @@ function renderMonitorCard(m) {
   const barsHtml = renderUptimeTickBars(logs);
 
   return `
-    <div class="apple-glass rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4">
+    <div class="glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4">
       <!-- Card Header -->
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
@@ -381,7 +381,7 @@ function renderMonitorListRow(m) {
       : '—';
 
   return `
-    <div class="apple-glass rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition">
+    <div class="glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition">
       <div class="flex items-center gap-3 min-w-0">
         <span class="relative flex h-2.5 w-2.5 shrink-0">
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
@@ -450,7 +450,7 @@ function renderWebhooksSection(webhooks) {
 
   if (webhooks.length === 0) {
     container.innerHTML = `
-      <div class="col-span-full p-6 text-center text-neutral-500 dark:text-white/40 text-xs apple-glass rounded-xl">
+      <div class="col-span-full p-6 text-center text-neutral-500 dark:text-white/40 text-xs glass-card rounded-xl">
         No notification webhooks registered. Click "+ Add Webhook" to receive instant alert cards.
       </div>
     `;
@@ -468,7 +468,7 @@ function renderWebhooksSection(webhooks) {
           : 'text-[#30d158] border-[#30d158]/30 bg-[#30d158]/10';
 
       return `
-      <div class="apple-glass rounded-2xl p-4 flex items-center justify-between gap-3 shadow-lg hover:border-black/15 dark:hover:border-white/20 transition">
+      <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3 shadow-lg hover:border-black/15 dark:hover:border-white/20 transition">
         <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
             <span class="font-semibold text-neutral-900 dark:text-white text-xs truncate">${escapeHtml(w.name)}</span>
@@ -483,7 +483,7 @@ function renderWebhooksSection(webhooks) {
           <button onclick="testWebhookDirect('${w.id}', '${escapeHtml(w.name)}')" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
             Test
           </button>
-          <!-- Apple-style toggle -->
+          <!-- Smooth toggle -->
           <label class="relative inline-flex items-center cursor-pointer">
             <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleWebhookActive('${w.id}', ${isEnabled})" class="sr-only peer">
             <div class="w-9 h-5 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#30d158]"></div>

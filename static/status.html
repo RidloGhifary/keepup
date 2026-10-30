@@ -6,15 +6,16 @@
   <title>KeepUp — Status & Dashboard</title>
   <link rel="icon" type="image/svg+xml" href="/favicon.svg">
   <link rel="manifest" href="/manifest.json">
-  <meta name="apple-mobile-web-app-capable" content="yes">
-  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
-  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
-  <meta name="apple-mobile-web-app-title" content="KeepUp">
+  <meta name="mobile-web-app-capable" content="yes">
   <meta name="theme-color" content="#0b0b0c">
   <script>
-    // Immediate pre-render theme resolution to prevent FOUC
+    // Immediate pre-render theme & demo-mode resolution to prevent FOUC
     (function() {
-      const urlTheme = new URLSearchParams(window.location.search).get('theme');
+      const urlParams = new URLSearchParams(window.location.search);
+      if (urlParams.get('demo') === 'true') {
+        document.documentElement.classList.add('demo-mode');
+      }
+      const urlTheme = urlParams.get('theme');
       const savedTheme = localStorage.getItem('keepup_theme_preference') || localStorage.getItem('keepup_status_theme') || localStorage.getItem('keepup_theme');
       const theme = (urlTheme || savedTheme || 'auto').toLowerCase();
       document.documentElement.setAttribute('data-theme', theme);
@@ -39,7 +40,7 @@
       theme: {
         extend: {
           colors: {
-            apple: {
+            status: {
               bg: '#0b0b0c',
               green: '#30d158',
               red: '#ff453a',
@@ -48,7 +49,7 @@
             }
           },
           fontFamily: {
-            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'system-ui', 'sans-serif'],
+            sans: ['system-ui', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'sans-serif'],
             mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
           }
         }
@@ -287,7 +288,7 @@
       color: var(--text-main);
       transition: background-color 0.25s ease, color 0.25s ease;
     }
-    .apple-glass {
+    .glass-card {
       background: var(--card-bg);
       backdrop-filter: blur(40px);
       -webkit-backdrop-filter: blur(40px);
@@ -295,7 +296,7 @@
       box-shadow: var(--card-shadow);
       transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
     }
-    .apple-glass:hover {
+    .glass-card:hover {
       border-color: var(--card-hover-border);
     }
 
@@ -395,11 +396,28 @@
     [data-theme="light"] #theme-toggle-btn:hover {
       background-color: rgba(0, 0, 0, 0.1) !important;
     }
+
+    /* Embedded Demo Mode Cleanups */
+    .demo-mode #theme-toggle-btn,
+    .demo-mode #status-page-header,
+    .demo-mode footer {
+      display: none !important;
+    }
+    .demo-mode body {
+      background-attachment: scroll;
+    }
+    .demo-mode main {
+      padding-top: 1.25rem !important;
+      padding-bottom: 1.5rem !important;
+      max-width: 100% !important;
+      padding-left: 1rem !important;
+      padding-right: 1rem !important;
+    }
   </style>
 </head>
 <body class="text-white min-h-screen antialiased flex flex-col font-sans selection:bg-[#30d158]/30 selection:text-white">
 
-  <!-- Subtle Apple-Style Floating Top-Corner Theme Toggle Button -->
+  <!-- Subtle Floating Top-Corner Theme Toggle Button -->
   <button 
     id="theme-toggle-btn" 
     type="button" 
@@ -422,7 +440,7 @@
   <main class="flex-1 max-w-4xl w-full mx-auto px-4 sm:px-6 pt-10 sm:pt-14 pb-12 sm:pb-16 space-y-8">
 
     <!-- Centered Brand Header / Logo -->
-    <div class="flex flex-col items-center justify-center text-center space-y-3 pt-2 pb-1">
+    <div id="status-page-header" class="flex flex-col items-center justify-center text-center space-y-3 pt-2 pb-1">
       <div class="flex items-center gap-3">
         <!-- 32x32px Squircle SVG Logo Mark -->
         <svg class="w-8 h-8 shrink-0" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
@@ -466,16 +484,16 @@
 
         <div class="flex items-center gap-1 p-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-sans">
           <button type="button" onclick="setTheme('auto')" data-theme-btn="auto" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Auto (Match System Mode)">Auto</button>
-          <button type="button" onclick="setTheme('default')" data-theme-btn="default" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Apple Dark Theme">Dark</button>
+          <button type="button" onclick="setTheme('default')" data-theme-btn="default" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="System Dark Theme">Dark</button>
           <button type="button" onclick="setTheme('oled')" data-theme-btn="oled" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="OLED Pitch Black Theme">OLED</button>
           <button type="button" onclick="setTheme('midnight')" data-theme-btn="midnight" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Midnight Navy Theme">Midnight</button>
-          <button type="button" onclick="setTheme('light')" data-theme-btn="light" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Apple Light Theme">Light</button>
+          <button type="button" onclick="setTheme('light')" data-theme-btn="light" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Clean Light Theme">Light</button>
         </div>
       </div>
     </div>
 
     <!-- Overall System Status Hero Card -->
-    <div id="hero-status-card" class="apple-glass rounded-3xl p-6 sm:p-8 transition-all duration-300 relative overflow-hidden">
+    <div id="hero-status-card" class="glass-card rounded-3xl p-6 sm:p-8 transition-all duration-300 relative overflow-hidden">
       <div class="flex items-center gap-4 sm:gap-5">
         <div class="h-12 w-12 sm:h-14 sm:w-14 rounded-2xl flex items-center justify-center bg-white/5 border border-white/10 shadow-lg shrink-0">
           <div id="hero-status-pulse" class="h-4 w-4 rounded-full bg-[#30d158] animate-pulse"></div>
@@ -499,7 +517,7 @@
 
       <!-- Services Container -->
       <div id="public-services-container" class="space-y-3.5">
-        <div class="apple-glass rounded-2xl p-10 text-center text-white/40 text-xs">
+        <div class="glass-card rounded-2xl p-10 text-center text-white/40 text-xs">
           Loading service health telemetry...
         </div>
       </div>
@@ -512,7 +530,7 @@
         <p class="text-xs text-white/40 mt-0.5">Chronological record of system incidents and maintenance events</p>
       </div>
 
-      <div class="apple-glass rounded-2xl p-6 sm:p-7 shadow-xl">
+      <div class="glass-card rounded-2xl p-6 sm:p-7 shadow-xl">
         <div id="incident-timeline-container" class="space-y-0 text-xs">
           <!-- Rendered dynamically by status.js -->
         </div>
@@ -537,6 +555,6 @@
   </footer>
 
   <!-- Status Page Client Script -->
-  <script src="/status.js"></script>
+  <script src="status.js"></script>
 </body>
 </html>

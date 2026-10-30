@@ -1,6 +1,13 @@
-// ── Apple-style Modal Controller for KeepUp ──────────────────────────────
+// ── Modal Controller for KeepUp (Clean Minimalist Aesthetics) ──────────────
 
 let cachedWebhooks = [];
+
+// Helper to resolve modal DOM elements
+function getModalElements() {
+  const backdrop = document.getElementById('modal-backdrop');
+  const card = document.getElementById('modal-card');
+  return { backdrop, card };
+}
 
 // ── Tab Switching ────────────────────────────────────────────────────────────
 
@@ -32,11 +39,11 @@ function switchModalTab(tab) {
 // ── Show / Close Animations ──────────────────────────────────────────────────
 
 function showModal() {
-  const backdrop = document.getElementById('apple-modal-backdrop');
-  const card = document.getElementById('apple-modal-card');
+  const { backdrop, card } = getModalElements();
+  if (!backdrop || !card) return;
 
   backdrop.classList.remove('hidden');
-  // Trigger smooth Apple-style scale & opacity transition
+  // Trigger smooth scale & opacity transition
   requestAnimationFrame(() => {
     card.classList.remove('scale-95', 'opacity-0');
     card.classList.add('scale-100', 'opacity-100');
@@ -44,8 +51,8 @@ function showModal() {
 }
 
 function closeModal() {
-  const backdrop = document.getElementById('apple-modal-backdrop');
-  const card = document.getElementById('apple-modal-card');
+  const { backdrop, card } = getModalElements();
+  if (!backdrop || !card) return;
 
   card.classList.remove('scale-100', 'opacity-100');
   card.classList.add('scale-95', 'opacity-0');
@@ -595,7 +602,7 @@ document.addEventListener('DOMContentLoaded', () => {
     providerSelect.addEventListener('change', updateTemplatePreview);
   }
 
-  const backdrop = document.getElementById('apple-modal-backdrop');
+  const { backdrop } = getModalElements();
   if (backdrop) {
     backdrop.addEventListener('click', (e) => {
       if (e.target === backdrop) {
@@ -606,8 +613,8 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
-      const appleModal = document.getElementById('apple-modal-backdrop');
-      if (appleModal && !appleModal.classList.contains('hidden')) {
+      const { backdrop: modalEl } = getModalElements();
+      if (modalEl && !modalEl.classList.contains('hidden')) {
         closeModal();
       }
       const logsModal = document.getElementById('logs-modal');

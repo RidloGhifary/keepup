@@ -6,7 +6,7 @@ use crate::checker::alerting::{format_discord_default, render_custom_template};
 
 /// Deliver an alert to a Discord webhook.
 ///
-/// Uses the provider's built-in default formatter (rich embed with Apple status
+/// Uses the provider's built-in default formatter (rich embed with status
 /// colors #30D158 Green for UP, #FF453A Red for DOWN) unless `use_default` is false
 /// and a non-empty `custom_template` is provided.
 pub async fn send(

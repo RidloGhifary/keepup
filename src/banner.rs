@@ -1,6 +1,6 @@
 use tracing::info;
 
-/// Print Apple-styled ASCII banner and runtime metadata to the console on boot.
+/// Print minimalist ASCII banner and runtime metadata to the console on boot.
 pub fn print_banner(version: &str, port: u16, db_path: &str) {
     let green = "\x1b[38;2;48;209;88m";
     let blue = "\x1b[38;2;10;132;255m";
