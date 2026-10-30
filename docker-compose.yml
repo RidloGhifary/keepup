@@ -1,0 +1,27 @@
+version: '3.8'
+
+services:
+  keepup:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: keepup
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - PORT=3000
+      - RUST_LOG=info,keepup=debug
+      - KEEPUP_DB_PATH=/app/data/keepup.db
+      - DATABASE_URL=sqlite:///app/data/keepup.db?mode=rwc
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=keepup123
+      - JWT_SECRET=change-this-in-production-keepup-jwt-secret
+    healthcheck:
+      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/public/status || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+      start_period: 5s

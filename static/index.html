@@ -1,0 +1,970 @@
+<!DOCTYPE html>
+<html lang="en" class="dark" data-theme="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KeepUp — Status & Dashboard</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="KeepUp">
+  <meta name="theme-color" content="#0b0b0c">
+  <script>
+    // Immediate pre-render: Dashboard defaults to dark mode
+    document.documentElement.classList.add('dark');
+    document.documentElement.setAttribute('data-theme', 'dark');
+  </script>
+  <script>
+    // Immediate pre-render authentication guard
+    (async () => {
+      try {
+        const res = await fetch('/api/auth/me', { credentials: 'include' });
+        if (!res.ok) {
+          window.location.replace('/login.html');
+        }
+      } catch (_) {
+        window.location.replace('/login.html');
+      }
+    })();
+  </script>
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            apple: {
+              bg: '#0b0b0c',
+              green: '#30d158',
+              red: '#ff453a',
+              yellow: '#ffd60a',
+              blue: '#0a84ff',
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'system-ui', 'sans-serif'],
+            mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    /* Baseline CSS Variables Architecture */
+    :root {
+      --bg-main: #0b0b0c;
+      --bg-primary: var(--bg-main);
+      --card-bg: rgba(255, 255, 255, 0.05);
+      --card-border: rgba(255, 255, 255, 0.1);
+      --card-hover-border: rgba(255, 255, 255, 0.2);
+      --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      --text-primary: #ffffff;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      --text-dim: var(--text-muted);
+      --border-subtle: rgba(255, 255, 255, 0.05);
+      --badge-bg: rgba(255, 255, 255, 0.06);
+      --input-bg: rgba(0, 0, 0, 0.4);
+      --input-border: rgba(255, 255, 255, 0.15);
+      --input-text: #ffffff;
+      --modal-bg: rgba(20, 20, 22, 0.95);
+      --table-hover: rgba(255, 255, 255, 0.03);
+      --code-bg: #1c1c1e;
+      --status-operational: #30D158;
+      --status-degraded: #FFD60A;
+      --status-down: #FF453A;
+      --toggle-inactive: #3f3f46;
+    }
+
+    /* Light Mode Palette (Apple HIG Compliant) */
+    [data-theme="light"] {
+      --bg-main: #f5f5f7;
+      --bg-primary: var(--bg-main);
+      --card-bg: rgba(255, 255, 255, 0.85);
+      --card-border: rgba(0, 0, 0, 0.08);
+      --card-hover-border: rgba(0, 0, 0, 0.18);
+      --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+      --text-primary: #1d1d1f;
+      --text-secondary: #6e6e73;
+      --text-muted: #86868b;
+      --text-dim: var(--text-muted);
+      --border-subtle: rgba(0, 0, 0, 0.07);
+      --badge-bg: rgba(0, 0, 0, 0.05);
+      --input-bg: #ffffff;
+      --input-border: rgba(0, 0, 0, 0.15);
+      --input-text: #1d1d1f;
+      --modal-bg: rgba(255, 255, 255, 0.95);
+      --table-hover: rgba(0, 0, 0, 0.03);
+      --code-bg: #e8e8ed;
+      --status-operational: #30D158;
+      --status-degraded: #FFD60A;
+      --status-down: #FF453A;
+      --toggle-inactive: #d4d4d8;
+      color-scheme: light;
+    }
+
+    /* Dark Mode Palette */
+    [data-theme="dark"] {
+      --bg-main: #0b0b0c;
+      --bg-primary: var(--bg-main);
+      --card-bg: rgba(255, 255, 255, 0.05);
+      --card-border: rgba(255, 255, 255, 0.1);
+      --card-hover-border: rgba(255, 255, 255, 0.2);
+      --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+      --text-primary: #ffffff;
+      --text-secondary: #a1a1aa;
+      --text-muted: #71717a;
+      --text-dim: var(--text-muted);
+      --border-subtle: rgba(255, 255, 255, 0.05);
+      --badge-bg: rgba(255, 255, 255, 0.06);
+      --input-bg: rgba(0, 0, 0, 0.4);
+      --input-border: rgba(255, 255, 255, 0.15);
+      --input-text: #ffffff;
+      --modal-bg: rgba(20, 20, 22, 0.95);
+      --table-hover: rgba(255, 255, 255, 0.03);
+      --code-bg: #1c1c1e;
+      --status-operational: #30D158;
+      --status-degraded: #FFD60A;
+      --status-down: #FF453A;
+      --toggle-inactive: #3f3f46;
+      color-scheme: dark;
+    }
+
+    /* Media query baseline: Light OS preference */
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]),
+      :root[data-theme="auto"] {
+        --bg-main: #f5f5f7;
+        --bg-primary: var(--bg-main);
+        --card-bg: rgba(255, 255, 255, 0.85);
+        --card-border: rgba(0, 0, 0, 0.08);
+        --card-hover-border: rgba(0, 0, 0, 0.18);
+        --card-shadow: 0 4px 20px rgba(0, 0, 0, 0.05);
+        --text-primary: #1d1d1f;
+        --text-secondary: #6e6e73;
+        --text-muted: #86868b;
+        --text-dim: var(--text-muted);
+        --border-subtle: rgba(0, 0, 0, 0.07);
+        --badge-bg: rgba(0, 0, 0, 0.05);
+        --input-bg: #ffffff;
+        --input-border: rgba(0, 0, 0, 0.15);
+        --input-text: #1d1d1f;
+        --modal-bg: rgba(255, 255, 255, 0.95);
+        --table-hover: rgba(0, 0, 0, 0.03);
+        --code-bg: #e8e8ed;
+        --status-operational: #30D158;
+        --status-degraded: #FFD60A;
+        --status-down: #FF453A;
+        --toggle-inactive: #d4d4d8;
+        color-scheme: light;
+      }
+    }
+
+    /* Media query baseline: Dark OS preference */
+    @media (prefers-color-scheme: dark) {
+      :root:not([data-theme]),
+      :root[data-theme="auto"] {
+        --bg-main: #0b0b0c;
+        --bg-primary: var(--bg-main);
+        --card-bg: rgba(255, 255, 255, 0.05);
+        --card-border: rgba(255, 255, 255, 0.1);
+        --card-hover-border: rgba(255, 255, 255, 0.2);
+        --card-shadow: 0 10px 30px rgba(0, 0, 0, 0.5);
+        --text-primary: #ffffff;
+        --text-secondary: #a1a1aa;
+        --text-muted: #71717a;
+        --text-dim: var(--text-muted);
+        --border-subtle: rgba(255, 255, 255, 0.05);
+        --badge-bg: rgba(255, 255, 255, 0.06);
+        --input-bg: rgba(0, 0, 0, 0.4);
+        --input-border: rgba(255, 255, 255, 0.15);
+        --input-text: #ffffff;
+        --modal-bg: rgba(20, 20, 22, 0.95);
+        --table-hover: rgba(255, 255, 255, 0.03);
+        --code-bg: #1c1c1e;
+        --status-operational: #30D158;
+        --status-degraded: #FFD60A;
+        --status-down: #FF453A;
+        --toggle-inactive: #3f3f46;
+        color-scheme: dark;
+      }
+    }
+
+    body {
+      background-color: var(--bg-main);
+      background-image: 
+        radial-gradient(circle at 50% 0%, rgba(10, 132, 255, 0.06) 0%, transparent 45%),
+        radial-gradient(circle at 100% 40%, rgba(48, 209, 88, 0.03) 0%, transparent 35%),
+        radial-gradient(circle at 0% 70%, rgba(10, 132, 255, 0.03) 0%, transparent 40%);
+      background-attachment: fixed;
+      color: var(--text-primary);
+      transition: background-color 0.2s ease, color 0.2s ease, border-color 0.2s ease;
+    }
+
+    /* Container Glass & Cards */
+    .apple-glass {
+      background: var(--card-bg);
+      backdrop-filter: blur(40px);
+      -webkit-backdrop-filter: blur(40px);
+      border: 1px solid var(--card-border);
+      box-shadow: var(--card-shadow);
+      transition: background-color 0.2s ease, border-color 0.2s ease, box-shadow 0.2s ease;
+    }
+    .apple-glass:hover {
+      border-color: var(--card-hover-border);
+    }
+
+    /* Global Input, Select, and Textarea Theme Adaptations */
+    input:not([type="checkbox"]):not([type="radio"]),
+    select,
+    textarea {
+      background-color: var(--input-bg) !important;
+      border: 1px solid var(--input-border) !important;
+      color: var(--input-text) !important;
+      transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    }
+    input:not([type="checkbox"]):not([type="radio"])::placeholder,
+    textarea::placeholder {
+      color: var(--text-muted) !important;
+      opacity: 1 !important;
+    }
+    select option {
+      background-color: var(--input-bg) !important;
+      color: var(--input-text) !important;
+    }
+
+    /* Global Modal Card & Backdrop Adaptations */
+    #apple-modal-card,
+    #logs-modal > div {
+      background: var(--modal-bg) !important;
+      border: 1px solid var(--card-border) !important;
+      color: var(--text-primary) !important;
+      box-shadow: var(--card-shadow) !important;
+      transition: background-color 0.2s ease, border-color 0.2s ease, color 0.2s ease;
+    }
+    [data-theme="light"] #apple-modal-backdrop,
+    [data-theme="light"] #logs-modal {
+      background-color: rgba(0, 0, 0, 0.35) !important;
+    }
+
+    /* iOS-Style Toggle Switches */
+    .peer + div {
+      background-color: var(--toggle-inactive) !important;
+      transition: background-color 0.2s ease !important;
+    }
+    .peer:checked + div {
+      background-color: #30d158 !important;
+    }
+
+    /* Light Theme Explicit CSS Class Overrides */
+    [data-theme="light"] header,
+    [data-theme="light"] footer,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) header,
+      :root:not([data-theme]) footer,
+      :root[data-theme="auto"] header,
+      :root[data-theme="auto"] footer {
+        background-color: rgba(245, 245, 247, 0.85) !important;
+        border-color: var(--card-border) !important;
+        box-shadow: 0 1px 0 rgba(0, 0, 0, 0.05);
+      }
+    }
+
+    [data-theme="light"] #toast-container > div,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) #toast-container > div,
+      :root[data-theme="auto"] #toast-container > div {
+        background-color: rgba(255, 255, 255, 0.95) !important;
+        border-color: var(--card-border) !important;
+        box-shadow: 0 10px 30px rgba(0, 0, 0, 0.1) !important;
+        color: var(--text-primary) !important;
+      }
+      :root:not([data-theme]) #toast-container h4,
+      :root[data-theme="auto"] #toast-container h4 {
+        color: var(--text-primary) !important;
+      }
+      :root:not([data-theme]) #toast-container p,
+      :root[data-theme="auto"] #toast-container p {
+        color: var(--text-secondary) !important;
+      }
+      :root:not([data-theme]) #toast-container .toast-close-btn,
+      :root[data-theme="auto"] #toast-container .toast-close-btn {
+        color: var(--text-muted) !important;
+      }
+    }
+
+    [data-theme="light"] .text-white,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .text-white,
+      :root[data-theme="auto"] .text-white {
+        color: var(--text-primary) !important;
+      }
+    }
+
+    [data-theme="light"] .text-white\/80,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .text-white\/80,
+      :root[data-theme="auto"] .text-white\/80 {
+        color: #27272a !important;
+      }
+    }
+
+    [data-theme="light"] .text-white\/70,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .text-white\/70,
+      :root[data-theme="auto"] .text-white\/70 {
+        color: #3f3f46 !important;
+      }
+    }
+
+    [data-theme="light"] .text-white\/60,
+    [data-theme="light"] .text-white\/50,
+    [data-theme="light"] .text-neutral-400,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .text-white\/60,
+      :root:not([data-theme]) .text-white\/50,
+      :root:not([data-theme]) .text-neutral-400,
+      :root[data-theme="auto"] .text-white\/60,
+      :root[data-theme="auto"] .text-white\/50,
+      :root[data-theme="auto"] .text-neutral-400 {
+        color: var(--text-secondary) !important;
+      }
+    }
+
+    [data-theme="light"] .text-white\/40,
+    [data-theme="light"] .text-white\/30,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .text-white\/40,
+      :root:not([data-theme]) .text-white\/30,
+      :root[data-theme="auto"] .text-white\/40,
+      :root[data-theme="auto"] .text-white\/30 {
+        color: var(--text-muted) !important;
+      }
+    }
+
+    [data-theme="light"] .border-white\/5,
+    [data-theme="light"] .border-white\/10,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .border-white\/5,
+      :root:not([data-theme]) .border-white\/10,
+      :root[data-theme="auto"] .border-white\/5,
+      :root[data-theme="auto"] .border-white\/10 {
+        border-color: var(--card-border) !important;
+      }
+    }
+
+    [data-theme="light"] .bg-white\/5,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .bg-white\/5,
+      :root[data-theme="auto"] .bg-white\/5 {
+        background-color: var(--card-bg) !important;
+      }
+    }
+
+    [data-theme="light"] .bg-white\/10,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .bg-white\/10,
+      :root[data-theme="auto"] .bg-white\/10 {
+        background-color: var(--badge-bg) !important;
+      }
+    }
+
+    [data-theme="light"] .bg-black\/30,
+    [data-theme="light"] .bg-black\/40,
+    [data-theme="light"] .bg-black\/50,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) .bg-black\/30,
+      :root:not([data-theme]) .bg-black\/40,
+      :root:not([data-theme]) .bg-black\/50,
+      :root[data-theme="auto"] .bg-black\/30,
+      :root[data-theme="auto"] .bg-black\/40,
+      :root[data-theme="auto"] .bg-black\/50 {
+        background-color: rgba(0, 0, 0, 0.04) !important;
+        border-color: var(--card-border) !important;
+      }
+    }
+
+    [data-theme="light"] #template-preview-card,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) #template-preview-card,
+      :root[data-theme="auto"] #template-preview-card {
+        background-color: var(--code-bg) !important;
+        border-color: var(--card-border) !important;
+        color: var(--text-primary) !important;
+      }
+    }
+
+    [data-theme="light"] #tab-btn-monitors.bg-white\/10,
+    [data-theme="light"] #tab-btn-webhooks.bg-white\/10 {
+      background-color: #ffffff !important;
+      color: #1d1d1f !important;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+    }
+
+    [data-theme="light"] button.bg-white\/5,
+    [data-theme="light"] a.bg-white\/5 {
+      background-color: #ffffff !important;
+      color: var(--text-primary) !important;
+      border: 1px solid var(--card-border) !important;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, 0.04) !important;
+    }
+    [data-theme="light"] button.bg-white\/5:hover,
+    [data-theme="light"] a.bg-white\/5:hover {
+      background-color: rgba(0, 0, 0, 0.04) !important;
+    }
+
+    [data-theme="light"] #view-grid-btn.bg-white\/10,
+    [data-theme="light"] #view-list-btn.bg-white\/10 {
+      background-color: #ffffff !important;
+      color: #1d1d1f !important;
+      box-shadow: 0 1px 3px rgba(0, 0, 0, 0.1) !important;
+    }
+
+    [data-theme="light"] thead,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) thead,
+      :root[data-theme="auto"] thead {
+        background-color: rgba(0, 0, 0, 0.04) !important;
+        color: var(--text-muted) !important;
+        border-bottom: 1px solid var(--card-border) !important;
+      }
+    }
+
+    [data-theme="light"] tbody tr:hover,
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) tbody tr:hover,
+      :root[data-theme="auto"] tbody tr:hover {
+        background-color: var(--table-hover) !important;
+      }
+    }
+
+    [data-theme="light"] svg rect[fill="#141416"],
+    @media (prefers-color-scheme: light) {
+      :root:not([data-theme]) svg rect[fill="#141416"],
+      :root[data-theme="auto"] svg rect[fill="#141416"] {
+        fill: #ffffff !important;
+        stroke: rgba(0, 0, 0, 0.12) !important;
+      }
+    }
+  </style>
+</head>
+<body class="min-h-screen antialiased flex flex-col font-sans selection:bg-[#0a84ff]/30 selection:text-white">
+
+  <!-- ── 1. Header / Navigation Bar ─────────────────────────────────────────── -->
+  <header class="border-b border-white/5 bg-[#0b0b0c]/70 backdrop-blur-2xl sticky top-0 z-40">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 h-16 flex items-center justify-between">
+      
+      <!-- Branding: 32x32px Squircle SVG Logo Mark + Typography & Badge -->
+      <a href="/" class="flex items-center gap-3 group transition">
+        <!-- 32x32px Squircle SVG Logo Mark -->
+        <svg class="w-8 h-8 shrink-0 group-hover:scale-105 transition-transform duration-200" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+          <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="#141416" stroke="url(#nav-card-border)" stroke-width="1" />
+          <path d="M6 17H11L14 11L18 21L21 15H26" stroke="url(#nav-pulse-grad)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+          <circle cx="25" cy="8" r="3" fill="#30D158" fill-opacity="0.35" filter="url(#nav-glow)" />
+          <circle cx="25" cy="8" r="1.5" fill="#30D158" />
+          <defs>
+            <linearGradient id="nav-card-border" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+              <stop stop-color="white" stop-opacity="0.25" />
+              <stop offset="1" stop-color="white" stop-opacity="0.05" />
+            </linearGradient>
+            <linearGradient id="nav-pulse-grad" x1="6" y1="16" x2="26" y2="16" gradientUnits="userSpaceOnUse">
+              <stop stop-color="#0A84FF" />
+              <stop offset="0.6" stop-color="#30D158" />
+            </linearGradient>
+            <filter id="nav-glow" x="19" y="2" width="12" height="12" filterUnits="userSpaceOnUse">
+              <feGaussianBlur stdDeviation="1.5" result="blur" />
+              <feComposite in="SourceGraphic" in2="blur" operator="over" />
+            </filter>
+          </defs>
+        </svg>
+
+        <!-- Product Typography & Badge -->
+        <div class="flex items-center gap-2">
+          <span class="font-semibold tracking-tight text-white text-lg">KeepUp</span>
+          <span class="text-[10px] font-mono uppercase bg-white/10 text-neutral-400 px-1.5 py-0.5 rounded-md border border-white/5">MONITOR</span>
+        </div>
+      </a>
+
+      <!-- Navigation & Action Buttons -->
+      <div class="flex items-center space-x-2 sm:space-x-3">
+        <!-- Public Status Link -->
+        <a href="/status" target="_blank" class="text-xs sm:text-sm text-white/60 hover:text-white px-3 py-1.5 rounded-xl hover:bg-white/5 transition flex items-center gap-1.5">
+          <span class="hidden sm:inline">Public Page</span>
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          </svg>
+        </a>
+
+        <!-- Notification Webhooks Trigger -->
+        <button onclick="openEditWebhookModal()" class="text-xs sm:text-sm text-white/80 hover:text-white px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition flex items-center gap-1.5">
+          <svg class="w-4 h-4 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+          </svg>
+          <span class="hidden sm:inline">Webhooks</span>
+        </button>
+
+        <!-- Manual Refresh Button -->
+        <button id="refresh-btn" onclick="fetchDashboardData(true)" class="text-white/60 hover:text-white p-2 rounded-xl hover:bg-white/5 transition" title="Refresh Telemetry">
+          <svg id="refresh-icon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+        </button>
+
+        <!-- Primary Add Target Button -->
+        <button onclick="openEditMonitorModal(null)" class="bg-[#0a84ff] hover:bg-[#0071e3] text-white text-xs sm:text-sm font-medium px-4 py-2 rounded-xl shadow-lg shadow-[#0a84ff]/25 active:scale-95 transition flex items-center gap-1.5">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+          </svg>
+          <span>Add Monitor</span>
+        </button>
+
+        <!-- Admin Logout Button -->
+        <button onclick="handleLogout()" class="text-white/40 hover:text-[#ff453a] p-2 rounded-xl hover:bg-white/5 transition" title="Log Out">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+          </svg>
+        </button>
+      </div>
+    </div>
+  </header>
+
+  <!-- ── 2. Main Dashboard Content ─────────────────────────────────────────── -->
+  <main class="flex-1 max-w-7xl w-full mx-auto px-4 sm:px-6 lg:px-8 py-8 space-y-8">
+    
+    <!-- Top Overview Hero Banner -->
+    <section class="space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-white">System Health</h1>
+          <p class="text-xs text-white/50 mt-0.5">High-frequency ping scheduler and synthetic latency monitor</p>
+        </div>
+
+        <!-- System Status Badge -->
+        <div id="overall-status-badge" class="inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 self-start sm:self-auto">
+          <span id="overall-status-pulse" class="h-2 w-2 rounded-full bg-[#30d158] animate-pulse"></span>
+          <span id="overall-status-text">All Systems Operational</span>
+        </div>
+      </div>
+
+      <!-- 3 Summary Stat Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-3 gap-4">
+        <!-- 1. Active Monitors -->
+        <div class="apple-glass rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+          <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
+            <span>Active Monitors</span>
+            <svg class="w-4 h-4 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <p id="hero-stat-active" class="mt-2 text-3xl font-bold tracking-tight text-white font-mono">—</p>
+          <p class="text-[11px] text-white/40 mt-1">Live active HTTP/TCP probe tasks</p>
+        </div>
+
+        <!-- 2. 24h Average Uptime -->
+        <div class="apple-glass rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+          <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
+            <span>24h Average Uptime</span>
+            <svg class="w-4 h-4 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 7h8m0 0v8m0-8l-8 8-4-4-6 6"/>
+            </svg>
+          </div>
+          <p id="hero-stat-uptime" class="mt-2 text-3xl font-bold tracking-tight text-[#30d158] font-mono">—</p>
+          <p class="text-[11px] text-white/40 mt-1">Composite availability over 24 hours</p>
+        </div>
+
+        <!-- 3. Average Response Time -->
+        <div class="apple-glass rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+          <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
+            <span>Average Latency</span>
+            <svg class="w-4 h-4 text-[#ffd60a]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+            </svg>
+          </div>
+          <p id="hero-stat-latency" class="mt-2 text-3xl font-bold tracking-tight text-white font-mono">—</p>
+          <p class="text-[11px] text-white/40 mt-1">Global round-trip response time</p>
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 3. Monitors Section ──────────────────────────────────────────────── -->
+    <section class="space-y-4">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+        <div class="flex items-center gap-2">
+          <h2 class="text-lg font-semibold text-white tracking-tight">Monitors</h2>
+          <span id="monitors-count-badge" class="text-xs px-2.5 py-0.5 rounded-full bg-white/10 text-white/60 font-medium">Loading...</span>
+        </div>
+
+        <!-- Search + View Toggles -->
+        <div class="flex items-center gap-2.5">
+          <div class="relative w-full sm:w-64">
+            <input id="search-input" oninput="filterMonitors()" type="text" placeholder="Search target by name or URL..." class="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-3.5 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition" />
+            <svg class="w-3.5 h-3.5 text-white/40 absolute left-3 top-2.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+          </div>
+
+          <!-- View Mode Toggles (Card Grid vs List) -->
+          <div class="bg-white/5 p-1 rounded-xl flex items-center border border-white/10 text-xs shrink-0">
+            <button id="view-grid-btn" onclick="setViewMode('grid')" class="p-1.5 rounded-lg text-white bg-white/10 transition" title="Card Grid View">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+              </svg>
+            </button>
+            <button id="view-list-btn" onclick="setViewMode('list')" class="p-1.5 rounded-lg text-white/40 hover:text-white transition" title="Compact List View">
+              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+      </div>
+
+      <!-- Dynamic Monitors Container (Grid / List) -->
+      <div id="monitors-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <!-- Rendered dynamically by app.js -->
+        <div class="col-span-full apple-glass rounded-2xl p-12 text-center text-white/50 text-xs">
+          Loading health monitors...
+        </div>
+      </div>
+    </section>
+
+    <!-- ── 4. Notifications Preview / Settings Section ──────────────────────── -->
+    <section class="space-y-3 pt-4 border-t border-white/5">
+      <div class="flex items-center justify-between">
+        <div>
+          <h2 class="text-base font-semibold text-white tracking-tight">Active Alert Webhooks</h2>
+          <p class="text-xs text-white/50 mt-0.5">Automated state-change notifications routed to Discord, Slack, and endpoints</p>
+        </div>
+        <button onclick="openEditWebhookModal()" class="text-xs text-[#0a84ff] hover:text-[#0a84ff]/80 font-medium px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition flex items-center gap-1">
+          <span>+ Add Webhook</span>
+        </button>
+      </div>
+
+      <div id="webhooks-preview-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+        <!-- Rendered dynamically by app.js -->
+      </div>
+    </section>
+
+  </main>
+
+  <!-- ── 5. Footer ─────────────────────────────────────────────────────────── -->
+  <footer class="border-t border-white/5 bg-[#0b0b0c]/80 py-8 text-center text-xs text-white/40 mt-auto">
+    <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
+      <div class="flex items-center gap-2">
+        <span class="h-2 w-2 rounded-full bg-[#30d158]"></span>
+        <span>Powered by <strong class="text-white/80 font-semibold tracking-tight">KeepUp</strong> — Zero-overhead uptime engine</span>
+      </div>
+      <div class="flex items-center gap-4 text-white/50">
+        <a href="/status" class="hover:text-white transition">Public Status</a>
+        <span>•</span>
+        <a href="https://github.com" target="_blank" class="hover:text-white transition">Documentation</a>
+      </div>
+    </div>
+  </footer>
+
+  <!-- ── 6. Apple-Style Modal (Edit Monitors & Manage Webhooks) ─────────────── -->
+  <div id="apple-modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/60 flex items-center justify-center p-4 transition-all duration-300">
+    <div id="apple-modal-card" class="rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative space-y-5 transition-all duration-300 ease-out transform scale-95 opacity-0 border border-black/5 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/10">
+      
+      <!-- Modal Header -->
+      <div class="flex items-start justify-between">
+        <div>
+          <h3 id="modal-title" class="text-lg font-semibold tracking-tight text-neutral-900 dark:text-white">Monitor Settings</h3>
+          <p id="modal-subtitle" class="text-xs text-neutral-500 dark:text-white/50 mt-0.5">Configure target health checks and alert dispatchers</p>
+        </div>
+        <button type="button" onclick="closeModal()" class="text-neutral-400 hover:text-neutral-900 dark:hover:text-white p-1.5 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition" title="Close Modal">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Segmented Control Tab Bar -->
+      <div class="bg-black/5 dark:bg-black/40 p-1 rounded-2xl flex items-center gap-1 border border-black/5 dark:border-white/5 text-xs font-medium">
+        <button id="tab-btn-monitors" type="button" onclick="switchModalTab('monitors')" class="flex-1 py-2 px-3 rounded-xl transition-all duration-200 bg-white dark:bg-white/10 text-neutral-900 dark:text-white shadow-sm font-semibold">
+          Monitor Settings
+        </button>
+        <button id="tab-btn-webhooks" type="button" onclick="switchModalTab('webhooks')" class="flex-1 py-2 px-3 rounded-xl transition-all duration-200 text-neutral-500 dark:text-white/50 hover:text-neutral-900 dark:hover:text-white">
+          Notifications &amp; Webhooks
+        </button>
+      </div>
+
+      <!-- Form 1: Monitor Settings -->
+      <form id="monitor-form" onsubmit="handleMonitorSubmit(event)" class="space-y-4 text-xs sm:text-sm">
+        <input type="hidden" id="edit-monitor-id" value="">
+        <div>
+          <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Friendly Name</label>
+          <input required id="m-name" type="text" placeholder="e.g. Production API" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition" />
+        </div>
+        <div>
+          <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Target URL</label>
+          <input required id="m-url" type="url" placeholder="https://api.example.com/health" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition font-mono" />
+        </div>
+        <div class="grid grid-cols-3 gap-3">
+          <div>
+            <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Interval (s)</label>
+            <input required id="m-interval" type="number" min="1" value="60" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition font-mono" />
+          </div>
+          <div>
+            <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Timeout (s)</label>
+            <input required id="m-timeout" type="number" min="1" max="60" value="5" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition font-mono" />
+          </div>
+          <div>
+            <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Max Retries</label>
+            <input required id="m-retries" type="number" min="1" max="10" value="3" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition font-mono" />
+          </div>
+        </div>
+
+        <!-- iOS-style Toggle Switches (checked:bg-[#30d158]) -->
+        <div class="bg-black/[0.03] dark:bg-black/30 rounded-2xl p-3.5 border border-black/5 dark:border-white/5 space-y-3">
+          <div class="flex items-center justify-between">
+            <div>
+              <div class="font-medium text-neutral-900 dark:text-white text-xs sm:text-sm">Active Monitoring</div>
+              <div class="text-[11px] text-neutral-500 dark:text-white/40">Regularly run health checks on this target</div>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="m-active" type="checkbox" checked class="sr-only peer">
+              <div class="w-11 h-6 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
+            </label>
+          </div>
+          <div class="border-t border-black/5 dark:border-white/5 pt-3 flex items-center justify-between">
+            <div>
+              <div class="font-medium text-neutral-900 dark:text-white text-xs sm:text-sm">Public Status Page</div>
+              <div class="text-[11px] text-neutral-500 dark:text-white/40">Expose component status on the public page</div>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="m-public" type="checkbox" checked class="sr-only peer">
+              <div class="w-11 h-6 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
+            </label>
+          </div>
+        </div>
+
+        <div class="flex justify-end gap-2.5 pt-2">
+          <button type="button" onclick="closeModal()" class="px-4 py-2.5 rounded-xl border border-neutral-200 dark:border-white/10 text-neutral-700 dark:text-white/70 hover:bg-black/5 dark:hover:bg-white/5 transition">Cancel</button>
+          <button type="submit" id="save-monitor-btn" class="px-5 py-2.5 rounded-xl bg-[#0a84ff] hover:bg-[#0071e3] font-medium text-white shadow-lg shadow-[#0a84ff]/25 transition">Save Target</button>
+        </div>
+      </form>
+
+      <!-- Form 2: Notifications & Webhooks -->
+      <form id="webhook-form" onsubmit="submitWebhookForm(event)" class="space-y-4 text-xs sm:text-sm hidden">
+        <input type="hidden" id="edit-webhook-id" value="">
+        <div>
+          <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Webhook Channel Name</label>
+          <input required id="w-name" type="text" placeholder="e.g. #ops-alerts Discord" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition" />
+        </div>
+
+        <div class="grid grid-cols-1 sm:grid-cols-3 gap-3">
+          <div class="sm:col-span-1">
+            <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Provider</label>
+            <select id="w-provider" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition">
+              <option value="discord">Discord</option>
+              <option value="slack">Slack</option>
+              <option value="generic">Generic</option>
+            </select>
+          </div>
+          <div class="sm:col-span-2">
+            <label class="block font-medium text-neutral-700 dark:text-white/70 mb-1.5">Endpoint URL</label>
+            <input required id="w-url" type="url" placeholder="https://discord.com/api/webhooks/..." class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition font-mono" />
+          </div>
+        </div>
+
+        <!-- iOS-style toggle switch for is_enabled (checked:bg-[#30d158]) -->
+        <div class="bg-black/[0.03] dark:bg-black/30 rounded-2xl p-3.5 border border-black/5 dark:border-white/5 flex items-center justify-between">
+          <div>
+            <div class="font-medium text-neutral-900 dark:text-white text-xs sm:text-sm">Webhook Enabled</div>
+            <div class="text-[11px] text-neutral-500 dark:text-white/40">Dispatch alerts on monitor state changes</div>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input id="w-enabled" type="checkbox" checked class="sr-only peer">
+            <div class="w-11 h-6 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
+          </label>
+        </div>
+
+        <!-- iOS-style toggle switch for notify_on_resolve -->
+        <div class="bg-black/[0.03] dark:bg-black/30 rounded-2xl p-3.5 border border-black/5 dark:border-white/5 flex items-center justify-between">
+          <div>
+            <div class="font-medium text-neutral-900 dark:text-white text-xs sm:text-sm">Notify on Incident Resolution</div>
+            <div class="text-[11px] text-neutral-500 dark:text-white/40">Send recovery alerts with outage duration when service is back online</div>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input id="w-notify-resolve" type="checkbox" checked class="sr-only peer">
+            <div class="w-11 h-6 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
+          </label>
+        </div>
+
+        <!-- iOS-style toggle switch for use_default_template -->
+        <div class="bg-black/[0.03] dark:bg-black/30 rounded-2xl p-3.5 border border-black/5 dark:border-white/5 flex items-center justify-between">
+          <div>
+            <div class="font-medium text-neutral-900 dark:text-white text-xs sm:text-sm">Use Default Template</div>
+            <div class="text-[11px] text-neutral-500 dark:text-white/40">Apply Apple HIG-styled embeds and structured Slack/Discord cards</div>
+          </div>
+          <label class="relative inline-flex items-center cursor-pointer">
+            <input id="w-use-default" type="checkbox" checked onchange="toggleTemplateMode()" class="sr-only peer">
+            <div class="w-11 h-6 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
+          </label>
+        </div>
+
+        <!-- Default Template Preview Badge / Card (when ON) -->
+        <div id="default-template-preview" class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <label class="block font-medium text-neutral-700 dark:text-white/70 text-xs">Default Message Preview</label>
+            <span class="text-[10px] text-neutral-400 dark:text-white/40 font-mono">Auto-formatted by KeepUp</span>
+          </div>
+          <div id="template-preview-card" class="bg-neutral-50 dark:bg-black/50 border border-neutral-200 dark:border-white/10 rounded-xl p-3 text-xs font-mono text-neutral-800 dark:text-white/80">
+            <!-- Populated dynamically by updateTemplatePreview() -->
+          </div>
+        </div>
+
+        <!-- Custom Notification Template Textarea (when OFF) -->
+        <div id="custom-template-section" class="space-y-1.5 hidden">
+          <div class="flex items-center justify-between">
+            <label for="w-template" class="block font-medium text-neutral-700 dark:text-white/70 text-xs">Custom Notification Template (JSON or Text)</label>
+            <span class="text-[10px] text-neutral-400 dark:text-white/40 font-mono">Tokens: {{monitor_name}}, {{status}}, {{response_time_ms}}</span>
+          </div>
+          <textarea id="w-template" rows="4" placeholder='{ "text": "{{monitor_name}} is {{status}}! Response: {{response_time_ms}}ms" }' class="w-full rounded-xl px-3.5 py-2.5 font-mono text-xs focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition"></textarea>
+        </div>
+
+        <div class="flex items-center justify-between pt-2">
+          <button type="button" id="test-webhook-btn" onclick="testWebhook(event)" class="px-3.5 py-2.5 rounded-xl border border-neutral-200 dark:border-white/10 text-[#0a84ff] hover:bg-black/5 dark:hover:bg-white/5 text-xs font-medium transition flex items-center gap-1.5">
+            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+            </svg>
+            <span>Test Notification</span>
+          </button>
+          <div class="flex items-center gap-2">
+            <button type="button" onclick="closeModal()" class="px-4 py-2.5 rounded-xl border border-neutral-200 dark:border-white/10 text-neutral-700 dark:text-white/70 hover:bg-black/5 dark:hover:bg-white/5 transition">Cancel</button>
+            <button type="submit" id="save-webhook-btn" class="px-5 py-2.5 rounded-xl bg-[#0a84ff] hover:bg-[#0071e3] font-medium text-white shadow-lg shadow-[#0a84ff]/25 transition">Save Webhook</button>
+          </div>
+        </div>
+
+        <!-- Webhook Channels List for quick management inside modal -->
+        <div class="pt-3 border-t border-black/5 dark:border-white/5">
+          <div class="flex items-center justify-between mb-2">
+            <h4 class="text-xs font-semibold uppercase tracking-wider text-neutral-400 dark:text-white/40">Configured Webhooks</h4>
+            <button type="button" onclick="resetWebhookForm()" class="text-xs text-[#0a84ff] hover:underline font-medium">+ New Webhook</button>
+          </div>
+          <div id="modal-webhooks-list" class="max-h-36 overflow-y-auto space-y-1.5">
+            <!-- Populated dynamically -->
+          </div>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── 6. History / Logs Drawer Modal ────────────────────────────────────── -->
+  <div id="logs-modal" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/60 flex items-center justify-center p-4">
+    <div class="rounded-3xl max-w-2xl w-full p-6 shadow-2xl relative space-y-4 max-h-[85vh] flex flex-col border border-black/5 dark:border-white/10 ring-1 ring-black/5 dark:ring-white/10">
+      <div class="flex items-center justify-between pb-3 border-b border-black/5 dark:border-white/10">
+        <div>
+          <h3 id="logs-title" class="text-base font-semibold text-neutral-900 dark:text-white">Check Logs</h3>
+          <p id="logs-url" class="text-xs text-neutral-500 dark:text-white/40 break-all font-mono mt-0.5"></p>
+        </div>
+        <button onclick="closeLogsModal()" class="text-neutral-400 hover:text-neutral-900 dark:hover:text-white p-1.5 rounded-full bg-black/5 dark:bg-white/5 hover:bg-black/10 dark:hover:bg-white/10 transition" title="Close Logs">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <div class="flex-1 overflow-y-auto">
+        <table class="w-full text-left text-xs">
+          <thead class="bg-black/5 dark:bg-white/5 text-neutral-500 dark:text-white/40 uppercase text-[10px] tracking-wider sticky top-0">
+            <tr>
+              <th class="py-2.5 px-3">Checked At</th>
+              <th class="py-2.5 px-3">Status</th>
+              <th class="py-2.5 px-3">Latency</th>
+              <th class="py-2.5 px-3">HTTP Code</th>
+              <th class="py-2.5 px-3">Message</th>
+            </tr>
+          </thead>
+          <tbody id="logs-table-body" class="divide-y divide-black/5 dark:divide-white/5 text-neutral-800 dark:text-white/70 font-mono">
+            <tr><td colspan="5" class="py-6 text-center text-neutral-500 dark:text-white/30">Loading history...</td></tr>
+          </tbody>
+        </table>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 7. Toast Notification Container ───────────────────────────────────── -->
+  <div id="toast-container" class="fixed top-6 right-6 z-50 flex flex-col gap-3 pointer-events-none max-w-sm w-full px-4 sm:px-0"></div>
+
+  <!-- ── 8. External Scripts ────────────────────────────────────────────────── -->
+  <script src="/toast.js"></script>
+  <script src="/app.js"></script>
+  <script src="/modal.js"></script>
+
+  <script>
+    // Logs modal helper
+    async function viewLogs(id, name, url) {
+      document.getElementById('logs-title').innerText = `Recent Checks: ${name}`;
+      document.getElementById('logs-url').innerText = url;
+      const tbody = document.getElementById('logs-table-body');
+      tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-neutral-500 dark:text-white/40">Loading check history...</td></tr>`;
+      document.getElementById('logs-modal').classList.remove('hidden');
+
+      try {
+        const res = await apiFetch(`/api/v1/monitors/${id}/logs?limit=30`);
+        if (res && res.ok) {
+          const logs = await res.json();
+          if (logs.length === 0) {
+            tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-neutral-500 dark:text-white/40">No checks recorded yet for this target.</td></tr>`;
+            return;
+          }
+          tbody.innerHTML = logs.map(l => {
+            const isUp = l.is_up === 1;
+            const badgeClass = isUp
+              ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20'
+              : 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
+            return `
+              <tr class="hover:bg-black/[0.02] dark:hover:bg-white/5 transition">
+                <td class="py-2 px-3 text-[11px] text-neutral-500 dark:text-white/50">${formatDate(l.checked_at)}</td>
+                <td class="py-2 px-3">
+                  <span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-medium ${badgeClass}">
+                    ${isUp ? 'UP' : 'DOWN'}
+                  </span>
+                </td>
+                <td class="py-2 px-3 text-neutral-900 dark:text-white">${l.latency_ms !== null ? l.latency_ms + ' ms' : '—'}</td>
+                <td class="py-2 px-3 text-neutral-700 dark:text-white/80">${l.status_code || '—'}</td>
+                <td class="py-2 px-3 text-neutral-500 dark:text-white/50 max-w-xs truncate">${l.error_msg ? escapeHtml(l.error_msg) : '<span class="text-neutral-400 dark:text-white/20">None</span>'}</td>
+              </tr>
+            `;
+          }).join('');
+        }
+      } catch (err) {
+        tbody.innerHTML = `<tr><td colspan="5" class="py-6 text-center text-[#ff453a]">Failed to load logs</td></tr>`;
+      }
+    }
+
+    function closeLogsModal() {
+      document.getElementById('logs-modal').classList.add('hidden');
+    }
+
+    async function deleteMonitor(id, name) {
+      if (!confirm(`Are you sure you want to delete monitor "${name}"?`)) return;
+
+      try {
+        const res = await apiFetch(`/api/v1/monitors/${id}`, { method: 'DELETE' });
+        if (res && res.ok) {
+          showToast({
+            title: 'Target Removed',
+            message: `Target "${name}" removed successfully`,
+            type: 'success',
+          });
+          fetchDashboardData();
+        } else if (res && res.status !== 401 && res.status !== 429) {
+          showToast({
+            title: 'Delete Failed',
+            message: 'Failed to delete monitor',
+            type: 'error',
+          });
+        }
+      } catch (err) {
+        // Handled by apiFetch
+      }
+    }
+  </script>
+</body>
+</html>

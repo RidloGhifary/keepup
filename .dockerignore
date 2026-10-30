@@ -1,0 +1,15 @@
+target/
+.git/
+.gitignore
+data/
+*.db
+*.db-shm
+*.db-wal
+.env
+.env.*
+.DS_Store
+.idea/
+.vscode/
+*.swp
+*.log
+README.md

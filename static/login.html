@@ -1,0 +1,163 @@
+<!DOCTYPE html>
+<html lang="en" class="dark">
+<head>
+  <meta charset="UTF-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1.0">
+  <title>KeepUp — Administrator Login</title>
+  <link rel="icon" type="image/svg+xml" href="/favicon.svg">
+  <link rel="manifest" href="/manifest.json">
+  <meta name="apple-mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black-translucent">
+  <link rel="apple-touch-icon" href="/apple-touch-icon.png">
+  <meta name="apple-mobile-web-app-title" content="KeepUp">
+  <meta name="theme-color" content="#0b0b0c">
+  <script src="https://cdn.tailwindcss.com"></script>
+  <script>
+    tailwind.config = {
+      darkMode: 'class',
+      theme: {
+        extend: {
+          colors: {
+            apple: {
+              bg: '#0b0b0c',
+              green: '#30d158',
+              red: '#ff453a',
+              yellow: '#ffd60a',
+              blue: '#0a84ff',
+            }
+          },
+          fontFamily: {
+            sans: ['-apple-system', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'system-ui', 'sans-serif'],
+            mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
+          }
+        }
+      }
+    }
+  </script>
+  <style>
+    body {
+      background-color: #0b0b0c;
+      background-image: 
+        radial-gradient(circle at 50% 15%, rgba(10, 132, 255, 0.08) 0%, transparent 50%),
+        radial-gradient(circle at 80% 80%, rgba(48, 209, 88, 0.04) 0%, transparent 40%),
+        radial-gradient(circle at 20% 80%, rgba(10, 132, 255, 0.03) 0%, transparent 40%);
+      background-attachment: fixed;
+    }
+    .apple-glass {
+      background: rgba(22, 22, 24, 0.85);
+      backdrop-filter: blur(40px);
+      -webkit-backdrop-filter: blur(40px);
+      border: 1px solid rgba(255, 255, 255, 0.1);
+      box-shadow: 0 25px 50px -12px rgba(0, 0, 0, 0.6), inset 0 1px 0 0 rgba(255, 255, 255, 0.08);
+    }
+  </style>
+</head>
+<body class="text-white min-h-screen antialiased flex flex-col font-sans selection:bg-[#0a84ff]/30 selection:text-white">
+
+  <!-- Main Container -->
+  <main class="flex-1 flex items-center justify-center p-4 sm:p-6">
+    <div class="apple-glass rounded-3xl max-w-md w-full p-8 sm:p-10 space-y-7 relative transition-all duration-300">
+      
+      <!-- Brand & Header -->
+      <div class="text-center space-y-3">
+        <!-- 48x48px KeepUp Squircle Logo Mark -->
+        <div class="inline-flex items-center justify-center mx-auto drop-shadow-[0_8px_20px_rgba(10,132,255,0.18)]">
+          <svg class="w-12 h-12" width="48" height="48" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+            <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="#141416" stroke="url(#login-card-border)" stroke-width="1" />
+            <path d="M6 17H11L14 11L18 21L21 15H26" stroke="url(#login-pulse-grad)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
+            <circle cx="25" cy="8" r="3" fill="#30D158" fill-opacity="0.4" filter="url(#login-glow)" />
+            <circle cx="25" cy="8" r="1.5" fill="#30D158" />
+            <defs>
+              <linearGradient id="login-card-border" x1="0" y1="0" x2="32" y2="32" gradientUnits="userSpaceOnUse">
+                <stop stop-color="white" stop-opacity="0.3" />
+                <stop offset="1" stop-color="white" stop-opacity="0.08" />
+              </linearGradient>
+              <linearGradient id="login-pulse-grad" x1="6" y1="16" x2="26" y2="16" gradientUnits="userSpaceOnUse">
+                <stop stop-color="#0A84FF" />
+                <stop offset="0.6" stop-color="#30D158" />
+              </linearGradient>
+              <filter id="login-glow" x="19" y="2" width="12" height="12" filterUnits="userSpaceOnUse">
+                <feGaussianBlur stdDeviation="1.5" result="blur" />
+                <feComposite in="SourceGraphic" in2="blur" operator="over" />
+              </filter>
+            </defs>
+          </svg>
+        </div>
+        
+        <div>
+          <h1 class="text-2xl font-bold tracking-tight text-white">KeepUp</h1>
+          <p class="text-xs sm:text-sm text-white/50 mt-1">Single-Admin Dashboard Authentication</p>
+        </div>
+      </div>
+
+      <!-- Error Message Banner -->
+      <div id="error-banner" class="hidden rounded-xl bg-[#ff453a]/10 border border-[#ff453a]/30 p-3.5 text-xs text-[#ff453a] flex items-center gap-2.5">
+        <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4m0 4h.01M21 12a9 9 0 11-18 0 9 9 0 0118 0z" />
+        </svg>
+        <span id="error-message">Invalid credentials. Please try again.</span>
+      </div>
+
+      <!-- Login Form -->
+      <form id="login-form" onsubmit="handleLogin(event)" class="space-y-4 text-xs sm:text-sm">
+        <div class="space-y-1.5">
+          <label for="username" class="block font-medium text-white/70">Administrator Username</label>
+          <input
+            id="username"
+            name="username"
+            type="text"
+            required
+            autocomplete="username"
+            placeholder="admin"
+            class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 focus:border-[#0a84ff] transition"
+          />
+        </div>
+
+        <div class="space-y-1.5">
+          <div class="flex items-center justify-between">
+            <label for="password" class="block font-medium text-white/70">Password</label>
+          </div>
+          <input
+            id="password"
+            name="password"
+            type="password"
+            required
+            autocomplete="current-password"
+            placeholder="••••••••••••"
+            class="w-full bg-black/40 border border-white/10 rounded-xl px-4 py-3 text-white placeholder-white/20 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 focus:border-[#0a84ff] transition"
+          />
+        </div>
+
+        <button
+          type="submit"
+          id="submit-btn"
+          class="w-full mt-2 bg-[#0a84ff] hover:bg-[#0071e3] active:scale-[0.98] text-white font-medium py-3 px-5 rounded-xl shadow-lg shadow-[#0a84ff]/25 transition-all flex items-center justify-center gap-2"
+        >
+          <span id="submit-text">Sign In</span>
+          <svg id="submit-spinner" class="hidden animate-spin h-4 w-4 text-white" fill="none" viewBox="0 0 24 24">
+            <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
+            <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
+          </svg>
+        </button>
+      </form>
+
+      <!-- Public Page Link -->
+      <div class="pt-2 border-t border-white/5 text-center">
+        <a href="/status" class="text-xs text-white/50 hover:text-white transition inline-flex items-center gap-1.5 font-medium">
+          <span>Go to Public Status Page</span>
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14 5l7 7m0 0l-7 7m7-7H3"/>
+          </svg>
+        </a>
+      </div>
+
+    </div>
+  </main>
+
+  <!-- Toast Component & Centralized API Fetcher -->
+  <script src="/toast.js"></script>
+
+  <!-- Login Logic Script -->
+  <script src="/login.js"></script>
+</body>
+</html>
