@@ -95,8 +95,11 @@ async fn main() -> anyhow::Result<()> {
         }))
         .allow_credentials(true);
 
-    // Build Axum router with API routes and embedded UI fallback.
-    let app = api::router(state.clone())
+    // Build Axum router with explicit status routes, API routes and embedded UI fallback.
+    let app = axum::Router::new()
+        .route("/status", axum::routing::get(ui::status_page_handler))
+        .route("/status/*path", axum::routing::get(ui::status_page_handler))
+        .merge(api::router(state.clone()))
         .fallback(ui::static_handler)
         .layer(cors)
         .with_state(state);

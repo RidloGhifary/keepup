@@ -503,6 +503,22 @@
           <span class="hidden sm:inline">Webhooks</span>
         </button>
 
+        <!-- Status Pages Trigger -->
+        <button onclick="openStatusPagesModal()" class="text-xs sm:text-sm text-white/80 hover:text-white px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition flex items-center gap-1.5" title="Manage Status Pages">
+          <svg class="w-4 h-4 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
+          </svg>
+          <span class="hidden sm:inline">Status Pages</span>
+        </button>
+
+        <!-- Maintenance Trigger -->
+        <button onclick="openMaintenanceModal()" class="text-xs sm:text-sm text-white/80 hover:text-white px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition flex items-center gap-1.5" title="Manage Planned Maintenance Windows">
+          <svg class="w-4 h-4 text-[#c084fc]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+          <span class="hidden sm:inline">Maintenance</span>
+        </button>
+
         <!-- Manual Refresh Button -->
         <button id="refresh-btn" onclick="fetchDashboardData(true)" class="text-white/60 hover:text-white p-2 rounded-xl hover:bg-white/5 transition" title="Refresh Telemetry">
           <svg id="refresh-icon" class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
@@ -885,7 +901,202 @@
     </div>
   </div>
 
-  <!-- ── 7. Toast Notification Container ───────────────────────────────────── -->
+  <!-- ── 7. Status Pages Management Modal ────────────────────────────────────── -->
+  <div id="status-pages-modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/60 flex items-center justify-center p-4 transition-all duration-300">
+    <div id="status-pages-modal-card" class="rounded-3xl max-w-2xl w-full p-6 sm:p-7 shadow-2xl relative space-y-5 transition-all duration-300 ease-out transform scale-95 opacity-0 border border-white/10 ring-1 ring-white/10 bg-[#141416] text-white max-h-[90vh] flex flex-col">
+      <!-- Modal Header -->
+      <div class="flex items-start justify-between shrink-0">
+        <div>
+          <h3 class="text-lg font-semibold tracking-tight text-white flex items-center gap-2">
+            <span>Status Pages</span>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/10 text-[#30d158] border border-white/5">Multi-Page</span>
+          </h3>
+          <p class="text-xs text-white/50 mt-0.5">Manage custom URL slugs and categorized monitor groupings</p>
+        </div>
+        <button type="button" onclick="closeStatusPagesModal()" class="text-neutral-400 hover:text-white p-1.5 rounded-full bg-white/5 hover:bg-white/10 transition" title="Close Modal">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Segmented View Control: Pages List vs Edit/Create Form -->
+      <div class="bg-black/40 p-1 rounded-2xl flex items-center gap-1 border border-white/5 text-xs font-medium shrink-0">
+        <button id="sp-tab-list" type="button" onclick="switchStatusPageTab('list')" class="flex-1 py-1.5 px-3 rounded-xl transition-all duration-200 bg-white/10 text-white font-semibold shadow-sm">
+          All Status Pages
+        </button>
+        <button id="sp-tab-form" type="button" onclick="switchStatusPageTab('form')" class="flex-1 py-1.5 px-3 rounded-xl transition-all duration-200 text-white/50 hover:text-white">
+          Create / Edit Page
+        </button>
+      </div>
+
+      <!-- Modal Body (Scrollable) -->
+      <div class="overflow-y-auto space-y-4 pr-1 flex-1">
+        <!-- View 1: Status Pages List -->
+        <div id="sp-view-list" class="space-y-3">
+          <div id="sp-pages-table-container" class="space-y-2.5">
+            <div class="text-center py-8 text-white/40 text-xs">Loading status pages...</div>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="openCreateStatusPageForm()" class="w-full py-2.5 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-medium transition flex items-center justify-center gap-2">
+              <svg class="w-4 h-4 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              <span>Create New Status Page</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- View 2: Create / Edit Form -->
+        <form id="sp-edit-form" onsubmit="handleStatusPageSubmit(event)" class="space-y-4 hidden text-xs sm:text-sm">
+          <input type="hidden" id="sp-is-edit" value="false">
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block font-medium text-white/70 mb-1">Page Slug <span class="text-neutral-500 font-normal">(/status/:slug)</span></label>
+              <input required id="sp-slug" type="text" placeholder="e.g. api or dashboards" class="w-full rounded-xl px-3.5 py-2.5 bg-black/40 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 font-mono text-xs" />
+            </div>
+            <div>
+              <label class="block font-medium text-white/70 mb-1">Display Title</label>
+              <input required id="sp-title" type="text" placeholder="e.g. API Systems Status" class="w-full rounded-xl px-3.5 py-2.5 bg-black/40 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 text-xs" />
+            </div>
+          </div>
+
+          <div>
+            <label class="block font-medium text-white/70 mb-1">Description <span class="text-neutral-500 font-normal">(Optional subtitle)</span></label>
+            <input id="sp-desc" type="text" placeholder="e.g. Real-time performance of public APIs and services" class="w-full rounded-xl px-3.5 py-2.5 bg-black/40 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 text-xs" />
+          </div>
+
+          <!-- Public Visibility Toggle -->
+          <div class="bg-black/30 rounded-2xl p-3 border border-white/5 flex items-center justify-between">
+            <div>
+              <div class="font-medium text-white text-xs">Publicly Accessible</div>
+              <div class="text-[11px] text-white/40">Allow unauthenticated visitors to view this status page</div>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="sp-is-public" type="checkbox" checked class="sr-only peer">
+              <div class="w-10 h-6 bg-white/10 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
+            </label>
+          </div>
+
+          <!-- Monitor Group Assignment Checklist -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <label class="block font-medium text-white/70 text-xs">Assign Monitors &amp; Groups</label>
+              <span class="text-[10px] text-white/40 font-mono">Check to include • Define group name</span>
+            </div>
+            <div id="sp-monitors-checklist" class="space-y-2 bg-black/30 rounded-2xl p-3 border border-white/5 max-h-56 overflow-y-auto">
+              <div class="text-center py-4 text-white/40 text-xs">Loading monitors...</div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="flex items-center justify-end gap-2 pt-2 border-t border-white/5">
+            <button type="button" onclick="switchStatusPageTab('list')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-xs font-medium transition">
+              Cancel
+            </button>
+            <button type="submit" id="sp-submit-btn" class="px-5 py-2 rounded-xl bg-[#0a84ff] hover:bg-[#0071e3] text-white text-xs font-medium shadow-md transition">
+              Save Status Page
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 8. Planned Maintenance Management Modal ──────────────────────────────── -->
+  <div id="maintenance-modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/60 flex items-center justify-center p-4 transition-all duration-300">
+    <div id="maintenance-modal-card" class="rounded-3xl max-w-2xl w-full p-6 sm:p-7 shadow-2xl relative space-y-5 transition-all duration-300 ease-out transform scale-95 opacity-0 border border-white/10 ring-1 ring-white/10 bg-[#141416] text-white max-h-[90vh] flex flex-col">
+      <!-- Modal Header -->
+      <div class="flex items-start justify-between shrink-0">
+        <div>
+          <h3 class="text-lg font-semibold tracking-tight text-white flex items-center gap-2">
+            <span>Planned Maintenance</span>
+            <span class="text-[10px] font-mono px-2 py-0.5 rounded-full bg-white/10 text-[#c084fc] border border-white/5">Maintenance Windows</span>
+          </h3>
+          <p class="text-xs text-white/50 mt-0.5">Schedule planned downtime, suppress alert webhooks, and display maintenance banners</p>
+        </div>
+        <button type="button" onclick="closeMaintenanceModal()" class="text-neutral-400 hover:text-white p-1.5 rounded-full bg-white/5 hover:bg-white/10 transition" title="Close Modal">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <!-- Segmented View Control: List vs Form -->
+      <div class="bg-black/40 p-1 rounded-2xl flex items-center gap-1 border border-white/5 text-xs font-medium shrink-0">
+        <button id="maint-tab-list" type="button" onclick="switchMaintenanceTab('list')" class="flex-1 py-1.5 px-3 rounded-xl transition-all duration-200 bg-white/10 text-white font-semibold shadow-sm">
+          Maintenance Windows
+        </button>
+        <button id="maint-tab-form" type="button" onclick="switchMaintenanceTab('form')" class="flex-1 py-1.5 px-3 rounded-xl transition-all duration-200 text-white/50 hover:text-white">
+          Schedule Maintenance
+        </button>
+      </div>
+
+      <!-- Modal Body (Scrollable) -->
+      <div class="overflow-y-auto space-y-4 pr-1 flex-1">
+        <!-- View 1: Maintenance Windows List -->
+        <div id="maint-view-list" class="space-y-3">
+          <div id="maint-windows-table-container" class="space-y-2.5">
+            <div class="text-center py-8 text-white/40 text-xs">Loading maintenance windows...</div>
+          </div>
+          <div class="pt-2">
+            <button type="button" onclick="openCreateMaintenanceForm()" class="w-full py-2.5 px-4 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white text-xs font-medium transition flex items-center justify-center gap-2">
+              <svg class="w-4 h-4 text-[#c084fc]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/></svg>
+              <span>Schedule New Maintenance Window</span>
+            </button>
+          </div>
+        </div>
+
+        <!-- View 2: Schedule / Edit Form -->
+        <form id="maint-edit-form" onsubmit="handleMaintenanceSubmit(event)" class="space-y-4 hidden text-xs sm:text-sm">
+          <input type="hidden" id="maint-is-edit" value="false">
+          <input type="hidden" id="maint-edit-id" value="">
+
+          <div>
+            <label class="block font-medium text-white/70 mb-1">Title</label>
+            <input required id="maint-title" type="text" placeholder="e.g. Database Upgrade or Core Infrastructure Migration" class="w-full rounded-xl px-3.5 py-2.5 bg-black/40 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 text-xs" />
+          </div>
+
+          <div>
+            <label class="block font-medium text-white/70 mb-1">Description <span class="text-neutral-500 font-normal">(Optional notice for public status page)</span></label>
+            <input id="maint-desc" type="text" placeholder="e.g. Upgrading database clusters to version 16. Temporary downtime expected." class="w-full rounded-xl px-3.5 py-2.5 bg-black/40 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 text-xs" />
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-2 gap-3">
+            <div>
+              <label class="block font-medium text-white/70 mb-1">Start Time</label>
+              <input required id="maint-start-time" type="datetime-local" class="w-full rounded-xl px-3.5 py-2.5 bg-black/40 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 text-xs" />
+            </div>
+            <div>
+              <label class="block font-medium text-white/70 mb-1">End Time</label>
+              <input required id="maint-end-time" type="datetime-local" class="w-full rounded-xl px-3.5 py-2.5 bg-black/40 border border-white/10 text-white focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 text-xs" />
+            </div>
+          </div>
+
+          <!-- Affected Target Monitors Checklist -->
+          <div class="space-y-2">
+            <div class="flex items-center justify-between">
+              <label class="block font-medium text-white/70 text-xs">Affected Target Monitors</label>
+              <button type="button" onclick="toggleAllMaintenanceMonitors()" id="maint-toggle-all-btn" class="text-[10px] text-[#0a84ff] hover:underline font-mono">Select All</button>
+            </div>
+            <div id="maint-monitors-checklist" class="space-y-2 bg-black/30 rounded-2xl p-3 border border-white/5 max-h-56 overflow-y-auto">
+              <div class="text-center py-4 text-white/40 text-xs">Loading monitors...</div>
+            </div>
+          </div>
+
+          <!-- Action Buttons -->
+          <div class="flex items-center justify-end gap-2 pt-2 border-t border-white/5">
+            <button type="button" onclick="switchMaintenanceTab('list')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/70 hover:text-white text-xs font-medium transition">
+              Cancel
+            </button>
+            <button type="submit" id="maint-submit-btn" class="px-5 py-2 rounded-xl bg-[#0a84ff] hover:bg-[#0071e3] text-white text-xs font-medium shadow-md transition">
+              Schedule Maintenance
+            </button>
+          </div>
+        </form>
+      </div>
+    </div>
+  </div>
+
+  <!-- ── 8. Toast Notification Container ───────────────────────────────────── -->
   <div id="toast-container" class="fixed top-6 right-6 z-50 flex flex-col gap-3 pointer-events-none max-w-sm w-full px-4 sm:px-0"></div>
 
   <!-- ── 8. External Scripts ────────────────────────────────────────────────── -->

@@ -66,7 +66,7 @@ KeepUp follows a single-binary architecture where the web server (`Axum`), async
 ### 4.1 Health Check Engine
 
 - **Protocols Supported:**
-  - **HTTP / HTTPS:** GET, HEAD, or POST requests with custom header support, body keyword verification, expected HTTP status code ranges (e.g., `200-299`), and SSL certificate validation/expiration monitoring.
+  - **HTTP / HTTPS:** GET, HEAD, or POST requests with custom header support, body keyword verification, and expected HTTP status code ranges (e.g., `200-299`).
 
   - **TCP Port Ping:** Validates low-level socket connections on specific ports (e.g., `5432` for Postgres, `22` for SSH).
 
@@ -85,8 +85,6 @@ KeepUp follows a single-binary architecture where the web server (`Axum`), async
 
 - **Detailed Analytics View:**
   - Latency breakdown graph over configurable time ranges (1 hour, 24 hours, 7 days, 30 days, 90 days).
-
-  - SSL Certificate expiration counter with configurable alerts (e.g., alert when SSL expires in < 14 days).
 
   - Incident timeline logs detailing down times, error messages, HTTP status codes, and duration.
 
@@ -298,6 +296,6 @@ services:
 
 - **Phase 1 (MVP):** HTTP/TCP pings, SQLite storage, Discord/Slack webhooks, embedded static UI, public status page.
 
-- **Phase 2:** SSL expiry tracking, custom status page badges (`/badge/:id.svg`), multi-user role-based authentication.
+- **Phase 2:** Multi-status pages, planned maintenance windows, multi-user role-based authentication.
 
 - **Phase 3:** Distributed worker agents (pinging from multiple regional locations and calculating geographic quorum).

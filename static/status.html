@@ -316,6 +316,11 @@
       color: var(--status-degraded);
       border: 1px solid rgba(255, 214, 10, 0.25);
     }
+    .status-badge-maintenance {
+      background-color: rgba(168, 85, 247, 0.15);
+      color: #c084fc;
+      border: 1px solid rgba(168, 85, 247, 0.35);
+    }
 
     .status-bar-operational {
       background-color: var(--status-operational);
@@ -325,6 +330,9 @@
     }
     .status-bar-degraded {
       background-color: var(--status-degraded);
+    }
+    .status-bar-maintenance {
+      background-color: #a855f7;
     }
 
     .timeline-ring {
@@ -466,8 +474,8 @@
 
         <!-- Product Typography & Badge -->
         <div class="flex items-center gap-2">
-          <span class="font-semibold tracking-tight text-white text-xl sm:text-2xl">KeepUp</span>
-          <span class="text-[10px] font-mono uppercase bg-white/10 text-neutral-400 px-1.5 py-0.5 rounded-md border border-white/5">STATUS</span>
+          <span id="page-title" class="font-semibold tracking-tight text-white text-xl sm:text-2xl">KeepUp</span>
+          <span id="status-page-badge" class="text-[10px] font-mono uppercase bg-white/10 text-neutral-400 px-1.5 py-0.5 rounded-md border border-white/5">STATUS</span>
         </div>
       </div>
 
@@ -492,6 +500,9 @@
       </div>
     </div>
 
+    <!-- Active Scheduled Maintenance Banner Container -->
+    <div id="maintenance-banner-container" class="space-y-3 empty:hidden"></div>
+
     <!-- Overall System Status Hero Card -->
     <div id="hero-status-card" class="glass-card rounded-3xl p-6 sm:p-8 transition-all duration-300 relative overflow-hidden">
       <div class="flex items-center gap-4 sm:gap-5">
@@ -500,7 +511,7 @@
         </div>
         <div>
           <h1 id="hero-status-title" class="text-xl sm:text-2xl font-bold tracking-tight text-white">All Systems Operational</h1>
-          <p id="hero-status-desc" class="text-xs sm:text-sm text-white/50 mt-1">All monitored components, APIs, and microservices are operating normally.</p>
+          <p id="page-description" class="text-xs sm:text-sm text-white/50 mt-1">All monitored components, APIs, and microservices are operating normally.</p>
         </div>
       </div>
     </div>
@@ -516,8 +527,8 @@
       </div>
 
       <!-- Services Container -->
-      <div id="public-services-container" class="space-y-3.5">
-        <div class="glass-card rounded-2xl p-10 text-center text-white/40 text-xs">
+      <div id="monitors-container" class="space-y-3.5">
+        <div id="loading-indicator" class="glass-card rounded-2xl p-10 text-center text-white/40 text-xs">
           Loading service health telemetry...
         </div>
       </div>
@@ -555,6 +566,6 @@
   </footer>
 
   <!-- Status Page Client Script -->
-  <script src="status.js"></script>
+  <script src="/status.js"></script>
 </body>
 </html>

@@ -15,8 +15,15 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
     }
 
     let is_up = payload.new_status.to_uppercase() == "UP";
-    let color = if is_up { COLOR_STATUS_GREEN } else { COLOR_STATUS_RED };
-    let icon = if is_up { "🟢" } else { "🔴" };
+    let is_maint = payload.new_status.to_uppercase() == "MAINTENANCE";
+    let color = if is_up {
+        COLOR_STATUS_GREEN
+    } else if is_maint {
+        0xA855F7
+    } else {
+        COLOR_STATUS_RED
+    };
+    let icon = if is_up { "🟢" } else if is_maint { "🔧" } else { "🔴" };
     let title = format!("{icon} {} is {}", payload.monitor_name, payload.new_status);
 
     let latency_str = payload
@@ -105,7 +112,14 @@ pub fn format_slack_default(payload: &AlertPayload) -> Value {
     }
 
     let is_up = payload.new_status.to_uppercase() == "UP";
-    let icon = if is_up { ":white_check_mark:" } else { ":rotating_light:" };
+    let is_maint = payload.new_status.to_uppercase() == "MAINTENANCE";
+    let icon = if is_up {
+        ":white_check_mark:"
+    } else if is_maint {
+        ":wrench:"
+    } else {
+        ":rotating_light:"
+    };
     let header_text = format!("{icon} *{}* is *{}*", payload.monitor_name, payload.new_status);
 
     let latency_str = payload

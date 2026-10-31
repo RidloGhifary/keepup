@@ -47,3 +47,19 @@ pub use crate::api::webhooks::{
     create_webhook, delete_webhook, list_webhooks, test_webhook, test_webhook_direct,
     update_webhook,
 };
+
+// ── Status Page Admin Handlers (delegated to crate::api::status_pages) ───────
+
+#[allow(unused_imports)]
+pub use crate::api::status_pages::{
+    create_status_page, delete_status_page, get_status_page, list_status_pages,
+    update_status_page,
+};
+
+// ── Maintenance Window Admin Handlers (delegated to crate::api::maintenance) ──
+
+#[allow(unused_imports)]
+pub use crate::api::maintenance::{
+    create_maintenance, delete_maintenance, get_maintenance, list_maintenance,
+    update_maintenance,
+};

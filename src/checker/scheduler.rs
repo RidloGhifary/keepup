@@ -182,6 +182,41 @@ async fn run_check_and_evaluate(
     monitor: &Monitor,
     prev: &MonitorState,
 ) -> (MonitorState, Option<AlertPayload>) {
+    // ── Check if monitor is in active maintenance window ────────────
+    let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(pool, &monitor.id)
+        .await
+        .unwrap_or(false);
+
+    if in_maintenance {
+        let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
+
+        // Persist check log with is_up = true (no SLA penalty) and error_msg = "MAINTENANCE"
+        let maint_result = CheckResult {
+            status_code: result.status_code,
+            latency_ms: result.latency_ms,
+            is_up: true,
+            error_msg: Some("MAINTENANCE".to_string()),
+        };
+        if let Err(e) = insert_check_log(pool, &monitor.id, &maint_result).await {
+            error!(monitor_id = %monitor.id, "Failed to insert check log during maintenance: {e}");
+        }
+
+        if prev.status != "MAINTENANCE" {
+            info!(
+                monitor = %monitor.name,
+                "Entering planned maintenance window; suppressing alerts"
+            );
+            if let Err(e) = crate::db::monitors::update_monitor_status(pool, &monitor.id, "MAINTENANCE", None).await {
+                error!(monitor_id = %monitor.id, "Failed to update monitor status to MAINTENANCE in DB: {e}");
+            }
+        }
+
+        let mut next = prev.clone();
+        next.status = "MAINTENANCE".to_string();
+        next.consecutive_failures = 0;
+        return (next, None);
+    }
+
     let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
 
     // Persist the raw check result.
@@ -238,6 +273,21 @@ async fn run_check_and_evaluate(
             };
 
             return (next, Some(payload));
+        } else if prev.status == "MAINTENANCE" {
+            let now = Utc::now();
+            next.status = "UP".to_string();
+            next.last_state_change = now;
+
+            info!(
+                monitor = %monitor.name,
+                "Exiting planned maintenance window -> UP"
+            );
+
+            if let Err(e) = crate::db::monitors::update_monitor_status(pool, &monitor.id, "UP", None).await {
+                error!(monitor_id = %monitor.id, "Failed to update monitor status in DB: {e}");
+            }
+
+            return (next, None);
         }
 
         info!(
@@ -257,16 +307,17 @@ async fn run_check_and_evaluate(
             "Check FAILED"
         );
 
-        if prev.status == "UP" && next.consecutive_failures >= monitor.max_retries {
-            // ▸ Transition: UP → DOWN
+        if (prev.status == "UP" || prev.status == "MAINTENANCE") && next.consecutive_failures >= monitor.max_retries {
+            // ▸ Transition: UP/MAINTENANCE → DOWN
             let now = Utc::now();
             let now_rfc3339 = now.to_rfc3339();
+            let old_status = prev.status.clone();
             next.status = "DOWN".to_string();
             next.last_state_change = now;
 
             info!(
                 monitor = %monitor.name,
-                "State transition: UP → DOWN"
+                "State transition: {old_status} → DOWN"
             );
 
             // Record last_status = "DOWN" and down_since in SQLite
@@ -279,7 +330,7 @@ async fn run_check_and_evaluate(
                 monitor_name: monitor.name.clone(),
                 monitor_url: monitor.url.clone(),
                 new_status: "DOWN".to_string(),
-                old_status: "UP".to_string(),
+                old_status,
                 http_status: result.status_code.map(|c| c as u16),
                 response_time_ms: Some(result.latency_ms as u64),
                 error_msg: result.error_msg.clone(),
@@ -382,5 +433,87 @@ mod tests {
         assert_eq!(format_downtime_duration(252), "4m 12s");
         assert_eq!(format_downtime_duration(3600), "1h 0m 0s");
         assert_eq!(format_downtime_duration(3665), "1h 1m 5s");
+    }
+
+    #[tokio::test]
+    async fn test_maintenance_window_suppresses_alerts() {
+        use chrono::Duration;
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .unwrap();
+
+        let monitor_id = "test-sched-maint-1";
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, max_retries, is_active, is_public, last_status) \
+             VALUES (?, 'Test Service', 'http://127.0.0.1:9', 60, 1, 1, 1, 1, 'UP')"
+        )
+        .bind(monitor_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let now = Utc::now();
+        let start = now - Duration::minutes(5);
+        let end = now + Duration::hours(1);
+
+        crate::db::maintenance::create_maintenance_window(
+            &pool,
+            crate::db::maintenance::CreateMaintenanceDto {
+                title: "Scheduled DB Patching".to_string(),
+                description: None,
+                start_time: start.to_rfc3339(),
+                end_time: end.to_rfc3339(),
+                monitor_ids: vec![monitor_id.to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let monitor = Monitor {
+            id: monitor_id.to_string(),
+            name: "Test Service".to_string(),
+            url: "http://127.0.0.1:9".to_string(), // Unreachable endpoint
+            check_interval_secs: 60,
+            timeout_secs: 1,
+            max_retries: 1,
+            last_status: "UP".to_string(),
+            down_since: None,
+        };
+
+        let prev = MonitorState {
+            status: "UP".to_string(),
+            consecutive_failures: 0,
+            last_state_change: now,
+        };
+
+        let (new_state, alert) = run_check_and_evaluate(&pool, &client, &monitor, &prev).await;
+
+        // Alerts must be suppressed (None)
+        assert!(alert.is_none(), "Alert must be suppressed during maintenance");
+        // State must transition to MAINTENANCE
+        assert_eq!(new_state.status, "MAINTENANCE");
+
+        // Verify monitor's last_status in DB is updated to MAINTENANCE
+        let updated_mon = fetch_monitor_by_id(&pool, monitor_id).await.unwrap().unwrap();
+        assert_eq!(updated_mon.last_status, "MAINTENANCE");
+
+        // Check log must exist with is_up = 1 and error_msg = "MAINTENANCE"
+        let log: (i32, Option<String>) = sqlx::query_as("SELECT is_up, error_msg FROM check_logs WHERE monitor_id = ? ORDER BY id DESC LIMIT 1")
+            .bind(monitor_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(log.0, 1, "is_up should be 1 during maintenance to prevent SLA penalty");
+        assert_eq!(log.1.as_deref(), Some("MAINTENANCE"));
     }
 }

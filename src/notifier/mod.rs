@@ -71,6 +71,17 @@ pub async fn dispatch_alerts(pool: &SqlitePool, client: &Client, payload: &Alert
         return;
     }
 
+    if let Some(ref mid) = payload.monitor_id {
+        if crate::db::maintenance::is_monitor_in_maintenance(pool, mid).await.unwrap_or(false) {
+            info!(
+                monitor = %payload.monitor_name,
+                monitor_id = %mid,
+                "Bypassing webhook alert dispatch: monitor is currently inside an active maintenance window"
+            );
+            return;
+        }
+    }
+
     info!(
         count = webhooks.len(),
         monitor = %payload.monitor_name,

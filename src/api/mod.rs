@@ -2,9 +2,11 @@ pub mod admin;
 pub mod auth;
 pub mod dto;
 pub mod logs;
+pub mod maintenance;
 pub mod monitors;
 pub mod public;
 pub mod status;
+pub mod status_pages;
 pub mod webhooks;
 
 use std::sync::Arc;
@@ -31,7 +33,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
 
     // ── Public status endpoints (unprotected) ─────────────────────────
     let public_api = Router::new()
-        .route("/status", get(status::public_status))
+        .merge(public::public_routes())
         .route("/monitors/:id/history", get(logs::public_history))
         .route("/badge/:id", get(public::badge));
 
@@ -45,6 +47,26 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(monitors::delete),
         )
         .route(
+            "/status-pages",
+            get(status_pages::list_status_pages).post(status_pages::create_status_page),
+        )
+        .route(
+            "/status-pages/:slug",
+            get(status_pages::get_status_page)
+                .put(status_pages::update_status_page)
+                .delete(status_pages::delete_status_page),
+        )
+        .route(
+            "/admin/status-pages",
+            get(status_pages::list_status_pages).post(status_pages::create_status_page),
+        )
+        .route(
+            "/admin/status-pages/:slug",
+            get(status_pages::get_status_page)
+                .put(status_pages::update_status_page)
+                .delete(status_pages::delete_status_page),
+        )
+        .route(
             "/webhooks",
             get(webhooks::list_webhooks).post(webhooks::create_webhook),
         )
@@ -54,6 +76,26 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/webhooks/test", post(webhooks::test_webhook_direct))
         .route("/webhooks/:id/test", post(webhooks::test_webhook))
+        .route(
+            "/maintenance",
+            get(maintenance::list_maintenance).post(maintenance::create_maintenance),
+        )
+        .route(
+            "/maintenance/:id",
+            get(maintenance::get_maintenance)
+                .put(maintenance::update_maintenance)
+                .delete(maintenance::delete_maintenance),
+        )
+        .route(
+            "/admin/maintenance",
+            get(maintenance::list_maintenance).post(maintenance::create_maintenance),
+        )
+        .route(
+            "/admin/maintenance/:id",
+            get(maintenance::get_maintenance)
+                .put(maintenance::update_maintenance)
+                .delete(maintenance::delete_maintenance),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::require_auth,
@@ -70,6 +112,26 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/monitors/:id/logs", get(logs::by_monitor))
         .route(
+            "/status-pages",
+            get(status_pages::list_status_pages).post(status_pages::create_status_page),
+        )
+        .route(
+            "/status-pages/:slug",
+            get(status_pages::get_status_page)
+                .put(status_pages::update_status_page)
+                .delete(status_pages::delete_status_page),
+        )
+        .route(
+            "/admin/status-pages",
+            get(status_pages::list_status_pages).post(status_pages::create_status_page),
+        )
+        .route(
+            "/admin/status-pages/:slug",
+            get(status_pages::get_status_page)
+                .put(status_pages::update_status_page)
+                .delete(status_pages::delete_status_page),
+        )
+        .route(
             "/webhooks",
             get(webhooks::list_webhooks).post(webhooks::create_webhook),
         )
@@ -79,6 +141,26 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/webhooks/test", post(webhooks::test_webhook_direct))
         .route("/webhooks/:id/test", post(webhooks::test_webhook))
+        .route(
+            "/maintenance",
+            get(maintenance::list_maintenance).post(maintenance::create_maintenance),
+        )
+        .route(
+            "/maintenance/:id",
+            get(maintenance::get_maintenance)
+                .put(maintenance::update_maintenance)
+                .delete(maintenance::delete_maintenance),
+        )
+        .route(
+            "/admin/maintenance",
+            get(maintenance::list_maintenance).post(maintenance::create_maintenance),
+        )
+        .route(
+            "/admin/maintenance/:id",
+            get(maintenance::get_maintenance)
+                .put(maintenance::update_maintenance)
+                .delete(maintenance::delete_maintenance),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::require_auth,

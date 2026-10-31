@@ -185,3 +185,37 @@ impl TestWebhookRequest {
         Ok(())
     }
 }
+
+// ── Status Page DTOs ────────────────────────────────────────────────────────
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct CreateStatusPageDto {
+    pub slug: String,
+    pub title: String,
+    pub description: Option<String>,
+    #[serde(default = "default_true")]
+    pub is_public: bool,
+    pub monitors: Option<Vec<StatusPageMonitorInput>>,
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct StatusPageMonitorInput {
+    pub monitor_id: String,
+    #[serde(default = "default_services_group")]
+    pub group_name: String,
+    #[serde(default)]
+    pub display_order: i64,
+}
+
+fn default_services_group() -> String {
+    "Services".to_string()
+}
+
+#[derive(Debug, Clone, Deserialize, Serialize)]
+pub struct UpdateStatusPageDto {
+    pub title: String,
+    pub description: Option<String>,
+    #[serde(default = "default_true")]
+    pub is_public: bool,
+    pub monitors: Option<Vec<StatusPageMonitorInput>>,
+}

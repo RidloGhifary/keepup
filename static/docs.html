@@ -30,6 +30,11 @@
       </nav>
 
       <div class="nav-actions">
+        <button id="search-trigger" class="flex items-center gap-2 px-3 py-1.5 text-xs font-mono text-neutral-400 bg-white/5 border border-white/10 hover:border-white/20 rounded-lg transition" title="Search documentation (⌘K / Ctrl+K)" aria-label="Search documentation">
+          <svg class="w-4 h-4 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <span>Search docs...</span>
+          <kbd class="ml-auto px-1.5 py-0.5 text-[10px] bg-white/10 text-neutral-300 rounded border border-white/10">⌘K</kbd>
+        </button>
         <a href="#quickstart" class="btn btn-primary">
           <span>Quickstart</span>
         </a>
@@ -41,13 +46,20 @@
   <div class="container docs-layout">
     <!-- Sidebar Navigation -->
     <aside class="docs-sidebar">
+      <div style="margin-bottom: 1.25rem;">
+        <button id="search-trigger-sidebar" class="w-full flex items-center gap-2 px-3 py-2 text-xs font-mono text-neutral-400 bg-white/5 border border-white/10 hover:border-white/20 rounded-lg transition" title="Search documentation (⌘K / Ctrl+K)" aria-label="Search documentation">
+          <svg class="w-4 h-4 text-neutral-400" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+          <span>Search docs...</span>
+          <kbd class="ml-auto px-1.5 py-0.5 text-[10px] bg-white/10 text-neutral-300 rounded border border-white/10">⌘K</kbd>
+        </button>
+      </div>
       <div class="docs-nav-group">
         <div class="docs-group-title">Getting Started</div>
         <ul class="docs-nav-list">
           <li class="docs-nav-item"><a href="#overview">Overview</a></li>
           <li class="docs-nav-item"><a href="#quickstart">Docker Quickstart</a></li>
           <li class="docs-nav-item"><a href="#docker-compose">Docker Compose</a></li>
-          <li class="docs-nav-item"><a href="#building-source">Building from Source</a></li>
+          <li class="docs-nav-item"><a href="#building-source">Building from Source &amp; Cargo</a></li>
         </ul>
       </div>
 
@@ -65,7 +77,15 @@
           <li class="docs-nav-item"><a href="#probes-http">HTTP &amp; HTTPS Probes</a></li>
           <li class="docs-nav-item"><a href="#probes-tcp">TCP Port Pings</a></li>
           <li class="docs-nav-item"><a href="#retry-thresholds">Failure &amp; Retry Logic</a></li>
-          <li class="docs-nav-item"><a href="#ssl-monitoring">SSL Expiration Alerts</a></li>
+        </ul>
+      </div>
+
+      <div class="docs-nav-group">
+        <div class="docs-group-title">Planned Maintenance</div>
+        <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#maintenance-overview">Scheduled Maintenance</a></li>
+          <li class="docs-nav-item"><a href="#maintenance-suppression">Alert Suppression Rules</a></li>
+          <li class="docs-nav-item"><a href="#maintenance-api">Maintenance REST API</a></li>
         </ul>
       </div>
 
@@ -80,11 +100,14 @@
       </div>
 
       <div class="docs-nav-group">
-        <div class="docs-group-title">Public Status Page</div>
+        <div class="docs-group-title">Public Status Pages</div>
         <ul class="docs-nav-list">
+          <li class="docs-nav-item"><a href="#status-multi-page">Multi-Page &amp; Custom Slugs</a></li>
           <li class="docs-nav-item"><a href="#status-timeline">7-Day Uptime Timeline</a></li>
           <li class="docs-nav-item"><a href="#status-latency">24-Hour Latency Chart</a></li>
+          <li class="docs-nav-item"><a href="#status-percentiles">Latency Percentiles (P50/P95/P99)</a></li>
           <li class="docs-nav-item"><a href="#status-themes">Theme Customization</a></li>
+          <li class="docs-nav-item"><a href="#status-badges">Vector Status Badges</a></li>
         </ul>
       </div>
 
@@ -165,8 +188,8 @@ services:
       </section>
 
       <section id="building-source">
-        <h2>Building from Source</h2>
-        <p>KeepUp requires Rust 1.82+ to compile. Build the optimized release binary with Cargo:</p>
+        <h2>Building from Source &amp; Cargo</h2>
+        <p>KeepUp requires Rust 1.82+ to compile. Build the release binary or install directly into your Cargo environment:</p>
 
         <div class="code-wrapper">
           <button class="copy-btn" onclick="copyCode(this)">Copy</button>
@@ -174,11 +197,13 @@ services:
 git clone https://github.com/RidloGhifary/keepup.git
 cd keepup
 
-# Compile optimized release binary
+# Option A: Compile standalone release binary
 cargo build --release
+./target/release/keepup
 
-# Run the standalone executable
-./target/release/keepup</code></pre>
+# Option B: Install directly into your Cargo binary path ($HOME/.cargo/bin)
+cargo install --path .
+keepup</code></pre>
         </div>
       </section>
 
@@ -215,7 +240,7 @@ cargo build --release
               <tr>
                 <td><code>ADMIN_PASSWORD</code></td>
                 <td><code>admin123</code></td>
-                <td>Password for dashboard authentication.</td>
+                <td>Password for dashboard authentication (strongly recommended to change in production).</td>
               </tr>
               <tr>
                 <td><code>JWT_SECRET</code></td>
@@ -224,8 +249,13 @@ cargo build --release
               </tr>
               <tr>
                 <td><code>STATUS_PAGE_THEME</code></td>
-                <td><code>default</code></td>
-                <td>Default status page aesthetic (<code>default</code>, <code>oled</code>, <code>midnight</code>, <code>light</code>).</td>
+                <td><code>auto</code></td>
+                <td>Default status page aesthetic (<code>auto</code>, <code>dark</code>, <code>oled</code>, <code>midnight</code>, <code>light</code>).</td>
+              </tr>
+              <tr>
+                <td><code>CUSTOM_LOGO_URL</code></td>
+                <td><code>None</code></td>
+                <td>Optional image or SVG logo URL displayed in the status page header.</td>
               </tr>
               <tr>
                 <td><code>RUST_LOG</code></td>
@@ -270,51 +300,159 @@ cargo build --release
         </p>
       </section>
 
-      <section id="ssl-monitoring">
-        <h2>SSL Expiration Alerts</h2>
+      <!-- Planned Maintenance Windows -->
+      <section id="maintenance-overview">
+        <h2>Scheduled Maintenance Windows</h2>
         <p>
-          HTTPS checks extract and validate the server certificate chain during the TLS handshake. KeepUp calculates days until expiry and triggers early warnings before certificates expire.
+          KeepUp allows operations teams to schedule upcoming downtime or maintenance windows in advance. When a window becomes active:
         </p>
+        <ul>
+          <li><strong>Announcement Banners:</strong> A prominent announcement banner is displayed at the top of all public status pages with title, description, and exact window timing.</li>
+          <li><strong>Component Status Badges:</strong> Monitors linked to the maintenance window switch to an explicit <code>MAINTENANCE</code> state with distinct purple accent badges (<code>#A855F7</code>).</li>
+          <li><strong>Incident Isolation:</strong> Expected downtime does not trigger incident alerts or degrade public reliability scores.</li>
+        </ul>
+      </section>
+
+      <section id="maintenance-suppression">
+        <h2>Alert Suppression Rules</h2>
+        <p>
+          During active maintenance windows, KeepUp automatically suppresses webhook alerts (Discord, Slack, Generic Webhook) for all covered monitors.
+        </p>
+        <p>
+          The background scheduler evaluates active windows dynamically during each check execution. If a target fails while its maintenance window is active (<code>start_time &le; now &le; end_time</code>), state transition notifications are paused. Once the maintenance window expires, regular alerting thresholds and recovery alerts resume seamlessly without manual operator intervention.
+        </p>
+      </section>
+
+      <section id="maintenance-api">
+        <h2>Maintenance REST API</h2>
+        <p>
+          Maintenance windows can be created, updated, and canceled via the administrative REST API:
+        </p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code># Schedule a maintenance window
+curl -X POST http://localhost:3000/api/admin/maintenance \
+  -H "Content-Type: application/json" \
+  -H "Cookie: keepup_session=&lt;jwt_cookie&gt;" \
+  -d '{
+    "title": "Database Engine Migration",
+    "description": "Routine database maintenance and schema migrations.",
+    "start_time": "2026-11-01T02:00:00Z",
+    "end_time": "2026-11-01T04:00:00Z",
+    "monitor_ids": ["mon_db_primary", "mon_api_gateway"]
+  }'</code></pre>
+        </div>
+
+        <p>
+          Available maintenance endpoints:
+        </p>
+        <ul>
+          <li><code>GET /api/admin/maintenance</code> — List all active, scheduled, and past maintenance windows.</li>
+          <li><code>POST /api/admin/maintenance</code> — Schedule a new maintenance window.</li>
+          <li><code>PUT /api/admin/maintenance/:id</code> — Update time bounds, description, or attached monitors.</li>
+          <li><code>DELETE /api/admin/maintenance/:id</code> — Delete or cancel a scheduled maintenance window.</li>
+        </ul>
       </section>
 
       <!-- Alerting & Webhooks -->
       <section id="alerts-discord">
         <h2>Discord Embeds</h2>
         <p>
-          KeepUp provides built-in rich Discord embeds using high-contrast status colors:
+          KeepUp delivers rich Discord embeds with high-contrast status colors and detailed incident diagnostic fields:
         </p>
         <ul>
-          <li><strong>UP / Resolved:</strong> Status Green (<code>#30D158</code>)</li>
-          <li><strong>DOWN / Outage:</strong> Outage Red (<code>#FF453A</code>)</li>
+          <li><strong>Operational / Resolved:</strong> Status Green (<code>0x30D158</code> / <code>#30D158</code>)</li>
+          <li><strong>Outage / Downtime:</strong> Status Red (<code>0xFF453A</code> / <code>#FF453A</code>)</li>
+          <li><strong>Scheduled Maintenance:</strong> Maintenance Purple (<code>0xA855F7</code> / <code>#A855F7</code>)</li>
         </ul>
-        <p>Includes service name, target URL, latency in ms, status code, and outage duration.</p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>{
+  "embeds": [{
+    "title": "🔴 Production API Gateway is DOWN",
+    "color": 16729402,
+    "fields": [
+      { "name": "Service", "value": "Production API Gateway", "inline": true },
+      { "name": "Status", "value": "DOWN", "inline": true },
+      { "name": "Target URL", "value": "https://api.example.com/health", "inline": false },
+      { "name": "Latency", "value": "N/A", "inline": true },
+      { "name": "HTTP Status", "value": "502", "inline": true },
+      { "name": "Error Details", "value": "HTTP 502 Bad Gateway", "inline": false }
+    ],
+    "timestamp": "2026-10-31T12:00:00Z",
+    "footer": { "text": "KeepUp Uptime Monitor" }
+  }]
+}</code></pre>
+        </div>
       </section>
 
       <section id="alerts-slack">
         <h2>Slack Block Kit</h2>
         <p>
-          Default Slack integration formats messages using structured Block Kit cards featuring emoji status badges (<code>:white_check_mark:</code> for UP, <code>:rotating_light:</code> for DOWN), response time telemetry, and incident timestamps.
+          Slack notifications use structured Block Kit cards featuring dynamic status icons (<code>:white_check_mark:</code> for UP, <code>:rotating_light:</code> for DOWN, <code>:wrench:</code> for MAINTENANCE), diagnostic fields, and outage duration metrics:
         </p>
-      </section>
-
-      <section id="alerts-generic">
-        <h2>Generic Webhooks</h2>
-        <p>For custom PagerDuty, Opsgenie, or webhook integrations, KeepUp dispatches clean JSON payloads:</p>
 
         <div class="code-wrapper">
           <button class="copy-btn" onclick="copyCode(this)">Copy</button>
           <pre><code>{
-  "event": "monitor.status_change",
-  "monitor": {
-    "id": "mon_01h8",
-    "name": "Production API Gateway",
-    "url": "https://api.example.com/health",
-    "status": "DOWN",
-    "previous_status": "UP",
-    "latency_ms": 142,
-    "error_message": "HTTP 502 Bad Gateway"
-  },
-  "timestamp": "2026-10-30T20:00:00Z"
+  "blocks": [
+    {
+      "type": "header",
+      "text": { "type": "plain_text", "text": "🚨 *Production API Gateway* is *DOWN*", "emoji": true }
+    },
+    {
+      "type": "section",
+      "fields": [
+        { "type": "mrkdwn", "text": "*Monitor:*\nProduction API Gateway" },
+        { "type": "mrkdwn", "text": "*Status:*\nDOWN" },
+        { "type": "mrkdwn", "text": "*Target URL:*\nhttps://api.example.com/health" },
+        { "type": "mrkdwn", "text": "*Response Time:*\n142 ms" }
+      ]
+    },
+    {
+      "type": "context",
+      "elements": [{ "type": "mrkdwn", "text": "*Error:* HTTP 502 Bad Gateway" }]
+    },
+    { "type": "divider" },
+    {
+      "type": "context",
+      "elements": [{ "type": "mrkdwn", "text": "Sent by *KeepUp* uptime monitor" }]
+    }
+  ]
+}</code></pre>
+        </div>
+      </section>
+
+      <section id="alerts-generic">
+        <h2>Generic Webhooks</h2>
+        <p>For custom webhook integrations, Opsgenie, or incident response platforms, KeepUp dispatches structured JSON payloads for status transitions and recoveries:</p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>// Outage Alert (DOWN)
+{
+  "event": "status_change",
+  "monitor_id": "mon_01h8",
+  "monitor_name": "Production API Gateway",
+  "target_url": "https://api.example.com/health",
+  "status": "DOWN",
+  "response_time_ms": 142,
+  "http_status": 502,
+  "timestamp": "2026-10-31T12:00:00Z"
+}
+
+// Resolution Alert (UP)
+{
+  "event": "monitor.recovered",
+  "monitor_id": "mon_01h8",
+  "monitor_name": "Production API Gateway",
+  "target_url": "https://api.example.com/health",
+  "status": "UP",
+  "downtime_duration_secs": 860,
+  "response_time_ms": 28,
+  "timestamp": "2026-10-31T12:14:20Z"
 }</code></pre>
         </div>
       </section>
@@ -322,11 +460,43 @@ cargo build --release
       <section id="alerts-recovery">
         <h2>Recovery Notifications</h2>
         <p>
-          When a failing service recovers, KeepUp automatically calculates the downtime duration (e.g., <code>"Downtime: 14 minutes, 20 seconds"</code>) and sends a resolution alert.
+          When a failing service recovers, KeepUp automatically calculates the exact downtime duration (e.g., <code>"Downtime: 14 minutes, 20 seconds"</code>) and sends a resolution alert (<code>[RESOLVED]</code>) across configured channels.
         </p>
       </section>
 
-      <!-- Public Status Page -->
+      <!-- Public Status Pages -->
+      <section id="status-multi-page">
+        <h2>Multi-Status Pages &amp; Custom Slugs</h2>
+        <p>
+          KeepUp supports multi-tenant public status pages served on custom URL slugs (<code>/status/:slug</code>), allowing organizations to maintain isolated dashboards for different services, departments, or customer tiers (e.g. <code>/status/api</code>, <code>/status/core</code>, <code>/status/internal</code>).
+        </p>
+        <p>
+          The default status page at <code>/status</code> renders the <code>default</code> slug configuration, or falls back to showing all active monitors if unconfigured.
+        </p>
+        <h3>Monitor Grouping &amp; Categorization</h3>
+        <p>
+          Monitors can be organized into distinct visual categories (such as &ldquo;REST Endpoints&rdquo;, &ldquo;Databases&rdquo;, or &ldquo;Background Workers&rdquo;) with explicit display ordering.
+        </p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code># Create a custom status page with categorized monitor assignments
+curl -X POST http://localhost:3000/api/admin/status-pages \
+  -H "Content-Type: application/json" \
+  -H "Cookie: keepup_session=&lt;jwt_cookie&gt;" \
+  -d '{
+    "slug": "api",
+    "title": "API Systems Health",
+    "description": "Real-time performance of public REST APIs and Webhook services",
+    "is_public": true,
+    "monitors": [
+      { "monitor_id": "mon_01", "group_name": "REST Endpoints", "display_order": 0 },
+      { "monitor_id": "mon_02", "group_name": "Webhooks", "display_order": 1 }
+    ]
+  }'</code></pre>
+        </div>
+      </section>
+
       <section id="status-timeline">
         <h2>7-Day Uptime Timeline</h2>
         <p>
@@ -341,6 +511,33 @@ cargo build --release
         </p>
       </section>
 
+      <section id="status-percentiles">
+        <h2>Latency Percentiles (P50, P95, P99)</h2>
+        <p>
+          Beyond simple hourly averages, KeepUp computes precise response time percentiles directly from SQLite check history:
+        </p>
+        <ul>
+          <li><strong>P50 (Median):</strong> 50% of requests experienced lower latency than this metric. Represents typical real-world response speeds.</li>
+          <li><strong>P95 Tail Latency:</strong> 95% of checks responded faster than this threshold. Essential for identifying degradation under moderate traffic.</li>
+          <li><strong>P99 Outlier Latency:</strong> 99% of requests completed faster than this time. Highlights extreme edge latency during GC pauses or network congestion.</li>
+          <li><strong>24-Hour Average:</strong> Weighted mean response time across all successful checks in the last 24 hours.</li>
+        </ul>
+        <p>
+          Percentiles are calculated in-memory over sorted check logs for high computational speed without heavy time-series dependencies:
+        </p>
+
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>// Exposed in /api/public/status and /api/public/status/:slug
+"latency": {
+  "p50": 34,
+  "p95": 89,
+  "p99": 142,
+  "avg": 41
+}</code></pre>
+        </div>
+      </section>
+
       <section id="status-themes">
         <h2>Theme Customization</h2>
         <p>
@@ -353,6 +550,60 @@ cargo build --release
           <li><strong>Clean Light:</strong> Clean light gray <code>#F5F5F7</code> styling with white translucent cards.</li>
         </ul>
         <p>Visitors can toggle themes manually via the Sun/Moon button, or let the page match their OS mode via <code>prefers-color-scheme</code>.</p>
+      </section>
+
+      <section id="status-badges">
+        <h2>Vector Status Badges</h2>
+        <p>
+          KeepUp generates dynamic, standalone SVG status badges served with zero runtime dependencies via <code>/api/public/badge/:monitor_id.svg</code>:
+        </p>
+        <div style="overflow-x: auto; margin-bottom: 1.5rem;">
+          <table class="spec-table">
+            <thead>
+              <tr>
+                <th>Status</th>
+                <th>Hex Code</th>
+                <th>Badge Preview</th>
+              </tr>
+            </thead>
+            <tbody>
+              <tr>
+                <td><code>Operational (UP)</code></td>
+                <td><code>#30D158</code></td>
+                <td><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:#30D158; vertical-align:middle; margin-right:6px;"></span> Green</td>
+              </tr>
+              <tr>
+                <td><code>Downtime (DOWN)</code></td>
+                <td><code>#FF453A</code></td>
+                <td><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:#FF453A; vertical-align:middle; margin-right:6px;"></span> Red</td>
+              </tr>
+              <tr>
+                <td><code>Maintenance</code></td>
+                <td><code>#A855F7</code></td>
+                <td><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:#A855F7; vertical-align:middle; margin-right:6px;"></span> Purple</td>
+              </tr>
+              <tr>
+                <td><code>Degraded</code></td>
+                <td><code>#FFD60A</code></td>
+                <td><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:#FFD60A; vertical-align:middle; margin-right:6px;"></span> Yellow</td>
+              </tr>
+              <tr>
+                <td><code>Unknown / Not Found</code></td>
+                <td><code>#71717A</code></td>
+                <td><span style="display:inline-block; width:12px; height:12px; border-radius:50%; background:#71717A; vertical-align:middle; margin-right:6px;"></span> Gray</td>
+              </tr>
+            </tbody>
+          </table>
+        </div>
+        <p>Embed badges directly into GitHub READMEs, markdown documentation, or company portals:</p>
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>&lt;!-- Markdown Format --&gt;
+![API Status](https://status.example.com/api/public/badge/mon_api_gateway.svg)
+
+&lt;!-- HTML Format --&gt;
+&lt;img src="https://status.example.com/api/public/badge/mon_api_gateway.svg" alt="Service Status"&gt;</code></pre>
+        </div>
       </section>
 
       <!-- Architecture -->
@@ -451,7 +702,445 @@ cargo build --release
         links.forEach(l => l.classList.remove('active'));
         if (current) current.classList.add('active');
       }, { passive: true });
+
+      // ── Documentation Fuzzy Search Engine ──────────────────────────────────
+      const docsIndex = [];
+      let currentResults = [];
+      let activeIndex = 0;
+
+      function escapeRegExp(str) {
+        return str.replace(/[.*+?^${}()|[\]\\]/g, '\\$&');
+      }
+
+      function escapeHtml(str) {
+        return str
+          .replace(/&/g, '&amp;')
+          .replace(/</g, '&lt;')
+          .replace(/>/g, '&gt;')
+          .replace(/"/g, '&quot;')
+          .replace(/'/g, '&#39;');
+      }
+
+      function buildSearchIndex() {
+        docsIndex.length = 0;
+        const categoryMap = {};
+        document.querySelectorAll('.docs-nav-group').forEach(group => {
+          const titleEl = group.querySelector('.docs-group-title');
+          const cat = titleEl ? titleEl.innerText.trim() : 'General';
+          group.querySelectorAll('.docs-nav-item a').forEach(a => {
+            const href = a.getAttribute('href');
+            if (href && href.startsWith('#')) {
+              categoryMap[href.substring(1)] = cat;
+            }
+          });
+        });
+
+        const sectionEls = document.querySelectorAll('main.docs-content section[id]');
+        sectionEls.forEach(sec => {
+          const id = sec.id;
+          const heading = sec.querySelector('h1, h2, h3, h4');
+          const title = heading ? heading.innerText.trim() : id;
+          const category = categoryMap[id] || 'Documentation';
+
+          const textParts = [];
+          sec.querySelectorAll('p, li, td, th, pre code').forEach(el => {
+            if (el.classList.contains('copy-btn')) return;
+            const text = el.innerText.trim();
+            if (text) textParts.push(text);
+          });
+          const content = textParts.join(' ').replace(/\s+/g, ' ');
+
+          docsIndex.push({ id, title, category, content });
+        });
+      }
+
+      function fuzzyScore(haystack, needle) {
+        let hIdx = 0;
+        let nIdx = 0;
+        let score = 0;
+        let consecutive = 0;
+        while (hIdx < haystack.length && nIdx < needle.length) {
+          if (haystack[hIdx].toLowerCase() === needle[nIdx].toLowerCase()) {
+            score += 1 + consecutive * 2;
+            consecutive++;
+            nIdx++;
+          } else {
+            consecutive = 0;
+          }
+          hIdx++;
+        }
+        return nIdx === needle.length ? score : 0;
+      }
+
+      function scoreDocument(doc, query) {
+        const q = query.trim().toLowerCase();
+        if (!q) return 0;
+
+        const titleLower = doc.title.toLowerCase();
+        const catLower = doc.category.toLowerCase();
+        const idLower = doc.id.toLowerCase();
+        const contentLower = doc.content.toLowerCase();
+
+        let score = 0;
+
+        // Title matches
+        if (titleLower === q) {
+          score += 150;
+        } else if (titleLower.startsWith(q)) {
+          score += 100;
+        } else if (titleLower.includes(q)) {
+          score += 50;
+        }
+
+        // Anchor ID matches
+        if (idLower === q) {
+          score += 120;
+        } else if (idLower.startsWith(q)) {
+          score += 80;
+        } else if (idLower.includes(q)) {
+          score += 40;
+        }
+
+        // Category matches
+        if (catLower.includes(q)) {
+          score += 30;
+        }
+
+        // Term-by-term scoring
+        const terms = q.split(/\s+/).filter(Boolean);
+        let matchedTerms = 0;
+
+        for (const term of terms) {
+          let hit = false;
+
+          if (titleLower.includes(term)) {
+            score += 40;
+            hit = true;
+          } else {
+            const fuzz = fuzzyScore(titleLower, term);
+            if (fuzz > 0) {
+              score += 15;
+              hit = true;
+            }
+          }
+
+          if (catLower.includes(term)) {
+            score += 20;
+            hit = true;
+          }
+
+          if (idLower.includes(term)) {
+            score += 25;
+            hit = true;
+          }
+
+          const wordRegex = new RegExp('\\b' + escapeRegExp(term) + '\\b', 'i');
+          if (wordRegex.test(contentLower)) {
+            score += 20;
+            hit = true;
+          } else if (contentLower.includes(term)) {
+            score += 10;
+            hit = true;
+          } else {
+            const fuzz = fuzzyScore(contentLower.slice(0, 400), term);
+            if (fuzz > 0) {
+              score += 5;
+              hit = true;
+            }
+          }
+
+          if (hit) matchedTerms++;
+        }
+
+        if (terms.length > 1 && matchedTerms < Math.ceil(terms.length / 2)) {
+          return 0;
+        }
+
+        return score;
+      }
+
+      function highlightMatches(text, terms) {
+        if (!text) return '';
+        if (!terms || terms.length === 0) return escapeHtml(text);
+        const filtered = terms.filter(t => t.length > 0);
+        if (filtered.length === 0) return escapeHtml(text);
+
+        const pattern = filtered.map(escapeRegExp).join('|');
+        const regex = new RegExp(`(${pattern})`, 'gi');
+        const parts = text.split(regex);
+        return parts.map(part => {
+          if (regex.test(part)) {
+            return `<mark class="bg-emerald-500/30 text-emerald-300 rounded px-0.5">${escapeHtml(part)}</mark>`;
+          }
+          return escapeHtml(part);
+        }).join('');
+      }
+
+      function extractSnippet(content, terms) {
+        if (!content) return '';
+        if (!terms || terms.length === 0) {
+          return content.slice(0, 140) + (content.length > 140 ? '...' : '');
+        }
+
+        let minIdx = -1;
+        const lower = content.toLowerCase();
+        for (const t of terms) {
+          const idx = lower.indexOf(t.toLowerCase());
+          if (idx !== -1 && (minIdx === -1 || idx < minIdx)) {
+            minIdx = idx;
+          }
+        }
+
+        if (minIdx === -1) {
+          return content.slice(0, 140) + (content.length > 140 ? '...' : '');
+        }
+
+        const start = Math.max(0, minIdx - 45);
+        const end = Math.min(content.length, minIdx + 115);
+        let snippet = content.slice(start, end).trim();
+        if (start > 0) snippet = '...' + snippet;
+        if (end < content.length) snippet = snippet + '...';
+        return snippet;
+      }
+
+      function renderSearchResults(query, results) {
+        const resultsContainer = document.getElementById('search-results');
+        const countEl = document.getElementById('search-count');
+        if (!resultsContainer) return;
+
+        const trimmed = query.trim();
+        const terms = trimmed ? trimmed.split(/\s+/).filter(Boolean) : [];
+
+        if (!trimmed) {
+          resultsContainer.innerHTML = `
+            <div class="search-empty-state p-6 text-center text-xs text-neutral-500 font-mono">
+              Type to search documentation sections, architecture, and API guides
+            </div>`;
+          if (countEl) countEl.innerText = '';
+          return;
+        }
+
+        if (results.length === 0) {
+          resultsContainer.innerHTML = `
+            <div class="search-empty-state p-6 text-center text-xs text-neutral-500 font-mono">
+              No documentation sections found matching &ldquo;<span class="text-white">${escapeHtml(trimmed)}</span>&rdquo;
+            </div>`;
+          if (countEl) countEl.innerText = '0 results';
+          return;
+        }
+
+        if (countEl) countEl.innerText = `${results.length} result${results.length === 1 ? '' : 's'}`;
+
+        resultsContainer.innerHTML = results.map((item, idx) => {
+          const snippet = extractSnippet(item.content, terms);
+          const isActive = idx === activeIndex;
+          return `
+            <a href="#${item.id}" class="search-result-item block p-3 rounded-xl transition cursor-pointer ${isActive ? 'active' : ''}" data-index="${idx}" data-id="${item.id}">
+              <div class="flex items-center justify-between mb-1">
+                <span class="text-[10px] font-mono uppercase text-emerald-400 tracking-wider font-semibold">${escapeHtml(item.category)}</span>
+                <span class="text-[10px] font-mono text-neutral-500">#${escapeHtml(item.id)}</span>
+              </div>
+              <div class="text-sm font-semibold text-white mb-1">${highlightMatches(item.title, terms)}</div>
+              <div class="text-xs text-neutral-400 line-clamp-2 font-mono leading-relaxed">${highlightMatches(snippet, terms)}</div>
+            </a>
+          `;
+        }).join('');
+      }
+
+      function updateActiveResult() {
+        const items = document.querySelectorAll('#search-results .search-result-item');
+        items.forEach((item, idx) => {
+          if (idx === activeIndex) {
+            item.classList.add('active');
+            item.scrollIntoView({ block: 'nearest' });
+          } else {
+            item.classList.remove('active');
+          }
+        });
+      }
+
+      function performSearch(query) {
+        if (!query.trim()) {
+          currentResults = [];
+          activeIndex = 0;
+          renderSearchResults('', []);
+          return;
+        }
+
+        const scored = [];
+        for (const doc of docsIndex) {
+          const score = scoreDocument(doc, query);
+          if (score > 0) {
+            scored.push({ ...doc, score });
+          }
+        }
+
+        scored.sort((a, b) => b.score - a.score);
+        currentResults = scored.slice(0, 8);
+        activeIndex = 0;
+        renderSearchResults(query, currentResults);
+      }
+
+      function openSearchModal() {
+        const modal = document.getElementById('search-modal');
+        const input = document.getElementById('search-input');
+        if (!modal) return;
+
+        modal.classList.remove('hidden');
+        document.body.style.overflow = 'hidden';
+        if (input) {
+          input.value = '';
+          currentResults = [];
+          activeIndex = 0;
+          renderSearchResults('', []);
+          setTimeout(() => input.focus(), 25);
+        }
+      }
+
+      function closeSearchModal() {
+        const modal = document.getElementById('search-modal');
+        if (!modal) return;
+        modal.classList.add('hidden');
+        document.body.style.overflow = '';
+      }
+
+      function navigateToSection(id) {
+        closeSearchModal();
+        const target = document.getElementById(id);
+        if (target) {
+          history.pushState(null, '', `#${id}`);
+          target.scrollIntoView({ behavior: 'smooth' });
+        }
+      }
+
+      // Initialize Search Index
+      buildSearchIndex();
+
+      const searchTrigger = document.getElementById('search-trigger');
+      if (searchTrigger) searchTrigger.addEventListener('click', openSearchModal);
+
+      const searchSidebarTrigger = document.getElementById('search-trigger-sidebar');
+      if (searchSidebarTrigger) searchSidebarTrigger.addEventListener('click', openSearchModal);
+
+      const searchCloseBtn = document.getElementById('search-close-btn');
+      if (searchCloseBtn) searchCloseBtn.addEventListener('click', closeSearchModal);
+
+      const searchModal = document.getElementById('search-modal');
+      if (searchModal) {
+        searchModal.addEventListener('click', (e) => {
+          if (e.target === searchModal) {
+            closeSearchModal();
+          }
+        });
+      }
+
+      const searchInput = document.getElementById('search-input');
+      if (searchInput) {
+        searchInput.addEventListener('input', (e) => {
+          performSearch(e.target.value);
+        });
+
+        searchInput.addEventListener('keydown', (e) => {
+          if (e.key === 'ArrowDown') {
+            e.preventDefault();
+            if (currentResults.length > 0) {
+              activeIndex = (activeIndex + 1) % currentResults.length;
+              updateActiveResult();
+            }
+          } else if (e.key === 'ArrowUp') {
+            e.preventDefault();
+            if (currentResults.length > 0) {
+              activeIndex = (activeIndex - 1 + currentResults.length) % currentResults.length;
+              updateActiveResult();
+            }
+          } else if (e.key === 'Enter') {
+            e.preventDefault();
+            if (currentResults.length > 0 && currentResults[activeIndex]) {
+              navigateToSection(currentResults[activeIndex].id);
+            }
+          } else if (e.key === 'Escape') {
+            e.preventDefault();
+            closeSearchModal();
+          }
+        });
+      }
+
+      const searchResults = document.getElementById('search-results');
+      if (searchResults) {
+        searchResults.addEventListener('click', (e) => {
+          const item = e.target.closest('.search-result-item');
+          if (item) {
+            e.preventDefault();
+            const id = item.getAttribute('data-id');
+            if (id) navigateToSection(id);
+          }
+        });
+
+        searchResults.addEventListener('mousemove', (e) => {
+          const item = e.target.closest('.search-result-item');
+          if (item) {
+            const idx = parseInt(item.getAttribute('data-index'), 10);
+            if (!isNaN(idx) && idx !== activeIndex) {
+              activeIndex = idx;
+              updateActiveResult();
+            }
+          }
+        });
+      }
+
+      // Global Keyboard Shortcuts (⌘K, Ctrl+K, /, Escape)
+      window.addEventListener('keydown', (e) => {
+        const isSearchOpen = searchModal && !searchModal.classList.contains('hidden');
+
+        if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+          e.preventDefault();
+          if (isSearchOpen) {
+            closeSearchModal();
+          } else {
+            openSearchModal();
+          }
+          return;
+        }
+
+        if (e.key === 'Escape' && isSearchOpen) {
+          e.preventDefault();
+          closeSearchModal();
+          return;
+        }
+
+        if (e.key === '/' && !isSearchOpen) {
+          const tag = (document.activeElement && document.activeElement.tagName) || '';
+          if (tag !== 'INPUT' && tag !== 'TEXTAREA' && tag !== 'SELECT' && !document.activeElement?.isContentEditable) {
+            e.preventDefault();
+            openSearchModal();
+          }
+        }
+      });
     });
   </script>
+
+  <!-- ── Search Modal Overlay ─────────────────────────────────────────────── -->
+  <div id="search-modal" class="fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-start justify-center pt-20 px-4 hidden" role="dialog" aria-modal="true" aria-label="Search documentation">
+    <div class="search-modal-container w-full max-w-xl bg-zinc-950 border border-white/10 rounded-2xl shadow-2xl overflow-hidden flex flex-col">
+      <div class="search-header flex items-center px-4 border-b border-white/10">
+        <svg class="w-4 h-4 text-neutral-400 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/></svg>
+        <input id="search-input" type="text" placeholder="Search documentation... (e.g. docker, webhooks, sqlite)" autocomplete="off" spellcheck="false" class="w-full bg-transparent px-3 py-3.5 text-white placeholder-neutral-500 font-mono text-sm border-b-0 outline-none" />
+        <kbd id="search-close-btn" class="search-esc-badge px-1.5 py-0.5 text-[10px] font-mono text-neutral-400 bg-white/5 border border-white/10 rounded cursor-pointer" title="Close (Esc)">ESC</kbd>
+      </div>
+      <div id="search-results" class="search-results-list max-h-96 overflow-y-auto p-2 space-y-1">
+        <div class="search-empty-state p-6 text-center text-xs text-neutral-500 font-mono">
+          Type to search documentation sections, architecture, and API guides
+        </div>
+      </div>
+      <div class="search-footer px-4 py-2.5 border-t border-white/5 bg-white/[0.02] flex items-center justify-between text-[11px] font-mono text-neutral-500">
+        <div class="flex items-center gap-3">
+          <span><kbd class="px-1 py-0.5 bg-white/5 border border-white/10 rounded text-neutral-400">↑</kbd> <kbd class="px-1 py-0.5 bg-white/5 border border-white/10 rounded text-neutral-400">↓</kbd> navigate</span>
+          <span><kbd class="px-1 py-0.5 bg-white/5 border border-white/10 rounded text-neutral-400">↵</kbd> select</span>
+          <span><kbd class="px-1 py-0.5 bg-white/5 border border-white/10 rounded text-neutral-400">esc</kbd> close</span>
+        </div>
+        <span id="search-count" class="text-neutral-500 font-mono text-[10px]"></span>
+      </div>
+    </div>
+  </div>
 </body>
 </html>

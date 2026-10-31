@@ -14,20 +14,36 @@ use crate::AppState;
 
 // ── Response types ───────────────────────────────────────────────────────────
 
+/// Monitored components grouped by category.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct MonitorGroup {
+    pub name: String,
+    pub monitors: Vec<PublicMonitor>,
+}
+
 /// Top-level public status response.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicStatus {
+    /// Status page title (e.g. "System Status").
+    pub title: String,
+    /// Status page description.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     /// Overall operational banner text.
     pub status: String,
     /// Optional status page theme configuration ("default", "oled", "midnight", "light").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_page_theme: Option<String>,
-    /// Per-monitor summaries (only public monitors).
+    /// Active and scheduled maintenance windows.
+    pub maintenance_windows: Vec<crate::db::maintenance::PublicMaintenanceWindow>,
+    /// Monitored components grouped by category.
+    pub groups: Vec<MonitorGroup>,
+    /// Per-monitor summaries (flat list for backward compatibility).
     pub monitors: Vec<PublicMonitor>,
 }
 
 /// Summary of a single public monitor.
-#[derive(Debug, Serialize, Deserialize)]
+#[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicMonitor {
     pub id: String,
     pub name: String,
@@ -42,6 +58,8 @@ pub struct PublicMonitor {
     pub uptime_history: Vec<DailyUptime>,
     /// 24-hour hourly latency breakdown buckets (23 hours ago to current hour).
     pub latency_24h: Vec<HourlyLatency>,
+    /// 24-hour response time percentiles (P50, P95, P99) and average.
+    pub latency: crate::db::checks::LatencyPercentiles,
 }
 
 // ── Row helpers for sqlx ─────────────────────────────────────────────────────
@@ -65,26 +83,85 @@ struct UptimeAgg {
     up_count: i64,
 }
 
+#[derive(sqlx::FromRow)]
+struct AssignedMonitorRow {
+    id: String,
+    name: String,
+    url: String,
+    group_name: String,
+    #[allow(dead_code)]
+    display_order: i64,
+}
+
 // ── Handler ──────────────────────────────────────────────────────────────────
 
-/// `GET /api/v1/public/status` — aggregated health for all public monitors.
-///
-/// Returns an overall operational banner plus per-monitor current status,
-/// 24-hour uptime percentage, and 7-day uptime timeline history.
-pub async fn public_status(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<PublicStatus>, AppError> {
-    let monitors = sqlx::query_as::<_, MonitorIdName>(
-        "SELECT id, name, url FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
+/// Core implementation for fetching public status for a specific page slug.
+pub async fn get_public_status_impl(
+    state: &AppState,
+    slug: &str,
+) -> Result<PublicStatus, AppError> {
+    let (title, description) = if slug == "default" {
+        if let Some(page) = crate::db::status_pages::get_status_page(&state.db, "default").await? {
+            (page.title, page.description)
+        } else {
+            (
+                "System Status".to_string(),
+                Some("Current status and real-time performance of public services".to_string()),
+            )
+        }
+    } else {
+        let page = crate::db::status_pages::get_status_page(&state.db, slug)
+            .await?
+            .ok_or_else(|| AppError::NotFound(format!("Status page '{slug}' not found")))?;
+        if page.is_public == 0 {
+            return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
+        }
+        (page.title, page.description)
+    };
+
+    let mut assigned = sqlx::query_as::<_, AssignedMonitorRow>(
+        r#"
+        SELECT 
+            m.id, m.name, m.url, 
+            spm.group_name, spm.display_order
+        FROM status_page_monitors spm
+        INNER JOIN monitors m ON m.id = spm.monitor_id
+        WHERE LOWER(spm.status_page_slug) = LOWER(?)
+        ORDER BY spm.display_order ASC, m.name ASC
+        "#,
     )
+    .bind(slug)
     .fetch_all(&state.db)
     .await?;
 
-    let mut public_monitors: Vec<PublicMonitor> = Vec::with_capacity(monitors.len());
+    if assigned.is_empty() && slug == "default" {
+        let all_monitors = sqlx::query_as::<_, MonitorIdName>(
+            "SELECT id, name, url FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
+        )
+        .fetch_all(&state.db)
+        .await?;
+
+        assigned = all_monitors
+            .into_iter()
+            .enumerate()
+            .map(|(i, m)| AssignedMonitorRow {
+                id: m.id,
+                name: m.name,
+                url: m.url,
+                group_name: "Services".to_string(),
+                display_order: i as i64,
+            })
+            .collect();
+    }
+
+    let maintenance_windows = crate::db::maintenance::get_public_maintenance_windows(&state.db).await?;
+
+    let mut public_monitors: Vec<PublicMonitor> = Vec::with_capacity(assigned.len());
+    let mut groups_map: Vec<(String, Vec<PublicMonitor>)> = Vec::new();
     let mut any_down = false;
     let mut any_degraded = false;
 
-    for m in &monitors {
+    for m in assigned {
         // Latest check result.
         let latest = sqlx::query_as::<_, LatestCheck>(
             "SELECT is_up, latency_ms FROM check_logs \
@@ -94,13 +171,21 @@ pub async fn public_status(
         .fetch_optional(&state.db)
         .await?;
 
-        let (current_status, last_latency_ms) = match &latest {
-            Some(c) if c.is_up == 1 => ("UP".to_string(), c.latency_ms),
-            Some(c) => {
-                any_down = true;
-                ("DOWN".to_string(), c.latency_ms)
+        let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id)
+            .await
+            .unwrap_or(false);
+
+        let (current_status, last_latency_ms) = if in_maintenance {
+            ("MAINTENANCE".to_string(), latest.and_then(|c| c.latency_ms))
+        } else {
+            match &latest {
+                Some(c) if c.is_up == 1 => ("UP".to_string(), c.latency_ms),
+                Some(c) => {
+                    any_down = true;
+                    ("DOWN".to_string(), c.latency_ms)
+                }
+                None => ("UNKNOWN".to_string(), None),
             }
-            None => ("UNKNOWN".to_string(), None),
         };
 
         // 24-hour uptime percentage.
@@ -117,7 +202,7 @@ pub async fn public_status(
         let uptime_24h = if agg.total > 0 {
             (agg.up_count as f64 / agg.total as f64) * 100.0
         } else {
-            100.0 // No data yet → assume operational.
+            100.0
         };
 
         if uptime_24h < 100.0 && uptime_24h >= 90.0 {
@@ -130,7 +215,10 @@ pub async fn public_status(
         // Fetch 24-hour hourly latency breakdown.
         let latency_24h = get_24h_latency_history(&state.db, &m.id).await?;
 
-        public_monitors.push(PublicMonitor {
+        // Fetch 24-hour response time percentiles (P50, P95, P99) and average.
+        let latency = crate::db::checks::get_latency_percentiles(&state.db, &m.id, 24).await?;
+
+        let pub_m = PublicMonitor {
             id: m.id.clone(),
             name: m.name.clone(),
             url: m.url.clone(),
@@ -139,8 +227,28 @@ pub async fn public_status(
             uptime_24h: (uptime_24h * 100.0).round() / 100.0,
             uptime_history,
             latency_24h,
-        });
+            latency,
+        };
+
+        public_monitors.push(pub_m.clone());
+
+        let grp = if m.group_name.trim().is_empty() {
+            "Services".to_string()
+        } else {
+            m.group_name.trim().to_string()
+        };
+
+        if let Some((_, list)) = groups_map.iter_mut().find(|(name, _)| name == &grp) {
+            list.push(pub_m);
+        } else {
+            groups_map.push((grp, vec![pub_m]));
+        }
     }
+
+    let groups: Vec<MonitorGroup> = groups_map
+        .into_iter()
+        .map(|(name, monitors)| MonitorGroup { name, monitors })
+        .collect();
 
     // ── Overall banner ───────────────────────────────────────────────
     let status = if any_down {
@@ -155,11 +263,48 @@ pub async fn public_status(
         .or_else(|_| std::env::var("KEEPUP_THEME"))
         .ok();
 
-    Ok(Json(PublicStatus {
+    Ok(PublicStatus {
+        title,
+        description,
         status,
         status_page_theme,
+        maintenance_windows,
+        groups,
         monitors: public_monitors,
-    }))
+    })
+}
+
+/// `GET /api/public/status` — aggregated health for the default status page.
+pub async fn public_status(
+    State(state): State<Arc<AppState>>,
+) -> Result<Json<PublicStatus>, AppError> {
+    let status = get_public_status_impl(&state, "default").await?;
+    Ok(Json(status))
+}
+
+/// `GET /api/public/status/:slug` — aggregated health for a custom status page.
+pub async fn public_status_by_slug(
+    State(state): State<Arc<AppState>>,
+    Path(slug): Path<String>,
+) -> Result<Json<PublicStatus>, AppError> {
+    let status = get_public_status_impl(&state, &slug).await?;
+    Ok(Json(status))
+}
+
+pub use public_status as get_default_status;
+pub use public_status_by_slug as get_status_by_slug;
+#[allow(unused_imports)]
+pub use public_status as get_public_status_handler;
+#[allow(unused_imports)]
+pub use public_status_by_slug as get_public_status_by_slug_handler;
+
+/// Clean public routes sub-router for public status telemetry.
+pub fn public_routes() -> axum::Router<Arc<AppState>> {
+    axum::Router::new()
+        // Default status page (slug = "default")
+        .route("/status", axum::routing::get(get_default_status))
+        // Custom status page by slug
+        .route("/status/:slug", axum::routing::get(get_status_by_slug))
 }
 
 // ── SVG Status Badge ─────────────────────────────────────────────────────────
@@ -179,6 +324,7 @@ pub enum MonitorBadgeStatus {
     Up,
     Down,
     Degraded,
+    Maintenance,
     NotFound,
 }
 
@@ -188,6 +334,7 @@ impl MonitorBadgeStatus {
             Self::Up => "operational",
             Self::Down => "downtime",
             Self::Degraded => "degraded",
+            Self::Maintenance => "maintenance",
             Self::NotFound => "not found",
         }
     }
@@ -197,6 +344,7 @@ impl MonitorBadgeStatus {
             Self::Up => "#30D158",
             Self::Down => "#FF453A",
             Self::Degraded => "#FFD60A",
+            Self::Maintenance => "#A855F7",
             Self::NotFound => "#71717A",
         }
     }
@@ -204,7 +352,7 @@ impl MonitorBadgeStatus {
     pub fn text_color(&self) -> &'static str {
         match self {
             Self::Up | Self::Degraded => "#09090b",
-            Self::Down | Self::NotFound => "#ffffff",
+            Self::Down | Self::Maintenance | Self::NotFound => "#ffffff",
         }
     }
 }
@@ -322,6 +470,7 @@ pub async fn badge(
                 let status_enum = match status_lower.as_str() {
                     "down" | "downtime" => MonitorBadgeStatus::Down,
                     "degraded" => MonitorBadgeStatus::Degraded,
+                    "maintenance" => MonitorBadgeStatus::Maintenance,
                     "not_found" | "not found" => MonitorBadgeStatus::NotFound,
                     _ => MonitorBadgeStatus::Up,
                 };
@@ -329,6 +478,17 @@ pub async fn badge(
                 let right = status_enum.default_label().to_string();
                 let title = format!("{left}: {right}");
                 (left, right, status_enum.bg_color(), status_enum.text_color(), title)
+            } else if crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id).await.unwrap_or(false) {
+                let left = format!("KeepUp | {}", m.name);
+                let right = "maintenance".to_string();
+                let title = format!("{left}: maintenance");
+                (
+                    left,
+                    right,
+                    MonitorBadgeStatus::Maintenance.bg_color(),
+                    MonitorBadgeStatus::Maintenance.text_color(),
+                    title,
+                )
             } else {
                 // Fetch latest check
                 let latest = sqlx::query_as::<_, LatestCheck>(
@@ -402,6 +562,9 @@ pub async fn badge(
                     }
                     (MonitorBadgeStatus::Down, _) => {
                         format!("{left}: downtime")
+                    }
+                    (MonitorBadgeStatus::Maintenance, _) => {
+                        format!("{left}: maintenance")
                     }
                     (MonitorBadgeStatus::NotFound, _) => {
                         "KeepUp: not found".to_string()
@@ -726,5 +889,539 @@ mod tests {
         assert!(router_str.contains("KeepUp | API Gateway"));
         assert!(router_str.contains("<svg"));
         assert!(router_str.contains("</svg>"));
+    }
+
+    async fn setup_test_pool() -> sqlx::SqlitePool {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .expect("Failed to connect to in-memory SQLite");
+
+        crate::db::run_migrations(&pool)
+            .await
+            .expect("Failed to run migrations");
+
+        pool
+    }
+
+    #[tokio::test]
+    async fn test_public_status_multi_page_and_groups() {
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let http_client = reqwest::Client::new();
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+
+        let state = Arc::new(AppState {
+            db: pool.clone(),
+            config,
+            http_client,
+            reload_tx,
+        });
+
+        // Seed 3 monitors: m1 (public), m2 (public), m3 (private)
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m1', 'Public API', 'https://api.test', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m2', 'Auth Service', 'https://auth.test', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m3', 'Internal Worker', 'https://worker.test', 0, 1)")
+            .execute(&pool).await.unwrap();
+
+        // Check logs for m1 (UP) and m2 (UP)
+        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('m1', 1, 20)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('m2', 1, 35)")
+            .execute(&pool).await.unwrap();
+
+        // 1. Default page without explicit assignments should return all active public monitors under "Services"
+        let default_status = get_public_status_impl(&state, "default").await.unwrap();
+        assert_eq!(default_status.title, "System Status");
+        assert_eq!(default_status.monitors.len(), 2);
+        assert_eq!(default_status.groups.len(), 1);
+        assert_eq!(default_status.groups[0].name, "Services");
+        assert_eq!(default_status.groups[0].monitors.len(), 2);
+
+        // 2. Create custom page "dashboards" assigned only to m1 under "Gateways"
+        crate::db::status_pages::create_status_page(
+            &pool,
+            "dashboards",
+            "Customer Dashboards",
+            Some("Dashboard telemetry"),
+            true,
+            None,
+        ).await.unwrap();
+
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "dashboards",
+            "Customer Dashboards",
+            Some("Dashboard telemetry"),
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m1".to_string(),
+                    group_name: "Gateways".to_string(),
+                    display_order: 1,
+                }
+            ]),
+        ).await.unwrap();
+
+        let custom_status = get_public_status_impl(&state, "dashboards").await.unwrap();
+        assert_eq!(custom_status.title, "Customer Dashboards");
+        assert_eq!(custom_status.monitors.len(), 1);
+        assert_eq!(custom_status.monitors[0].id, "m1");
+        assert_eq!(custom_status.groups.len(), 1);
+        assert_eq!(custom_status.groups[0].name, "Gateways");
+
+        // 3. Querying non-existent slug returns NotFound (404)
+        let not_found = get_public_status_impl(&state, "non-existent").await;
+        assert!(matches!(not_found, Err(AppError::NotFound(_))));
+    }
+
+    #[tokio::test]
+    async fn test_custom_page_dashboard_internal_dashboards_integration() {
+        use tower::ServiceExt;
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let http_client = reqwest::Client::new();
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+
+        let state = Arc::new(AppState {
+            db: pool.clone(),
+            config,
+            http_client,
+            reload_tx,
+        });
+
+        // 1. Seed monitors
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-dash-1', 'Main Dashboard', 'https://dash1.test', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-dash-2', 'Metrics Dashboard', 'https://dash2.test', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-other', 'Billing Worker', 'https://billing.test', 1, 1)")
+            .execute(&pool).await.unwrap();
+
+        // 2. Create custom status page "dashboard"
+        crate::db::status_pages::create_status_page(
+            &pool,
+            "dashboard",
+            "Internal Dashboards Status",
+            Some("Health status of internal dashboards"),
+            true,
+            None,
+        ).await.unwrap();
+
+        // 3. Assign 2 monitors with group label "Internal Dashboards"
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "dashboard",
+            "Internal Dashboards Status",
+            Some("Health status of internal dashboards"),
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-dash-1".to_string(),
+                    group_name: "Internal Dashboards".to_string(),
+                    display_order: 1,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-dash-2".to_string(),
+                    group_name: "Internal Dashboards".to_string(),
+                    display_order: 2,
+                },
+            ]),
+        ).await.unwrap();
+
+        // 4. Test API via Router GET /api/public/status/dashboard
+        let app = crate::api::router(state.clone()).with_state(state.clone());
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status/dashboard")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let payload: PublicStatus = serde_json::from_slice(&bytes).unwrap();
+
+        assert_eq!(payload.title, "Internal Dashboards Status");
+        assert_eq!(payload.monitors.len(), 2);
+        assert!(payload.monitors.iter().any(|m| m.id == "m-dash-1"));
+        assert!(payload.monitors.iter().any(|m| m.id == "m-dash-2"));
+        assert!(!payload.monitors.iter().any(|m| m.id == "m-other"));
+
+        assert_eq!(payload.groups.len(), 1);
+        assert_eq!(payload.groups[0].name, "Internal Dashboards");
+        assert_eq!(payload.groups[0].monitors.len(), 2);
+
+        // 5. Test API for non-existent slug returns 404
+        let app_nf = crate::api::router(state.clone()).with_state(state.clone());
+        let req_nf = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status/unknown-page")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res_nf = app_nf.oneshot(req_nf).await.unwrap();
+        assert_eq!(res_nf.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_public_status_with_active_maintenance() {
+        use chrono::Duration;
+
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let http_client = reqwest::Client::new();
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+
+        let state = Arc::new(AppState {
+            db: pool.clone(),
+            config,
+            http_client,
+            reload_tx,
+        });
+
+        // 1. Seed monitors
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-maint-1', 'Payments API', 'https://payments.test', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-normal-1', 'Auth Service', 'https://auth.test', 1, 1)")
+            .execute(&pool).await.unwrap();
+
+        // Check log for m-maint-1 was failed check
+        sqlx::query("INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, error_msg) VALUES ('m-maint-1', 503, 120, 0, 'Service Unavailable')")
+            .execute(&pool).await.unwrap();
+        // Check log for m-normal-1 was up
+        sqlx::query("INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up) VALUES ('m-normal-1', 200, 45, 1)")
+            .execute(&pool).await.unwrap();
+
+        // 2. Schedule active maintenance window covering now
+        let now = chrono::Utc::now();
+        let start = now - Duration::minutes(15);
+        let end = now + Duration::hours(1);
+
+        crate::db::maintenance::create_maintenance_window(
+            &pool,
+            crate::db::maintenance::CreateMaintenanceDto {
+                title: "Planned Payments Gateway Upgrade".to_string(),
+                description: Some("Upgrading payment processors to v3".to_string()),
+                start_time: start.to_rfc3339(),
+                end_time: end.to_rfc3339(),
+                monitor_ids: vec!["m-maint-1".to_string()],
+            },
+        ).await.unwrap();
+
+        // 3. Query public status
+        let public_status = get_public_status_impl(&state, "default").await.unwrap();
+
+        // Maintenance window must be included and active
+        assert_eq!(public_status.maintenance_windows.len(), 1);
+        assert_eq!(public_status.maintenance_windows[0].title, "Planned Payments Gateway Upgrade");
+        assert!(public_status.maintenance_windows[0].is_active);
+
+        // m-maint-1 must report "MAINTENANCE" instead of "DOWN"
+        let maint_mon = public_status.monitors.iter().find(|m| m.id == "m-maint-1").unwrap();
+        assert_eq!(maint_mon.current_status, "MAINTENANCE");
+
+        // Overall status should not be marked as Major Outage since failure was in maintenance
+        assert_ne!(public_status.status, "Major Outage");
+
+        // 4. Test badge rendering for monitor under maintenance
+        let badge_svg = render_badge_svg(
+            &format!("KeepUp | {}", maint_mon.name),
+            "maintenance",
+            MonitorBadgeStatus::Maintenance.bg_color(),
+            MonitorBadgeStatus::Maintenance.text_color(),
+            "KeepUp | Payments API: maintenance",
+        );
+        assert!(badge_svg.contains("maintenance"));
+        assert!(badge_svg.contains("#A855F7"));
+    }
+
+    #[tokio::test]
+    async fn test_public_status_latency_percentiles_with_100_samples() {
+        use tower::ServiceExt;
+
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let http_client = reqwest::Client::new();
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+
+        let state = Arc::new(AppState {
+            db: pool.clone(),
+            config,
+            http_client,
+            reload_tx,
+        });
+
+        // 1. Seed active public monitor
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-pct', 'Percentile API', 'https://api.pct', 1, 1)"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 2. Seed check_logs with 100 sample response times from 10ms to 406ms (10 + i * 4)
+        for i in 0..100 {
+            let lat: i32 = 10 + i * 4;
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, checked_at, created_at)
+                 VALUES ('m-pct', 200, ?, 1, datetime('now'), datetime('now'))"
+            )
+            .bind(lat)
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // 3. Call GET /api/public/status through Router
+        let app = crate::api::router(state.clone()).with_state(state.clone());
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let status_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        let monitor = &status_json["monitors"][0];
+        assert_eq!(monitor["id"], "m-pct");
+
+        let lat_obj = &monitor["latency"];
+        assert_eq!(lat_obj["p50"], 210);
+        assert_eq!(lat_obj["p95"], 386);
+        assert_eq!(lat_obj["p99"], 402);
+        assert_eq!(lat_obj["avg"], 208);
+    }
+
+    #[tokio::test]
+    async fn test_custom_status_page_api_core_services_group() {
+        use tower::ServiceExt;
+
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let http_client = reqwest::Client::new();
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+
+        let state = Arc::new(AppState {
+            db: pool.clone(),
+            config,
+            http_client,
+            reload_tx,
+        });
+
+        // 1. Seed 2 monitors
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_active, is_public, last_status) \
+             VALUES ('mon-api-1', 'Users Service', 'https://api.test/users', 1, 1, 'UP')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_active, is_public, last_status) \
+             VALUES ('mon-api-2', 'Auth Service', 'https://api.test/auth', 1, 1, 'UP')"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Check logs for monitors
+        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-1', 1, 15)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-2', 1, 28)")
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        // 2. Create custom status page `slug: "api"`, `title: "API Services"` with monitors assigned under group `"Core Services"`
+        crate::db::status_pages::create_status_page(
+            &pool,
+            "api",
+            "API Services",
+            Some("Core API status page"),
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "mon-api-1".to_string(),
+                    group_name: "Core Services".to_string(),
+                    display_order: 1,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "mon-api-2".to_string(),
+                    group_name: "Core Services".to_string(),
+                    display_order: 2,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+
+        // 3. Test get_public_status_page in DB
+        let (page_meta, page_monitors) = crate::db::status_pages::get_public_status_page(&pool, "api")
+            .await
+            .unwrap()
+            .expect("Status page 'api' must exist");
+
+        assert_eq!(page_meta.slug, "api");
+        assert_eq!(page_meta.title, "API Services");
+        assert_eq!(page_monitors.len(), 2);
+        assert_eq!(page_monitors[0].group_name, "Core Services");
+        assert_eq!(page_monitors[1].group_name, "Core Services");
+
+        // 4. Test GET /api/public/status/api through Router
+        let app = crate::api::router(state.clone()).with_state(state.clone());
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status/api")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res = app.oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(json["title"], "API Services");
+        assert_eq!(json["monitors"].as_array().unwrap().len(), 2);
+        assert_eq!(json["groups"].as_array().unwrap().len(), 1);
+        assert_eq!(json["groups"][0]["name"], "Core Services");
+        assert_eq!(json["groups"][0]["monitors"].as_array().unwrap().len(), 2);
+
+        let m1 = &json["groups"][0]["monitors"][0];
+        let m2 = &json["groups"][0]["monitors"][1];
+        assert_eq!(m1["id"], "mon-api-1");
+        assert_eq!(m1["current_status"], "UP");
+        assert_eq!(m2["id"], "mon-api-2");
+        assert_eq!(m2["current_status"], "UP");
+    }
+
+    #[tokio::test]
+    async fn test_custom_status_page_dri_monitors_and_assets() {
+        use tower::ServiceExt;
+
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+        let state = Arc::new(AppState {
+            db: pool.clone(),
+            config,
+            http_client: reqwest::Client::new(),
+            reload_tx,
+        });
+
+        // 1. Insert DRI and Rekadigi monitors
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) \
+             VALUES ('mon-dri', 'DRI', 'https://dri.example.com', 1, 1), \
+                    ('mon-rekadigi', 'Rekadigi', 'https://rekadigi.example.com', 1, 1)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 2. Insert check logs
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, status_code, response_time_ms, latency_ms) \
+             VALUES ('mon-dri', 1, 200, 15, 15), ('mon-rekadigi', 1, 200, 22, 22)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // 3. Create status page `dri` with both monitors assigned
+        crate::db::status_pages::create_status_page(
+            &pool,
+            "dri",
+            "DRI",
+            Some("DRI systems telemetry"),
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "mon-dri".to_string(),
+                    group_name: "DRI Services".to_string(),
+                    display_order: 1,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "mon-rekadigi".to_string(),
+                    group_name: "DRI Services".to_string(),
+                    display_order: 2,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+
+        // 4. Test GET /api/public/status/dri
+        let app = crate::api::router(state.clone()).with_state(state.clone());
+        let req = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status/dri")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
+
+        assert_eq!(json["title"], "DRI");
+        assert_eq!(json["description"], "DRI systems telemetry");
+        let monitors = json["monitors"].as_array().unwrap();
+        assert_eq!(monitors.len(), 2);
+        assert_eq!(monitors[0]["name"], "DRI");
+        assert_eq!(monitors[1]["name"], "Rekadigi");
+
+        // 5. Test Case-insensitivity (GET /api/public/status/DRI)
+        let req_upper = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status/DRI")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res_upper = app.oneshot(req_upper).await.unwrap();
+        assert_eq!(res_upper.status(), StatusCode::OK);
+
+        // 6. Test UI status_page_handler for /status/dri serves HTML
+        let uri_page = axum::http::Uri::from_static("/status/dri");
+        let html_res = crate::ui::status_page_handler(uri_page).await;
+        assert_eq!(html_res.status(), StatusCode::OK);
+        assert_eq!(
+            html_res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "text/html; charset=utf-8"
+        );
+        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64).await.unwrap();
+        let html_str = String::from_utf8_lossy(&html_bytes);
+        assert!(html_str.contains("id=\"page-title\""));
+        assert!(html_str.contains("id=\"monitors-container\""));
+        assert!(html_str.contains("id=\"loading-indicator\""));
+        assert!(html_str.contains("/status.js"));
+
+        // 7. Test UI status_page_handler for /status/status.js serves JS (NOT HTML!)
+        let uri_js = axum::http::Uri::from_static("/status/status.js");
+        let js_res = crate::ui::status_page_handler(uri_js).await;
+        assert_eq!(js_res.status(), StatusCode::OK);
+        assert!(
+            js_res
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("application/javascript")
+        );
+        let js_bytes = axum::body::to_bytes(js_res.into_body(), 1024 * 64).await.unwrap();
+        let js_str = String::from_utf8_lossy(&js_bytes);
+        assert!(js_str.contains("loadStatusData"));
     }
 }

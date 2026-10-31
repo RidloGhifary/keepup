@@ -250,6 +250,10 @@ function renderMonitorCard(m) {
     statusColor = '#8e8e93'; // Neutral Gray
     statusBadgeBg = 'bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20';
     statusLabel = 'PAUSED';
+  } else if (live && live.current_status === 'MAINTENANCE') {
+    statusColor = '#c084fc'; // Maintenance Purple
+    statusBadgeBg = 'bg-purple-500/15 text-purple-700 dark:text-purple-400 border border-purple-500/20';
+    statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
     statusColor = '#ff453a'; // Outage Red
     statusBadgeBg = 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
@@ -365,6 +369,10 @@ function renderMonitorListRow(m) {
     statusColor = '#8e8e93';
     statusBadgeBg = 'bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20';
     statusLabel = 'PAUSED';
+  } else if (live && live.current_status === 'MAINTENANCE') {
+    statusColor = '#c084fc';
+    statusBadgeBg = 'bg-purple-500/15 text-purple-700 dark:text-purple-400 border border-purple-500/20';
+    statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
     statusColor = '#ff453a';
     statusBadgeBg = 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
