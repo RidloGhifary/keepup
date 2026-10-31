@@ -5,9 +5,9 @@
   <meta name="viewport" content="width=device-width, initial-scale=1.0">
   <title>KeepUp — Ultra-Lightweight Uptime Monitoring & Public Status Page</title>
   <meta name="description" content="Ultra-lightweight, single-binary uptime monitor and public status page engine written in Rust. Sub-15MB RAM, embedded SQLite, and stateful alerts to Discord and Slack.">
-  <link rel="icon" type="image/svg+xml" href="favicon.svg">
-  <link rel="stylesheet" href="style.css">
-  <script src="https://cdn.tailwindcss.com"></script>
+  <link rel="icon" type="image/svg+xml" href="./favicon.svg">
+  <link rel="stylesheet" href="./style.css">
+  <link rel="stylesheet" href="./output.css">
 </head>
 <body>
 
@@ -63,7 +63,6 @@
       <a href="#features" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Features</a>
       <a href="#architecture" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Architecture</a>
       <a href="docs.html" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Documentation</a>
-      <a href="status.html" onclick="toggleMobileDrawer()" class="text-neutral-200 hover:text-white text-base py-2 border-b border-white/5">Status Page Demo</a>
     </div>
     <a href="#quickstart" onclick="toggleMobileDrawer()" class="w-full py-2.5 bg-white text-black font-semibold rounded-xl text-center text-sm">Self-Host Quickstart</a>
   </div>
@@ -92,13 +91,12 @@
           </svg>
         </a>
 
-        <!-- Status Page Demo CTA -->
-        <a href="status.html" target="_blank" rel="noopener noreferrer" class="btn btn-secondary btn-lg" style="gap: 0.5rem;">
-          <svg width="16" height="16" fill="none" stroke="currentColor" viewBox="0 0 24 24" style="color: var(--status-green);">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z"/>
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z"/>
+        <!-- Secondary CTA: Quickstart -->
+        <a href="#quickstart" class="btn btn-secondary btn-lg" style="gap: 0.5rem;">
+          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
           </svg>
-          <span>View Status Page Demo</span>
+          <span>Get Started</span>
         </a>
       </div>
 
@@ -122,7 +120,7 @@
       </div>
 
       <!-- Glassmorphic Mock Browser Window Frame -->
-      <div class="mock-browser-window">
+      <div class="mock-browser-window" id="live-preview">
         <!-- Header Bar -->
         <div class="mock-browser-header">
           <!-- Left Controls: macOS traffic lights -->
@@ -144,20 +142,56 @@
           <!-- Right Indicator: Live Preview Badge -->
           <div class="mock-browser-badge">
             <span class="pulse-dot"></span>
-            <span class="badge-text">Live Preview</span>
+            <span class="badge-text" id="demo-indicator-text">Live Preview</span>
           </div>
         </div>
 
-        <!-- Embedded Preview Iframe Container -->
-        <div class="mock-browser-body">
-          <iframe
-            id="status-preview-iframe"
-            src="status.html?demo=true&theme=dark"
-            title="KeepUp Live Status Page Preview"
-            loading="lazy"
-            class="mock-browser-iframe"
-            sandbox="allow-scripts allow-same-origin">
-          </iframe>
+        <!-- Embedded Live Telemetry Container -->
+        <div class="mock-browser-body bg-[#0a0a0c] overflow-y-auto flex flex-col justify-between p-4 sm:p-6" id="demo-status-container">
+          <!-- Loading Spinner -->
+          <div id="demo-loading-state" class="flex flex-col items-center justify-center p-12 text-center h-full min-h-[340px] my-auto">
+            <div class="w-8 h-8 border-2 border-emerald-400/20 border-t-emerald-400 rounded-full animate-spin mb-3"></div>
+            <p class="text-xs font-mono text-neutral-400 tracking-wide">Connecting to health telemetry stream...</p>
+          </div>
+
+          <!-- Live Status Content (Revealed on Data Load) -->
+          <div id="demo-content-view" class="hidden flex-col h-full justify-between gap-5">
+            <!-- Top Status Headline -->
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pb-4 border-b border-white/10 gap-3">
+              <div class="flex items-center gap-2.5">
+                <span class="relative flex h-3 w-3 shrink-0">
+                  <span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-emerald-400 opacity-75"></span>
+                  <span class="relative inline-flex rounded-full h-3 w-3 bg-emerald-400"></span>
+                </span>
+                <div>
+                  <h3 class="text-sm sm:text-base font-semibold text-white tracking-tight" id="demo-overall-title">All Systems Operational</h3>
+                  <p class="text-[11px] font-mono text-neutral-400" id="demo-overall-subtitle">Continuous probes active • Zero incidents reported</p>
+                </div>
+              </div>
+              <div class="flex items-center gap-2 text-xs font-mono text-neutral-300 bg-white/5 border border-white/10 px-3 py-1.5 rounded-lg">
+                <span class="text-emerald-400 font-bold" id="demo-uptime-rate">99.98%</span>
+                <span class="text-neutral-500">•</span>
+                <span id="demo-last-probe">Probing active</span>
+              </div>
+            </div>
+
+            <!-- 4 Telemetry Status Cards Grid -->
+            <div id="demo-monitors-grid" class="grid grid-cols-1 md:grid-cols-2 gap-3 sm:gap-4 my-auto">
+              <!-- Dynamically populated with 4 status cards -->
+            </div>
+
+            <!-- Bottom Telemetry Bar -->
+            <div class="flex flex-col sm:flex-row items-start sm:items-center justify-between pt-4 border-t border-white/10 text-[11px] font-mono text-neutral-400 gap-2">
+              <div class="flex items-center gap-2">
+                <span class="inline-block w-1.5 h-1.5 rounded-full bg-emerald-400"></span>
+                <span id="demo-status-source">SQLite WAL Engine • Sub-15MB RAM</span>
+              </div>
+              <a href="docs.html#status-multi-page" class="inline-flex items-center gap-1.5 text-neutral-300 hover:text-white transition-colors group">
+                <span>Status Page Documentation</span>
+                <svg class="w-3.5 h-3.5 group-hover:translate-x-0.5 transition-transform" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/></svg>
+              </a>
+            </div>
+          </div>
         </div>
       </div>
     </section>
@@ -607,7 +641,7 @@
       </div>
       <div class="footer-links">
         <a href="index.html">Home</a>
-        <a href="status.html">Live Status Demo</a>
+        <a href="#features">Features</a>
         <a href="#badges">Badges</a>
         <a href="#benchmarks">Benchmarks</a>
         <a href="docs.html">Documentation</a>
@@ -921,6 +955,163 @@
       } catch (_) {
         fallbackCopyText(text, btn, 'Copied!');
       }
+    }
+
+    // ── Live Status Telemetry & Fallback Engine ──────────────────────────────
+    const DEMO_FALLBACK_MONITORS = [
+      {
+        name: 'Core REST API',
+        url: 'https://api.keepup.dev/v1/health',
+        status: 'up',
+        last_latency_ms: 18,
+        uptime_percentage: 99.99
+      },
+      {
+        name: 'Web Dashboard',
+        url: 'https://app.keepup.dev',
+        status: 'up',
+        last_latency_ms: 32,
+        uptime_percentage: 99.98
+      },
+      {
+        name: 'Auth Gateway',
+        url: 'https://auth.keepup.dev/oauth/token',
+        status: 'up',
+        last_latency_ms: 24,
+        uptime_percentage: 100.0
+      },
+      {
+        name: 'Primary DB',
+        url: 'sqlite://data/custom.db (WAL Mode)',
+        status: 'up',
+        last_latency_ms: 4,
+        uptime_percentage: 100.0
+      }
+    ];
+
+    function escapeDemoHtml(str) {
+      if (!str) return '';
+      return String(str)
+        .replace(/&/g, '&amp;')
+        .replace(/</g, '&lt;')
+        .replace(/>/g, '&gt;')
+        .replace(/"/g, '&quot;')
+        .replace(/'/g, '&#39;');
+    }
+
+    function renderDemoMonitorCard(monitor) {
+      const isUp = (monitor.status || 'up').toLowerCase() === 'up';
+      const isDegraded = (monitor.status || '').toLowerCase() === 'degraded';
+
+      const statusLabel = isUp ? 'Operational' : isDegraded ? 'Degraded' : 'Outage';
+      const dotColor = isUp ? 'bg-emerald-400' : isDegraded ? 'bg-amber-400' : 'bg-rose-400';
+      const pillStyle = isUp
+        ? 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20'
+        : isDegraded
+        ? 'bg-amber-500/10 text-amber-400 border-amber-500/20'
+        : 'bg-rose-500/10 text-rose-400 border-rose-500/20';
+
+      const latency = monitor.last_latency_ms ? `${monitor.last_latency_ms}ms` : '18ms';
+      const uptime = monitor.uptime_percentage ? `${monitor.uptime_percentage}%` : '99.9%';
+      const urlDisplay = monitor.url || 'https://api.keepup.dev/health';
+
+      return `
+        <div class="bg-[#0a0a0c] border border-white/10 hover:border-white/20 rounded-xl p-4 transition-all duration-200 flex flex-col justify-between gap-3 shadow-sm hover:shadow-md">
+          <div class="flex items-start justify-between gap-2">
+            <div class="min-w-0">
+              <div class="flex items-center gap-2">
+                <h4 class="text-sm font-semibold text-white tracking-tight truncate">${escapeDemoHtml(monitor.name)}</h4>
+              </div>
+              <p class="text-xs font-mono text-neutral-400 truncate mt-0.5" title="${escapeDemoHtml(urlDisplay)}">${escapeDemoHtml(urlDisplay)}</p>
+            </div>
+            <span class="inline-flex items-center gap-1.5 px-2.5 py-1 rounded-full text-xs font-medium border shrink-0 ${pillStyle}">
+              <span class="relative flex h-2 w-2 shrink-0">
+                <span class="animate-ping absolute inline-flex h-full w-full rounded-full ${dotColor} opacity-75"></span>
+                <span class="relative inline-flex rounded-full h-2 w-2 ${dotColor}"></span>
+              </span>
+              <span>${statusLabel}</span>
+            </span>
+          </div>
+          <div class="flex items-center justify-between text-xs font-mono pt-2 border-t border-white/5 text-neutral-400">
+            <span class="flex items-center gap-1.5">
+              <svg class="w-3.5 h-3.5 text-neutral-500 shrink-0" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 8v4l3 3m6-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>
+              <span class="text-neutral-300 font-medium">${latency}</span> latency
+            </span>
+            <span class="text-neutral-400">${uptime}</span>
+          </div>
+        </div>
+      `;
+    }
+
+    async function initLiveDemoWidget() {
+      const loadingEl = document.getElementById('demo-loading-state');
+      const contentEl = document.getElementById('demo-content-view');
+      const gridEl = document.getElementById('demo-monitors-grid');
+      const sourceEl = document.getElementById('demo-status-source');
+      const indicatorText = document.getElementById('demo-indicator-text');
+
+      if (!gridEl) return;
+
+      let monitors = [];
+      let isLive = false;
+
+      try {
+        const signal = (typeof AbortSignal !== 'undefined' && typeof AbortSignal.timeout === 'function')
+          ? AbortSignal.timeout(2000)
+          : (() => {
+              const c = new AbortController();
+              setTimeout(() => c.abort(), 2000);
+              return c.signal;
+            })();
+
+        const res = await fetch('/api/public/status/default', { signal });
+        if (res.ok) {
+          const data = await res.json();
+          if (Array.isArray(data.monitors) && data.monitors.length > 0) {
+            monitors = data.monitors.slice(0, 4);
+            isLive = true;
+          }
+        }
+      } catch (_) {
+        // Fallback on static host, 404, offline or timeout
+      }
+
+      if (!monitors || monitors.length === 0) {
+        monitors = DEMO_FALLBACK_MONITORS;
+        isLive = false;
+      }
+
+      if (monitors.length < 4) {
+        const remaining = DEMO_FALLBACK_MONITORS.slice(monitors.length);
+        monitors = [...monitors, ...remaining];
+      }
+
+      gridEl.innerHTML = monitors.slice(0, 4).map(renderDemoMonitorCard).join('');
+
+      if (sourceEl) {
+        sourceEl.textContent = isLive
+          ? 'Live API Telemetry • SQLite WAL Engine'
+          : 'Demo Telemetry Mode • SQLite WAL Engine';
+      }
+
+      if (indicatorText) {
+        indicatorText.textContent = isLive ? 'Live Telemetry' : 'Live Preview';
+      }
+
+      if (loadingEl) {
+        loadingEl.style.display = 'none';
+        loadingEl.classList.add('hidden');
+      }
+      if (contentEl) {
+        contentEl.classList.remove('hidden');
+        contentEl.classList.add('flex');
+      }
+    }
+
+    if (document.readyState === 'loading') {
+      document.addEventListener('DOMContentLoaded', initLiveDemoWidget);
+    } else {
+      initLiveDemoWidget();
     }
   </script>
 </body>

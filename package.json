@@ -1,0 +1,12 @@
+{
+  "name": "keepup",
+  "version": "0.1.0",
+  "private": true,
+  "description": "Ultra-lightweight HTTP uptime monitoring and status page engine in Rust",
+  "scripts": {
+    "build:css": "tailwindcss -i input.css -o output.css --minify && cp output.css docs_site/output.css"
+  },
+  "devDependencies": {
+    "tailwindcss": "^3.4.17"
+  }
+}

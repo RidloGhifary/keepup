@@ -5,6 +5,11 @@ on:
     branches: ["main"]
     paths:
       - "docs_site/**"
+      - "static/**"
+      - "tailwind.config.js"
+      - "input.css"
+      - "package.json"
+      - "package-lock.json"
       - ".github/workflows/deploy-pages.yml"
 
 permissions:
@@ -25,6 +30,20 @@ jobs:
     steps:
       - name: Checkout
         uses: actions/checkout@v4
+
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: 20
+          cache: "npm"
+
+      - name: Install Dependencies
+        run: npm ci
+
+      - name: Build Tailwind CSS
+        run: |
+          npx tailwindcss -i input.css -o docs_site/output.css --minify
+          cp docs_site/output.css output.css
 
       - name: Setup Pages
         uses: actions/configure-pages@v5

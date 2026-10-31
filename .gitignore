@@ -38,3 +38,10 @@ Thumbs.db
 *~
 *.sublime-project
 *.sublime-workspace
+
+# Node / Frontend
+node_modules/
+npm-debug.log*
+yarn-debug.log*
+yarn-error.log*
+
