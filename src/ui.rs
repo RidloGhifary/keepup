@@ -53,6 +53,7 @@ pub async fn static_handler(
             "login.html"
         }
         "status" | "status.html" => "status.html",
+        "docs" | "docs.html" => "docs.html",
         "landing" | "landing.html" => "landing.html",
         "modal" | "modal.html" => "modal.html",
         "favicon.ico" => "favicon.svg",

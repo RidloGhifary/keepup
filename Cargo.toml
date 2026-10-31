@@ -4,6 +4,8 @@ version = "0.1.0"
 edition = "2021"
 description = "Ultra-lightweight, single-binary uptime monitoring & public status page engine powered by Rust"
 license = "MIT"
+repository = "https://github.com/RidloGhifary/keepup"
+homepage = "https://github.com/RidloGhifary/keepup"
 
 [dependencies]
 # Async Runtime & Web Framework

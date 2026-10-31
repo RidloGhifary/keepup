@@ -1,18 +1,14 @@
 # ==============================================================================
-# Stage 1: Builder
+# Stage 1: Builder (Rust Alpine for Rust Edition 2024 & Modern Crates Support)
 # ==============================================================================
-FROM rust:1.82-slim AS builder
+FROM rust:alpine AS builder
 
-WORKDIR /usr/src/keepup
+WORKDIR /app
 
-# Install essential build dependencies
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    pkg-config \
-    libssl-dev \
-    ca-certificates \
-    && rm -rf /var/lib/apt/lists/*
+# Install build dependencies for static musl compilation
+RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
 
-# Dependency layer caching: Copy manifest files and build dependencies with a dummy entrypoint
+# Dependency layer caching: Copy manifest files and pre-compile dependencies
 COPY Cargo.toml Cargo.lock ./
 RUN mkdir -p src static migrations && \
     echo "fn main() {}" > src/main.rs && \
@@ -20,35 +16,29 @@ RUN mkdir -p src static migrations && \
     rm -rf src
 
 # Copy real project sources, migrations, and static frontend assets
-COPY migrations ./migrations
-COPY static ./static
-COPY src ./src
+COPY . .
 
-# Touch main.rs to ensure Cargo recompiles the real binary rather than using the dummy build
+# Recompile standalone binary with real project source code
 RUN touch src/main.rs && cargo build --release
 
 # ==============================================================================
-# Stage 2: Minimal Production Runtime
+# Stage 2: Minimal Production Runtime (Alpine 3.21)
 # ==============================================================================
-FROM debian:bookworm-slim AS runtime
+FROM alpine:3.21 AS runtime
 
 WORKDIR /app
 
 # Install runtime utilities:
-# - ca-certificates: essential for reqwest HTTPS probe verification
-# - tzdata: accurate UTC/local timestamping for incident logs
+# - ca-certificates: TLS probe verification
+# - tzdata: UTC/local timestamping for incident logs
 # - curl: container healthcheck probing
-RUN apt-get update && apt-get install -y --no-install-recommends \
-    ca-certificates \
-    tzdata \
-    curl \
-    && rm -rf /var/lib/apt/lists/*
+RUN apk add --no-cache ca-certificates tzdata curl
 
-# Dedicated persistent storage directory for the SQLite database
+# Create persistent storage directory for the SQLite database
 RUN mkdir -p /app/data
 
 # Copy compiled standalone executable from Builder stage
-COPY --from=builder /usr/src/keepup/target/release/keepup /app/keepup
+COPY --from=builder /app/target/release/keepup /usr/local/bin/keepup
 
 # Expose internal Axum web server port
 EXPOSE 3000
@@ -62,4 +52,4 @@ ENV PORT=3000 \
     ADMIN_PASSWORD=keepup123
 
 # Launch the single-binary application
-ENTRYPOINT ["/app/keepup"]
+ENTRYPOINT ["/usr/local/bin/keepup"]

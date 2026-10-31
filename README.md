@@ -23,7 +23,7 @@ docker run -d \
   -e ADMIN_USER=admin \
   -e ADMIN_PASSWORD=change_me_immediately \
   -v keepup-data:/data \
-  keepup/keepup:latest
+  ridloghfry/keepup:latest
 ```
 
 Access endpoints:
@@ -39,7 +39,7 @@ version: '3.8'
 
 services:
   keepup:
-    image: keepup/keepup:latest
+    image: ridloghfry/keepup:latest
     container_name: keepup
     restart: unless-stopped
     ports:
@@ -74,7 +74,7 @@ docker compose up -d
 Prerequisites: Rust 1.82+ and SQLite build libraries.
 
 ```bash
-git clone https://github.com/your-org/keepup.git
+git clone https://github.com/RidloGhifary/keepup.git
 cd keepup
 cargo build --release
 ./target/release/keepup

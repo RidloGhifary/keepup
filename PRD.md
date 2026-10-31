@@ -281,7 +281,7 @@ version: "3.8"
 
 services:
   keepup:
-    image: ghcr.io/yourusername/keepup:latest
+    image: ridloghfry/keepup:latest
     container_name: keepup
     restart: always
     ports:
