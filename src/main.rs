@@ -1,3 +1,4 @@
+mod alerting;
 mod api;
 mod banner;
 mod checker;
@@ -31,6 +32,9 @@ pub struct AppState {
 
 #[tokio::main]
 async fn main() -> anyhow::Result<()> {
+    // Install ring crypto provider for rustls
+    let _ = tokio_rustls::rustls::crypto::ring::default_provider().install_default();
+
     // Load .env file (optional – not an error if missing).
     dotenvy::dotenv().ok();
 

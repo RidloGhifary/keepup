@@ -19,7 +19,7 @@ KeepUp compiles synthetic health checking, persistent time-series logging, state
 ```bash
 docker run -d \
   --name keepup \
-  -p 3000:3000 \
+  -p 8080:8080 \
   -e ADMIN_USER=admin \
   -e ADMIN_PASSWORD=change_me_immediately \
   -v keepup-data:/data \
@@ -27,11 +27,18 @@ docker run -d \
 ```
 
 Access endpoints:
-- **Admin Dashboard:** `http://localhost:3000/`
-- **Public Status Page (Default):** `http://localhost:3000/status`
-- **Custom Status Page by Slug:** `http://localhost:3000/status/<slug>`
-- **Public Status API:** `http://localhost:3000/api/public/status` (or `/api/public/status/<slug>`)
-- **Live Vector Badge:** `http://localhost:3000/api/public/badge/<monitor-id>.svg`
+- **Admin Dashboard:** `http://localhost:8080/`
+- **Public Status Page (Default):** `http://localhost:8080/status`
+- **Custom Status Page by Slug:** `http://localhost:8080/status/<slug>`
+- **Public Status API:** `http://localhost:8080/api/public/status` (or `/api/public/status/<slug>`)
+- **Live Vector Badge:** `http://localhost:8080/api/public/badge/<monitor-id>.svg`
+
+> [!IMPORTANT]
+> **Initial Dashboard Login:**
+> - **Username:** `admin`
+> - **Password:** `admin`
+> 
+> ⚠️ *Change these default credentials immediately in production by setting environment variables `ADMIN_USER` and `ADMIN_PASSWORD`.*
 
 ### Docker Compose (`docker-compose.yml`)
 
@@ -44,17 +51,17 @@ services:
     container_name: keepup
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "8080:8080"
     volumes:
       - keepup-data:/data
     environment:
-      - PORT=3000
+      - PORT=8080
       - ADMIN_USER=admin
       - ADMIN_PASSWORD=change_me_immediately
       - KEEPUP_DB_PATH=/data/keepup.db
       - STATUS_PAGE_THEME=auto
     healthcheck:
-      test: ["CMD-SHELL", "curl -f http://localhost:3000/api/public/status || exit 1"]
+      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/public/status || exit 1"]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -68,6 +75,20 @@ Launch with:
 
 ```bash
 docker compose up -d
+```
+
+### Multi-Architecture Builds (Docker Buildx)
+
+KeepUp container images support multi-architecture execution across `linux/amd64` (x86_64) and `linux/arm64` (Apple Silicon, AWS Graviton, Raspberry Pi) using `cargo-chef` layer caching.
+
+#### Local Multi-Arch Build Verification
+
+```bash
+# Build multi-architecture image locally
+docker buildx build --platform linux/amd64,linux/arm64 -t ridloghfry/keepup:test .
+
+# Inspect published multi-arch manifest
+docker buildx imagetools inspect ridloghfry/keepup:latest
 ```
 
 ### Cargo Local Build &amp; Install
@@ -143,11 +164,11 @@ KeepUp is configured via environment variables or a local `.env` file:
 
 | Variable | Description | Default | Required |
 | --- | --- | --- | --- |
-| `PORT` | HTTP server binding port | `3000` | No |
-| `ADMIN_USER` | Admin login username | `admin` | Yes |
-| `ADMIN_PASSWORD` | Admin login password | None | Yes |
+| `PORT` | HTTP server binding port | `8080` | No |
+| `ADMIN_USER` | Admin login username | `admin` | No |
+| `ADMIN_PASSWORD` | Admin login password | `admin` | No |
 | `KEEPUP_DB_PATH` | Path to SQLite database file | `./data/keepup.db` | No |
-| `JWT_SECRET` | Secret key for signing JWT cookies | `keepup_jwt_fallback_secret_key_32bytes` | No |
+| `JWT_SECRET` | Secret key for signing JWT cookies | Auto-generated random UUID | No |
 | `STATUS_PAGE_THEME` | Default status page theme (`auto`, `dark`, `light`, `oled`, `midnight`) | `auto` | No |
 | `CUSTOM_LOGO_URL` | Optional custom logo URL for status page header | None | No |
 | `RUST_LOG` | Log verbosity filter (`trace`, `debug`, `info`, `warn`, `error`) | `keepup=info` | No |

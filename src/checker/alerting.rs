@@ -4,27 +4,43 @@ use crate::notifier::AlertPayload;
 /// Status colors used for Discord rich embeds.
 pub const COLOR_STATUS_GREEN: u32 = 0x30D158; // #30D158
 pub const COLOR_STATUS_RED: u32 = 0xFF453A;   // #FF453A
+pub const COLOR_STATUS_AMBER: u32 = 0xFFD60A; // #FFD60A
 
 /// Formats the built-in default Discord rich embed notification.
 ///
-/// Features status colors (#30D158 Green for UP, #FF453A Red for DOWN),
+/// Features status colors (#30D158 Green for UP, #FF453A Red for DOWN, #FFD60A Amber for DOMAIN_EXPIRING_SOON),
 /// service name, target URL, latency in ms, HTTP status code, and timestamp.
 pub fn format_discord_default(payload: &AlertPayload) -> Value {
     if payload.new_status == "UP" && payload.old_status == "DOWN" {
         return format_discord_recovery(payload);
     }
 
+    let is_domain_alert = payload.new_status == "DOMAIN_EXPIRING_SOON";
     let is_up = payload.new_status.to_uppercase() == "UP";
     let is_maint = payload.new_status.to_uppercase() == "MAINTENANCE";
-    let color = if is_up {
+    let color = if is_domain_alert {
+        COLOR_STATUS_AMBER
+    } else if is_up {
         COLOR_STATUS_GREEN
     } else if is_maint {
         0xA855F7
     } else {
         COLOR_STATUS_RED
     };
-    let icon = if is_up { "🟢" } else if is_maint { "🔧" } else { "🔴" };
-    let title = format!("{icon} {} is {}", payload.monitor_name, payload.new_status);
+    let icon = if is_domain_alert {
+        "⚠️"
+    } else if is_up {
+        "🟢"
+    } else if is_maint {
+        "🔧"
+    } else {
+        "🔴"
+    };
+    let title = if is_domain_alert {
+        format!("⚠️ {} Domain Registration Expiring Soon", payload.monitor_name)
+    } else {
+        format!("{icon} {} is {}", payload.monitor_name, payload.new_status)
+    };
 
     let latency_str = payload
         .response_time_ms
@@ -43,6 +59,15 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
         json!({ "name": "Latency", "value": latency_str, "inline": true }),
         json!({ "name": "HTTP Status", "value": http_status_str, "inline": true }),
     ];
+
+    if is_domain_alert {
+        if let Some(days) = payload.domain_days_remaining {
+            fields.push(json!({ "name": "Domain Days Remaining", "value": format!("{days} days"), "inline": true }));
+        }
+        if let Some(ref exp) = payload.domain_expires_at {
+            fields.push(json!({ "name": "Domain Expiration Date", "value": exp, "inline": true }));
+        }
+    }
 
     if let Some(ref duration) = payload.downtime_duration {
         fields.push(json!({ "name": "Downtime Duration", "value": duration, "inline": false }));
@@ -104,23 +129,30 @@ pub fn format_discord_recovery(payload: &AlertPayload) -> Value {
 
 /// Formats the built-in default Slack Block Kit layout notification.
 ///
-/// Features status icons (:white_check_mark: for UP, :rotating_light: for DOWN),
+/// Features status icons (:white_check_mark: for UP, :rotating_light: for DOWN, :warning: for DOMAIN_EXPIRING_SOON),
 /// monitor name, response time, and outage duration.
 pub fn format_slack_default(payload: &AlertPayload) -> Value {
     if payload.new_status == "UP" && payload.old_status == "DOWN" {
         return format_slack_recovery(payload);
     }
 
+    let is_domain_alert = payload.new_status == "DOMAIN_EXPIRING_SOON";
     let is_up = payload.new_status.to_uppercase() == "UP";
     let is_maint = payload.new_status.to_uppercase() == "MAINTENANCE";
-    let icon = if is_up {
+    let icon = if is_domain_alert {
+        ":warning:"
+    } else if is_up {
         ":white_check_mark:"
     } else if is_maint {
         ":wrench:"
     } else {
         ":rotating_light:"
     };
-    let header_text = format!("{icon} *{}* is *{}*", payload.monitor_name, payload.new_status);
+    let header_text = if is_domain_alert {
+        format!("{icon} *{}* Domain Registration Expiring Soon", payload.monitor_name)
+    } else {
+        format!("{icon} *{}* is *{}*", payload.monitor_name, payload.new_status)
+    };
 
     let latency_str = payload
         .response_time_ms
@@ -133,6 +165,21 @@ pub fn format_slack_default(payload: &AlertPayload) -> Value {
         json!({ "type": "mrkdwn", "text": format!("*Target URL:*\n{}", payload.monitor_url) }),
         json!({ "type": "mrkdwn", "text": format!("*Response Time:*\n{}", latency_str) }),
     ];
+
+    if is_domain_alert {
+        if let Some(days) = payload.domain_days_remaining {
+            fields.push(json!({
+                "type": "mrkdwn",
+                "text": format!("*Domain Days Remaining:*\n{days} days")
+            }));
+        }
+        if let Some(ref exp) = payload.domain_expires_at {
+            fields.push(json!({
+                "type": "mrkdwn",
+                "text": format!("*Domain Expiration:*\n{exp}")
+            }));
+        }
+    }
 
     if let Some(ref duration) = payload.downtime_duration {
         fields.push(json!({
@@ -240,13 +287,16 @@ pub fn format_generic_default(payload: &AlertPayload) -> Value {
     }
 
     let monitor_id = payload.monitor_id.clone().unwrap_or_default();
-    let event = if payload.monitor_id.as_deref() == Some("test-monitor-001") {
+    let is_domain_alert = payload.new_status == "DOMAIN_EXPIRING_SOON";
+    let event = if is_domain_alert {
+        "domain.expiring_soon"
+    } else if payload.monitor_id.as_deref() == Some("test-monitor-001") {
         "test_notification"
     } else {
         "status_change"
     };
 
-    json!({
+    let mut obj = json!({
         "event": event,
         "monitor_id": monitor_id,
         "monitor_name": payload.monitor_name,
@@ -255,7 +305,14 @@ pub fn format_generic_default(payload: &AlertPayload) -> Value {
         "response_time_ms": payload.response_time_ms.unwrap_or(0),
         "http_status": payload.http_status.unwrap_or(0),
         "timestamp": payload.timestamp
-    })
+    });
+
+    if is_domain_alert {
+        obj["domain_days_remaining"] = json!(payload.domain_days_remaining);
+        obj["domain_expires_at"] = json!(payload.domain_expires_at);
+    }
+
+    obj
 }
 
 /// Formats the built-in default Generic HTTP JSON recovery notification (DOWN → UP).
@@ -288,6 +345,14 @@ pub fn render_custom_template(template: &str, payload: &AlertPayload) -> String 
         .downtime_duration_secs
         .map(|s| s.to_string())
         .unwrap_or_else(|| "0".to_string());
+    let domain_days_str = payload
+        .domain_days_remaining
+        .map(|d| d.to_string())
+        .unwrap_or_else(|| "N/A".to_string());
+    let domain_exp_str = payload
+        .domain_expires_at
+        .as_deref()
+        .unwrap_or("N/A");
 
     template
         .replace("{{monitor_id}}", monitor_id)
@@ -304,6 +369,8 @@ pub fn render_custom_template(template: &str, payload: &AlertPayload) -> String 
         .replace("{{downtime_duration}}", payload.downtime_duration.as_deref().unwrap_or(""))
         .replace("{{downtime_duration_secs}}", &duration_secs_str)
         .replace("{{timestamp}}", &payload.timestamp)
+        .replace("{{domain_days_remaining}}", &domain_days_str)
+        .replace("{{domain_expires_at}}", domain_exp_str)
 }
 
 #[cfg(test)]
@@ -323,7 +390,45 @@ mod tests {
             downtime_duration: if is_up { Some("4m 12s".to_string()) } else { None },
             downtime_duration_secs: if is_up { Some(252) } else { None },
             timestamp: "2026-10-30T18:30:00Z".to_string(),
+            domain_days_remaining: None,
+            domain_expires_at: None,
         }
+    }
+
+    #[test]
+    fn test_format_domain_expiring_soon_alerts() {
+        let mut payload = sample_payload(true);
+        payload.new_status = "DOMAIN_EXPIRING_SOON".to_string();
+        payload.old_status = "UP".to_string();
+        payload.domain_days_remaining = Some(14);
+        payload.domain_expires_at = Some("2026-11-15T00:00:00Z".to_string());
+
+        // Discord Amber Embed
+        let discord = format_discord_default(&payload);
+        assert_eq!(discord["embeds"][0]["color"], COLOR_STATUS_AMBER);
+        let title = discord["embeds"][0]["title"].as_str().unwrap();
+        assert!(title.contains("Domain Registration Expiring Soon"));
+        let fields = discord["embeds"][0]["fields"].as_array().unwrap();
+        let days_field = fields.iter().find(|f| f["name"] == "Domain Days Remaining").unwrap();
+        assert_eq!(days_field["value"], "14 days");
+
+        // Slack Warning Block
+        let slack = format_slack_default(&payload);
+        let header = slack["blocks"][0]["text"]["text"].as_str().unwrap();
+        assert!(header.contains(":warning:"));
+        assert!(header.contains("Domain Registration Expiring Soon"));
+
+        // Generic Webhook
+        let generic = format_generic_default(&payload);
+        assert_eq!(generic["event"], "domain.expiring_soon");
+        assert_eq!(generic["status"], "DOMAIN_EXPIRING_SOON");
+        assert_eq!(generic["domain_days_remaining"], 14);
+        assert_eq!(generic["domain_expires_at"], "2026-11-15T00:00:00Z");
+
+        // Custom Template
+        let tpl = "Warning: {{monitor_name}} domain expires in {{domain_days_remaining}} days on {{domain_expires_at}}!";
+        let rendered = render_custom_template(tpl, &payload);
+        assert_eq!(rendered, "Warning: API Service domain expires in 14 days on 2026-11-15T00:00:00Z!");
     }
 
     #[test]

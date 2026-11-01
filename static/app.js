@@ -6,6 +6,9 @@ if (!window.apiFetch) {
     options.credentials = options.credentials || 'include';
     const res = await fetch(url, options);
     if (res.status === 401) {
+      if (options.skipAuthRedirect || url.includes('/change-password')) {
+        return res;
+      }
       const isLoginPage =
         window.location.pathname.endsWith('/login.html') ||
         window.location.pathname === '/login';
@@ -51,6 +54,15 @@ window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'grid';
 let statusMap = {};
 let logsCache = {};
 let isFetching = false;
+let dashboardFetchController = null;
+
+// ── Lightweight Batch DOM Insertion Helper ───────────────────────────────────
+
+function batchInsertHTML(container, html) {
+  if (!container) return;
+  const fragment = document.createRange().createContextualFragment(html);
+  container.replaceChildren(fragment);
+}
 
 // ── Dashboard Data Fetching ──────────────────────────────────────────────────
 
@@ -58,14 +70,24 @@ async function fetchDashboardData(showSpin = false) {
   if (isFetching) return;
   isFetching = true;
 
+  if (dashboardFetchController) {
+    dashboardFetchController.abort();
+  }
+  dashboardFetchController = new AbortController();
+  const signal = dashboardFetchController.signal;
+
   const refreshIcon = document.getElementById('refresh-icon');
   if (showSpin && refreshIcon) refreshIcon.classList.add('animate-spin');
 
+  if (currentAdminView === 'assets') {
+    loadAssetExpiryData(showSpin);
+  }
+
   try {
     const [monitorsRes, statusRes, webhooksRes] = await Promise.all([
-      apiFetch('/api/monitors'),
-      apiFetch('/api/v1/public/status'),
-      apiFetch('/api/webhooks'),
+      apiFetch('/api/monitors', { signal }),
+      apiFetch('/api/v1/public/status', { signal }),
+      apiFetch('/api/webhooks', { signal }),
     ]);
 
     // If unauthorized, do not render dashboard contents (redirect is underway)
@@ -98,10 +120,11 @@ async function fetchDashboardData(showSpin = false) {
     }
 
     // Fetch recent check logs for historical bar charts (top 30 per monitor)
-    await fetchRecentLogsForMonitors(window.allMonitors);
+    await fetchRecentLogsForMonitors(window.allMonitors, signal);
 
     renderMonitors();
   } catch (err) {
+    if (err.name === 'AbortError') return;
     console.error('Failed to fetch dashboard data:', err);
   } finally {
     isFetching = false;
@@ -113,10 +136,10 @@ async function fetchDashboardData(showSpin = false) {
 
 // ── Recent Logs Batching for Historical Bar Chart ────────────────────────────
 
-async function fetchRecentLogsForMonitors(monitors) {
+async function fetchRecentLogsForMonitors(monitors, signal) {
   const fetchPromises = monitors.map(async (m) => {
     try {
-      const res = await apiFetch(`/api/v1/monitors/${m.id}/logs?limit=30`);
+      const res = await apiFetch(`/api/v1/monitors/${m.id}/logs?limit=30`, signal ? { signal } : {});
       if (res && res.ok) {
         const logs = await res.json();
         // Reverse so chronological order from left to right
@@ -214,7 +237,9 @@ function renderMonitors() {
 
   if (filtered.length === 0) {
     container.className = 'w-full';
-    container.innerHTML = `
+    batchInsertHTML(
+      container,
+      `
       <div class="glass-card rounded-2xl p-12 text-center text-white/50 space-y-3">
         <svg class="w-10 h-10 mx-auto text-white/30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
           <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
@@ -222,16 +247,51 @@ function renderMonitors() {
         <p class="text-sm font-medium text-white/70">${query ? 'No matching targets found' : 'No monitors configured yet'}</p>
         <p class="text-xs text-white/40">${query ? 'Try searching for a different keyword' : 'Click "+ Add Monitor" to create your first health check target'}</p>
       </div>
-    `;
+    `
+    );
     return;
   }
 
   if (window.currentViewMode === 'grid') {
     container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
-    container.innerHTML = filtered.map((m) => renderMonitorCard(m)).join('');
+    batchInsertHTML(container, filtered.map((m) => renderMonitorCard(m)).join(''));
   } else {
     container.className = 'space-y-2.5';
-    container.innerHTML = filtered.map((m) => renderMonitorListRow(m)).join('');
+    batchInsertHTML(container, filtered.map((m) => renderMonitorListRow(m)).join(''));
+  }
+}
+
+// ── Domain & SSL Expiration Badges ──────────────────────────────────────────
+
+function renderDomainExpiryBadge(m) {
+  if (!m.check_domain_expiry || m.domain_days_remaining === null || m.domain_days_remaining === undefined) {
+    return '';
+  }
+  const days = m.domain_days_remaining;
+  const warningDays = m.domain_warning_days || 30;
+
+  if (days <= 0) {
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/20" title="Domain registration has expired">🔴 Domain Expired</span>`;
+  } else if (days <= warningDays) {
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20" title="Domain registration expiring soon (${days} days remaining)">⚠️ ${days}d domain left</span>`;
+  } else {
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-white/60 border-black/5 dark:border-white/10" title="Domain registration healthy (${days} days remaining)">🌐 ${days}d domain left</span>`;
+  }
+}
+
+function renderSslExpiryBadge(m) {
+  if (!m.check_ssl || m.ssl_days_remaining === null || m.ssl_days_remaining === undefined) {
+    return '';
+  }
+  const days = m.ssl_days_remaining;
+  const warningDays = m.ssl_warning_days || 30;
+
+  if (days <= 0) {
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/20" title="TLS/SSL certificate has expired">🔴 SSL Expired</span>`;
+  } else if (days <= warningDays) {
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20" title="TLS/SSL certificate expiring soon (${days} days remaining)">🔒 ${days}d SSL left</span>`;
+  } else {
+    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-white/60 border-black/5 dark:border-white/10" title="TLS/SSL certificate healthy (${days} days remaining)">🔒 ${days}d SSL left</span>`;
   }
 }
 
@@ -276,7 +336,7 @@ function renderMonitorCard(m) {
   const barsHtml = renderUptimeTickBars(logs);
 
   return `
-    <div class="glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4">
+    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer">
       <!-- Card Header -->
       <div class="flex items-start justify-between gap-3">
         <div class="min-w-0 flex-1">
@@ -291,6 +351,8 @@ function renderMonitorCard(m) {
         </div>
 
         <div class="flex items-center gap-1.5 shrink-0">
+          ${renderSslExpiryBadge(m)}
+          ${renderDomainExpiryBadge(m)}
           <span class="px-2 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider ${statusBadgeBg}">
             ${statusLabel}
           </span>
@@ -330,26 +392,26 @@ function renderMonitorCard(m) {
           ${m.is_public === 1 ? '🌐 Public' : '🔒 Private'}
         </span>
         <div class="flex items-center gap-1.5">
-          <button onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? 'Pause Monitor' : 'Resume Monitor'}">
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? 'Pause Monitor' : 'Resume Monitor'}">
             ${
               m.is_active === 1
-                ? `<svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
-                : `<svg class="w-4 h-4 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
+                ? `<svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
+                : `<svg class="w-4 h-4 text-[#30d158] pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
             }
           </button>
-          <button onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+            <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
           </button>
-          <button onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
+          <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
             Edit
           </button>
-          <button onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
+          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
             Logs
           </button>
-          <button onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
-            <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
+            <svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
             </svg>
           </button>
@@ -394,7 +456,7 @@ function renderMonitorListRow(m) {
       : '—';
 
   return `
-    <div class="glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition">
+    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer">
       <div class="flex items-center gap-3 min-w-0">
         <span class="relative flex h-2.5 w-2.5 shrink-0">
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
@@ -403,6 +465,8 @@ function renderMonitorListRow(m) {
           <div class="flex items-center gap-2">
             <span class="font-semibold text-neutral-900 dark:text-white text-sm truncate">${escapeHtml(m.name)}</span>
             <span class="px-2 py-0.5 rounded-full text-[10px] font-medium border uppercase ${statusBadgeBg}">${statusLabel}</span>
+            ${renderSslExpiryBadge(m)}
+            ${renderDomainExpiryBadge(m)}
           </div>
           <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono">${escapeHtml(m.url)}</div>
         </div>
@@ -415,17 +479,17 @@ function renderMonitorListRow(m) {
         </div>
 
         <div class="flex items-center gap-1.5 shrink-0">
-          <button onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
             ${m.is_active === 1 ? '⏸' : '▶'}
           </button>
-          <button onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
-            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+            <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
           </button>
-          <button onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
-          <button onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
-          <button onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 rounded-lg transition">✕</button>
+          <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
+          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
+          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 rounded-lg transition">✕</button>
         </div>
       </div>
     </div>
@@ -462,55 +526,58 @@ function renderUptimeTickBars(logs) {
 
 // ── Webhooks Preview Section ─────────────────────────────────────────────────
 
+function renderWebhookItem(w) {
+  const isEnabled = w.is_enabled === 1 || w.is_enabled === true;
+  const providerColor =
+    w.provider.toLowerCase() === 'discord'
+      ? 'text-[#5865F2] border-[#5865F2]/30 bg-[#5865F2]/10'
+      : w.provider.toLowerCase() === 'slack'
+      ? 'text-[#ECB22E] border-[#ECB22E]/30 bg-[#ECB22E]/10'
+      : 'text-[#30d158] border-[#30d158]/30 bg-[#30d158]/10';
+
+  return `
+    <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3 shadow-lg hover:border-black/15 dark:hover:border-white/20 transition">
+      <div class="min-w-0 flex-1">
+        <div class="flex items-center gap-2">
+          <span class="font-semibold text-neutral-900 dark:text-white text-xs truncate">${escapeHtml(w.name)}</span>
+          <span class="px-2 py-0.5 rounded-full text-[9px] uppercase font-mono border ${providerColor}">${escapeHtml(w.provider)}</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-neutral-400 border border-black/5 dark:border-white/5">${w.use_default_template !== 0 && w.use_default_template !== false ? 'Default' : 'Custom'}</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono ${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20' : 'bg-black/5 dark:bg-white/5 text-neutral-500 dark:text-neutral-400 border border-black/5 dark:border-white/5'}" title="Resolve Notifications">${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? 'Resolve: ON' : 'Resolve: OFF'}</span>
+        </div>
+        <p class="text-[11px] text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(w.url)}</p>
+      </div>
+
+      <div class="flex items-center gap-2 shrink-0">
+        <button data-action="test-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" onclick="testWebhookDirect('${w.id}', '${escapeHtml(w.name)}')" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
+          Test
+        </button>
+        <!-- Smooth toggle -->
+        <label class="relative inline-flex items-center cursor-pointer">
+          <input type="checkbox" ${isEnabled ? 'checked' : ''} data-action="toggle-webhook" data-id="${w.id}" data-enabled="${isEnabled}" onchange="toggleWebhookActive('${w.id}', ${isEnabled})" class="sr-only peer">
+          <div class="w-9 h-5 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#30d158]"></div>
+        </label>
+      </div>
+    </div>
+  `;
+}
+
 function renderWebhooksSection(webhooks) {
   const container = document.getElementById('webhooks-preview-list');
   if (!container) return;
 
   if (webhooks.length === 0) {
-    container.innerHTML = `
+    batchInsertHTML(
+      container,
+      `
       <div class="col-span-full p-6 text-center text-neutral-500 dark:text-white/40 text-xs glass-card rounded-xl">
         No notification webhooks registered. Click "+ Add Webhook" to receive instant alert cards.
       </div>
-    `;
+    `
+    );
     return;
   }
 
-  container.innerHTML = webhooks
-    .map((w) => {
-      const isEnabled = w.is_enabled === 1 || w.is_enabled === true;
-      const providerColor =
-        w.provider.toLowerCase() === 'discord'
-          ? 'text-[#5865F2] border-[#5865F2]/30 bg-[#5865F2]/10'
-          : w.provider.toLowerCase() === 'slack'
-          ? 'text-[#ECB22E] border-[#ECB22E]/30 bg-[#ECB22E]/10'
-          : 'text-[#30d158] border-[#30d158]/30 bg-[#30d158]/10';
-
-      return `
-      <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3 shadow-lg hover:border-black/15 dark:hover:border-white/20 transition">
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="font-semibold text-neutral-900 dark:text-white text-xs truncate">${escapeHtml(w.name)}</span>
-            <span class="px-2 py-0.5 rounded-full text-[9px] uppercase font-mono border ${providerColor}">${escapeHtml(w.provider)}</span>
-            <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-neutral-400 border border-black/5 dark:border-white/5">${w.use_default_template !== 0 && w.use_default_template !== false ? 'Default' : 'Custom'}</span>
-            <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono ${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20' : 'bg-black/5 dark:bg-white/5 text-neutral-500 dark:text-neutral-400 border border-black/5 dark:border-white/5'}" title="Resolve Notifications">${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? 'Resolve: ON' : 'Resolve: OFF'}</span>
-          </div>
-          <p class="text-[11px] text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(w.url)}</p>
-        </div>
-
-        <div class="flex items-center gap-2 shrink-0">
-          <button onclick="testWebhookDirect('${w.id}', '${escapeHtml(w.name)}')" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
-            Test
-          </button>
-          <!-- Smooth toggle -->
-          <label class="relative inline-flex items-center cursor-pointer">
-            <input type="checkbox" ${isEnabled ? 'checked' : ''} onchange="toggleWebhookActive('${w.id}', ${isEnabled})" class="sr-only peer">
-            <div class="w-9 h-5 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#30d158]"></div>
-          </label>
-        </div>
-      </div>
-    `;
-    })
-    .join('');
+  batchInsertHTML(container, webhooks.map((w) => renderWebhookItem(w)).join(''));
 }
 
 // ── Interactive Actions (Pause/Resume, Webhook Toggle, Direct Test) ───────────
@@ -643,15 +710,21 @@ function escapeHtml(str) {
   );
 }
 
+const appTimeFormatter = new Intl.DateTimeFormat([], {
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
+});
+const appDateFormatter = new Intl.DateTimeFormat([], {
+  month: 'short',
+  day: 'numeric',
+});
+
 function formatDate(str) {
   if (!str) return '—';
   try {
     const d = new Date(str.includes('Z') ? str : str + 'Z');
-    return (
-      d.toLocaleTimeString([], { hour: '2-digit', minute: '2-digit', second: '2-digit' }) +
-      ' ' +
-      d.toLocaleDateString([], { month: 'short', day: 'numeric' })
-    );
+    return `${appTimeFormatter.format(d)} ${appDateFormatter.format(d)}`;
   } catch {
     return str;
   }
@@ -932,22 +1005,1172 @@ async function copyBadgeModalCode(btn) {
   }
 }
 
-// Global exports for inline HTML onclick handlers
+// Global exports for backward compatibility
 window.openBadgeModal = openBadgeModal;
 window.closeBadgeModal = closeBadgeModal;
 window.setBadgeModalStyle = setBadgeModalStyle;
 window.setBadgeModalFormat = setBadgeModalFormat;
 window.copyBadgeModalCode = copyBadgeModalCode;
+window.openPasswordModal = openPasswordModal;
+window.closePasswordModal = closePasswordModal;
+window.handlePasswordSubmit = handlePasswordSubmit;
+window.openMonitorDetailModal = openMonitorDetailModal;
+window.closeMonitorDetailModal = closeMonitorDetailModal;
+window.triggerDetailPing = triggerDetailPing;
+window.toggleMonitorActive = toggleMonitorActive;
+window.toggleWebhookActive = toggleWebhookActive;
+window.testWebhookDirect = testWebhookDirect;
 
-// Escape key listener for badge modal
+// ── Admin Password Update Modal Controller ───────────────────────────────────
+
+function openPasswordModal() {
+  const modal = document.getElementById('password-modal');
+  const errorContainer = document.getElementById('password-modal-error');
+  const form = document.getElementById('password-form');
+  if (errorContainer) {
+    errorContainer.classList.add('hidden');
+    errorContainer.textContent = '';
+    errorContainer.className = 'hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono';
+  }
+  if (form) form.reset();
+  if (modal) {
+    modal.classList.remove('hidden');
+    const currInput = document.getElementById('current-password');
+    if (currInput) setTimeout(() => currInput.focus(), 50);
+  }
+}
+
+function closePasswordModal() {
+  const modal = document.getElementById('password-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+  const form = document.getElementById('password-form');
+  if (form) form.reset();
+  const errorContainer = document.getElementById('password-modal-error');
+  if (errorContainer) {
+    errorContainer.classList.add('hidden');
+    errorContainer.textContent = '';
+    errorContainer.className = 'hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono';
+  }
+}
+
+async function handlePasswordSubmit(e) {
+  if (e && e.preventDefault) e.preventDefault();
+
+  const currentPassword = document.getElementById('current-password')?.value || '';
+  const newPassword = document.getElementById('new-password')?.value || '';
+  const confirmPassword = document.getElementById('confirm-password')?.value || '';
+  const errorContainer = document.getElementById('password-modal-error');
+  const submitBtn = document.getElementById('password-submit-btn');
+
+  function showError(msg) {
+    if (errorContainer) {
+      errorContainer.textContent = msg;
+      errorContainer.className = 'text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono';
+      errorContainer.classList.remove('hidden');
+    }
+  }
+
+  function showSuccess(msg) {
+    if (errorContainer) {
+      errorContainer.textContent = msg;
+      errorContainer.className = 'text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-lg font-mono';
+      errorContainer.classList.remove('hidden');
+    }
+  }
+
+  if (newPassword.length < 8) {
+    showError('New password must be at least 8 characters long');
+    return;
+  }
+
+  if (newPassword !== confirmPassword) {
+    showError('New passwords do not match');
+    return;
+  }
+
+  if (submitBtn) {
+    submitBtn.disabled = true;
+    submitBtn.textContent = 'Updating...';
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        current_password: currentPassword,
+        new_password: newPassword,
+      }),
+      skipAuthRedirect: true,
+    });
+
+    const data = await res.json().catch(() => ({}));
+
+    if (!res.ok) {
+      const errMsg = data.error || 'Failed to update password';
+      showError(errMsg);
+      return;
+    }
+
+    // Success state
+    showSuccess(data.message || 'Password updated successfully');
+    const form = document.getElementById('password-form');
+    if (form) form.reset();
+
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Security',
+        message: 'Admin password updated successfully',
+        type: 'success',
+      });
+    }
+
+    setTimeout(() => {
+      closePasswordModal();
+    }, 1500);
+  } catch (err) {
+    showError('Network error while updating password');
+  } finally {
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.textContent = 'Save New Password';
+    }
+  }
+}
+
+// ── Monitor Detail View Controller ──────────────────────────────────────────
+
+let currentDetailMonitorId = null;
+
+async function openMonitorDetailModal(id) {
+  currentDetailMonitorId = id;
+  const modal = document.getElementById('monitor-detail-modal');
+  if (!modal) return;
+
+  modal.classList.remove('hidden');
+
+  // Loading skeleton state
+  const nameEl = document.getElementById('detail-modal-name');
+  const urlEl = document.getElementById('detail-modal-url');
+  const tbodyEl = document.getElementById('detail-logs-tbody');
+  const chartEl = document.getElementById('detail-latency-chart');
+  const countEl = document.getElementById('detail-logs-count');
+
+  if (nameEl) nameEl.textContent = 'Loading monitor telemetry...';
+  if (urlEl) urlEl.textContent = '—';
+  if (countEl) countEl.textContent = '...';
+  if (chartEl) {
+    chartEl.innerHTML = '<div class="text-xs text-neutral-500 font-mono py-6">Loading latency telemetry...</div>';
+  }
+  if (tbodyEl) {
+    tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">Loading check history...</td></tr>';
+  }
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/details`, {
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      if (nameEl) nameEl.textContent = 'Monitor Details';
+      if (tbodyEl) {
+        tbodyEl.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-rose-400 font-sans">Failed to load telemetry (${res.status} ${res.statusText})</td></tr>`;
+      }
+      return;
+    }
+
+    const data = await res.json();
+    renderMonitorDetailData(data);
+  } catch (err) {
+    if (nameEl) nameEl.textContent = 'Monitor Details';
+    if (tbodyEl) {
+      tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-rose-400 font-sans">Unable to connect to server</td></tr>';
+    }
+  }
+}
+
+function closeMonitorDetailModal() {
+  const modal = document.getElementById('monitor-detail-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+  currentDetailMonitorId = null;
+}
+
+function renderDetailHourlySvg(hourlyList) {
+  const list = Array.isArray(hourlyList) && hourlyList.length > 0 ? hourlyList : [];
+  const items = [];
+  for (let i = 0; i < 24; i++) {
+    items.push(list[i] || { avg_latency_ms: 0, status: 'NO_DATA', timestamp: '' });
+  }
+
+  const maxLat = Math.max(
+    ...items.map((h) => (typeof h.avg_latency_ms === 'number' ? h.avg_latency_ms : 0)),
+    50
+  );
+
+  const bars = items
+    .map((item, idx) => {
+      const lat = typeof item.avg_latency_ms === 'number' ? item.avg_latency_ms : 0;
+      const status = item.status || 'NO_DATA';
+      let fill = 'rgba(255, 255, 255, 0.12)';
+      if (status === 'UP') fill = '#30D158';
+      else if (status === 'DEGRADED') fill = '#FFD60A';
+      else if (status === 'DOWN') fill = '#FF453A';
+
+      const barHeight = Math.max(4, Math.round((lat / maxLat) * 55));
+      const x = idx * 20 + 3;
+      const y = 65 - barHeight;
+
+      let timeLabel = `${24 - idx}h ago`;
+      if (item.timestamp) {
+        try {
+          timeLabel = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch (_) {}
+      }
+
+      return `<rect x="${x}" y="${y}" width="14" height="${barHeight}" rx="2" fill="${fill}" class="transition-opacity hover:opacity-75 cursor-pointer">
+        <title>${timeLabel}: ${lat} ms (${status})</title>
+      </rect>`;
+    })
+    .join('');
+
+  return `<svg viewBox="0 0 480 70" class="w-full h-16 overflow-visible" preserveAspectRatio="none">${bars}</svg>`;
+}
+
+function renderMonitorDetailData(data) {
+  if (!data || !data.monitor) return;
+  const m = data.monitor;
+  const slas = data.slas || { uptime_24h: 100, uptime_7d: 100, uptime_30d: 100 };
+  const lat = data.latency || { p50: 0, p95: 0, p99: 0, avg: 0 };
+  const logs = data.logs || [];
+  const hourly = data.hourly_latency || [];
+
+  // 1. Header Section
+  const nameEl = document.getElementById('detail-modal-name');
+  const urlEl = document.getElementById('detail-modal-url');
+  const methodEl = document.getElementById('detail-modal-method');
+  const statusBadge = document.getElementById('detail-modal-status-badge');
+
+  if (nameEl) nameEl.textContent = m.name || 'Monitor';
+  if (urlEl) urlEl.textContent = m.url || '';
+  if (methodEl) methodEl.textContent = m.method || 'GET';
+
+  if (statusBadge) {
+    const isPaused = !m.is_active;
+    const status = m.status || (isPaused ? 'PAUSED' : 'UP');
+    statusBadge.textContent = status;
+
+    if (isPaused) {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-neutral-500/15 text-neutral-400 border-neutral-500/20';
+    } else if (status === 'MAINTENANCE') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-purple-500/15 text-purple-400 border-purple-500/20';
+    } else if (status === 'DOWN') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-rose-500/15 text-rose-400 border-rose-500/20';
+    } else if (status === 'DEGRADED') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-amber-500/15 text-amber-400 border-amber-500/20';
+    } else {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border-emerald-500/20';
+    }
+  }
+
+  const domainBadge = document.getElementById('detail-modal-domain-badge');
+  if (domainBadge) {
+    if (m.check_domain_expiry && m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
+      const days = m.domain_days_remaining;
+      const warningDays = m.domain_warning_days || 30;
+      domainBadge.classList.remove('hidden');
+      if (days <= 0) {
+        domainBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20';
+        domainBadge.textContent = '🔴 Domain Expired';
+      } else if (days <= warningDays) {
+        domainBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20';
+        domainBadge.textContent = `⚠️ ${days}d domain left`;
+      } else {
+        domainBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10';
+        domainBadge.textContent = `🌐 ${days}d domain left`;
+      }
+    } else {
+      domainBadge.classList.add('hidden');
+    }
+  }
+
+  const sslBadge = document.getElementById('detail-modal-ssl-badge');
+  if (sslBadge) {
+    if (m.check_ssl && m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
+      const days = m.ssl_days_remaining;
+      const warningDays = m.ssl_warning_days || 30;
+      sslBadge.classList.remove('hidden');
+      if (days <= 0) {
+        sslBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20';
+        sslBadge.textContent = '🔴 SSL Expired';
+      } else if (days <= warningDays) {
+        sslBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20';
+        sslBadge.textContent = `🔒 ${days}d SSL left`;
+      } else {
+        sslBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10';
+        sslBadge.textContent = `🔒 ${days}d SSL left`;
+      }
+    } else {
+      sslBadge.classList.add('hidden');
+    }
+  }
+
+  // 2. SLA Telemetry Row (3 Cards)
+  const sla24 = document.getElementById('detail-sla-24h');
+  const sla7d = document.getElementById('detail-sla-7d');
+  const sla30 = document.getElementById('detail-sla-30d');
+
+  if (sla24) {
+    sla24.textContent = `${slas.uptime_24h.toFixed(2)}%`;
+    sla24.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_24h >= 99 ? 'text-emerald-400' : slas.uptime_24h >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
+  }
+  if (sla7d) {
+    sla7d.textContent = `${slas.uptime_7d.toFixed(2)}%`;
+    sla7d.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_7d >= 99 ? 'text-emerald-400' : slas.uptime_7d >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
+  }
+  if (sla30) {
+    sla30.textContent = `${slas.uptime_30d.toFixed(2)}%`;
+    sla30.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_30d >= 99 ? 'text-emerald-400' : slas.uptime_30d >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
+  }
+
+  // 3. Latency Breakdown Bar
+  const p50El = document.getElementById('detail-lat-p50');
+  const p95El = document.getElementById('detail-lat-p95');
+  const p99El = document.getElementById('detail-lat-p99');
+  const avgEl = document.getElementById('detail-lat-avg');
+
+  if (p50El) p50El.textContent = `${lat.p50}ms`;
+  if (p95El) p95El.textContent = `${lat.p95}ms`;
+  if (p99El) p99El.textContent = `${lat.p99}ms`;
+  if (avgEl) avgEl.textContent = `${lat.avg}ms`;
+
+  // 4. Interactive SVG Latency Chart
+  const chartEl = document.getElementById('detail-latency-chart');
+  if (chartEl) {
+    chartEl.innerHTML = renderDetailHourlySvg(hourly);
+  }
+
+  // 5. Recent Check Logs Table
+  const countEl = document.getElementById('detail-logs-count');
+  const tbodyEl = document.getElementById('detail-logs-tbody');
+
+  if (countEl) countEl.textContent = `${logs.length} logs`;
+  if (tbodyEl) {
+    if (logs.length === 0) {
+      tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">No check logs recorded yet for this target.</td></tr>';
+      return;
+    }
+
+    const rowsHtml = logs.map((log) => {
+      const isUp = log.is_up;
+      const statusNum = log.status_code;
+      const is2xx = statusNum && statusNum >= 200 && statusNum < 300;
+
+      const rowClass = isUp && is2xx
+        ? 'hover:bg-white/5 transition'
+        : 'bg-rose-500/10 hover:bg-rose-500/15 text-rose-200 transition';
+
+      const statusTag = is2xx
+        ? `<span class="text-emerald-400 font-semibold">${statusNum}</span>`
+        : `<span class="text-rose-400 font-semibold">${statusNum || '—'}</span>`;
+
+      const resultTag = isUp
+        ? '<span class="text-emerald-400">UP</span>'
+        : `<span class="text-rose-400 font-semibold">${log.error_message ? escapeHtml(log.error_message) : 'Check Failed'}</span>`;
+
+      let dateStr = log.created_at;
+      try {
+        dateStr = new Date(log.created_at).toLocaleString();
+      } catch (_) {}
+
+      return `<tr class="${rowClass}">
+        <td class="py-2 px-3 text-neutral-400">${dateStr}</td>
+        <td class="py-2 px-3">${statusTag}</td>
+        <td class="py-2 px-3 text-white">${log.response_time_ms !== null ? log.response_time_ms + ' ms' : '—'}</td>
+        <td class="py-2 px-3 max-w-xs truncate">${resultTag}</td>
+      </tr>`;
+    }).join('');
+
+    tbodyEl.innerHTML = rowsHtml;
+  }
+}
+
+async function triggerDetailPing() {
+  if (!currentDetailMonitorId) return;
+
+  const btn = document.getElementById('detail-modal-ping-btn');
+  const icon = document.getElementById('detail-ping-icon');
+  const text = document.getElementById('detail-ping-text');
+
+  if (btn) btn.disabled = true;
+  if (icon) icon.textContent = '⏳';
+  if (text) text.textContent = 'Pinging...';
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/ping`, {
+      method: 'POST',
+      credentials: 'include',
+      skipAuthRedirect: true,
+    });
+
+    if (res.status === 401) {
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Authentication Required',
+          message: 'Admin login required to trigger on-demand ping.',
+          type: 'warning',
+        });
+      }
+      return;
+    }
+
+    if (!res.ok) {
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Ping Failed',
+          message: `Server returned HTTP ${res.status}`,
+          type: 'error',
+        });
+      }
+      return;
+    }
+
+    const pingData = await res.json();
+    if (typeof showToast === 'function') {
+      showToast({
+        title: `Ping Result: ${pingData.status}`,
+        message: `HTTP ${pingData.status_code || '—'} in ${pingData.latency_ms} ms`,
+        type: pingData.status === 'UP' ? 'success' : 'error',
+      });
+    }
+
+    // Refresh telemetry immediately
+    const detailsRes = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/details`, {
+      credentials: 'include',
+    });
+    if (detailsRes.ok) {
+      const detailsData = await detailsRes.json();
+      renderMonitorDetailData(detailsData);
+    }
+
+    // Trigger dashboard refresh if available
+    if (typeof fetchDashboardData === 'function') {
+      fetchDashboardData(false);
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Ping Error',
+        message: err.message || 'Network error executing ping',
+        type: 'error',
+      });
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (icon) icon.textContent = '⚡';
+    if (text) text.textContent = 'Ping Now';
+  }
+}
+
+// ── Centralized Event Delegation ─────────────────────────────────────────────
+
+document.addEventListener('click', (e) => {
+  const detailCard = e.target.closest('[data-action="open-detail"]');
+  if (detailCard && !e.target.closest('button, a, input, select, textarea, label')) {
+    const id = detailCard.dataset.id;
+    if (id) openMonitorDetailModal(id);
+    return;
+  }
+
+  const target = e.target.closest('[data-action]');
+  if (!target) return;
+
+  const action = target.dataset.action;
+  switch (action) {
+    case 'open-detail': {
+      const id = target.dataset.id;
+      if (id) openMonitorDetailModal(id);
+      break;
+    }
+    case 'close-detail-modal': {
+      closeMonitorDetailModal();
+      break;
+    }
+    case 'toggle-active': {
+      const id = target.dataset.id;
+      const isActive = target.dataset.active === 'true';
+      toggleMonitorActive(id, isActive);
+      break;
+    }
+    case 'open-badge': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      openBadgeModal(id, name);
+      break;
+    }
+    case 'edit-monitor': {
+      const id = target.dataset.id;
+      if (typeof window.openEditMonitorModal === 'function') {
+        window.openEditMonitorModal(id);
+      }
+      break;
+    }
+    case 'view-logs': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      const url = target.dataset.url;
+      if (typeof window.viewLogs === 'function') {
+        window.viewLogs(id, name, url);
+      }
+      break;
+    }
+    case 'delete-monitor': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      if (typeof window.deleteMonitor === 'function') {
+        window.deleteMonitor(id, name);
+      }
+      break;
+    }
+    case 'test-webhook': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      testWebhookDirect(id, name);
+      break;
+    }
+    case 'close-badge-modal': {
+      closeBadgeModal();
+      break;
+    }
+    case 'open-password-modal': {
+      openPasswordModal();
+      break;
+    }
+    case 'close-password-modal': {
+      closePasswordModal();
+      break;
+    }
+    case 'badge-style': {
+      const style = target.dataset.style;
+      if (style) setBadgeModalStyle(style);
+      break;
+    }
+    case 'badge-fmt': {
+      const fmt = target.dataset.fmt;
+      if (fmt) setBadgeModalFormat(fmt);
+      break;
+    }
+    case 'badge-copy': {
+      copyBadgeModalCode(target);
+      break;
+    }
+    default:
+      break;
+  }
+});
+
+document.addEventListener('change', (e) => {
+  const target = e.target.closest('[data-action="toggle-webhook"]');
+  if (target) {
+    const id = target.dataset.id;
+    const currentEnabled = target.dataset.enabled === 'true';
+    toggleWebhookActive(id, currentEnabled);
+  }
+});
+
+// Escape key listener for modals
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
     const badgeModal = document.getElementById('badge-modal');
     if (badgeModal && !badgeModal.classList.contains('hidden')) {
       closeBadgeModal();
     }
+    const passwordModal = document.getElementById('password-modal');
+    if (passwordModal && !passwordModal.classList.contains('hidden')) {
+      closePasswordModal();
+    }
+    const detailModal = document.getElementById('monitor-detail-modal');
+    if (detailModal && !detailModal.classList.contains('hidden')) {
+      closeMonitorDetailModal();
+    }
   }
 });
+
+// ── Asset Expiry Navigation & Table Interactivity ─────────────────────────────
+
+let currentAdminView = 'monitors';
+let isAssetExpiryLoading = false;
+let isChannelsLoading = false;
+let isChannelModalInline = false;
+window.cachedChannels = [];
+
+function switchAdminView(view) {
+  if (view === 'status-pages') {
+    openStatusPagesModal();
+    return;
+  }
+  if (view === 'maintenance') {
+    openMaintenanceModal();
+    return;
+  }
+
+  currentAdminView = view;
+  const monitorsPanel = document.getElementById('monitors-panel');
+  const assetExpiryPanel = document.getElementById('asset-expiry-panel');
+  const channelsPanel = document.getElementById('channels-panel');
+  const navMonitorsBtn = document.getElementById('nav-btn-monitors');
+  const navStatusPagesBtn = document.getElementById('nav-btn-status-pages');
+  const navAssetsBtn = document.getElementById('nav-btn-assets');
+  const navChannelsBtn = document.getElementById('nav-btn-channels');
+  const navMaintenanceBtn = document.getElementById('nav-btn-maintenance');
+
+  if (monitorsPanel) monitorsPanel.classList.add('hidden');
+  if (assetExpiryPanel) assetExpiryPanel.classList.add('hidden');
+  if (channelsPanel) channelsPanel.classList.add('hidden');
+
+  const inactiveBtnClass = 'h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
+  const activeBtnClass = 'h-8 px-3 rounded-lg transition bg-white/15 text-white border border-white/20 shadow-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
+
+  if (navMonitorsBtn) navMonitorsBtn.className = inactiveBtnClass;
+  if (navStatusPagesBtn) navStatusPagesBtn.className = inactiveBtnClass;
+  if (navAssetsBtn) navAssetsBtn.className = inactiveBtnClass;
+  if (navChannelsBtn) navChannelsBtn.className = inactiveBtnClass;
+  if (navMaintenanceBtn) navMaintenanceBtn.className = inactiveBtnClass;
+
+  if (view === 'assets') {
+    if (assetExpiryPanel) assetExpiryPanel.classList.remove('hidden');
+    if (navAssetsBtn) navAssetsBtn.className = activeBtnClass;
+    loadAssetExpiryData(true);
+  } else if (view === 'channels') {
+    if (channelsPanel) channelsPanel.classList.remove('hidden');
+    if (navChannelsBtn) navChannelsBtn.className = activeBtnClass;
+    loadNotificationChannels(true);
+  } else {
+    if (monitorsPanel) monitorsPanel.classList.remove('hidden');
+    if (navMonitorsBtn) navMonitorsBtn.className = activeBtnClass;
+    fetchDashboardData(true);
+  }
+}
+window.switchAdminView = switchAdminView;
+
+async function loadAssetExpiryData(showLoader = true) {
+  if (isAssetExpiryLoading) return;
+  isAssetExpiryLoading = true;
+
+  const refreshIcon = document.getElementById('asset-refresh-icon');
+  if (refreshIcon && showLoader) {
+    refreshIcon.classList.add('animate-spin');
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/assets/expiry', {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (!res || !res.ok) {
+      return;
+    }
+
+    const items = await res.json();
+    renderAssetExpiryTable(items);
+  } catch (err) {
+    console.error('Failed to load asset expiry data:', err);
+  } finally {
+    isAssetExpiryLoading = false;
+    if (refreshIcon) {
+      refreshIcon.classList.remove('animate-spin');
+    }
+  }
+}
+window.loadAssetExpiryData = loadAssetExpiryData;
+
+function renderAssetExpiryCell(enabled, daysRemaining, expiresAt, type) {
+  if (!enabled) {
+    return `<span class="text-neutral-500 font-mono text-xs">—</span>`;
+  }
+  if (daysRemaining === null || daysRemaining === undefined) {
+    return `<span class="text-neutral-400 font-mono text-[11px] bg-white/5 px-2 py-0.5 rounded border border-white/5">Pending check</span>`;
+  }
+
+  const icon = type === 'ssl' ? '🔒' : '🌐';
+  const label = daysRemaining <= 0 ? 'Expired' : `${daysRemaining}d left`;
+  const titleAttr = expiresAt ? `title="Expires ${escapeHtml(expiresAt)}"` : '';
+
+  if (daysRemaining <= 7) {
+    return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20" ${titleAttr}>${icon} ${label}</span>`;
+  } else if (daysRemaining <= 30) {
+    return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-amber-500/10 text-amber-400 border border-amber-500/20" ${titleAttr}>${icon} ${label}</span>`;
+  } else {
+    return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono text-neutral-400 bg-white/5 border border-white/5" ${titleAttr}>${icon} ${label}</span>`;
+  }
+}
+
+function renderUrgencyBadge(urgency) {
+  if (urgency === 'CRITICAL') {
+    return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>CRITICAL</span>`;
+  } else if (urgency === 'WARNING') {
+    return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>WARNING</span>`;
+  } else {
+    return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>HEALTHY</span>`;
+  }
+}
+
+function renderAssetExpiryTable(items) {
+  const critEl = document.getElementById('asset-stat-critical');
+  const warnEl = document.getElementById('asset-stat-warning');
+  const totalEl = document.getElementById('asset-stat-total');
+  const tbody = document.getElementById('asset-expiry-tbody');
+
+  const critCount = items.filter((i) => i.urgency === 'CRITICAL').length;
+  const warnCount = items.filter((i) => i.urgency === 'WARNING').length;
+  const totalCount = items.length;
+
+  if (critEl) critEl.textContent = critCount;
+  if (warnEl) warnEl.textContent = warnCount;
+  if (totalEl) totalEl.textContent = totalCount;
+
+  if (!tbody) return;
+
+  if (items.length === 0) {
+    tbody.innerHTML = `
+      <tr>
+        <td colspan="5" class="py-12 text-center text-white/40 font-sans text-xs">
+          No assets currently tracked for SSL or Domain Expiration.<br>
+          <span class="text-white/30 text-[11px] mt-1 inline-block">Enable "TLS / SSL Expiration Check" or "Domain Expiration Check" in monitor settings.</span>
+        </td>
+      </tr>
+    `;
+    return;
+  }
+
+  const rowsHtml = items.map((item) => {
+    const sslCell = renderAssetExpiryCell(item.ssl_enabled, item.ssl_days_remaining, item.ssl_expires_at, 'ssl');
+    const domainCell = renderAssetExpiryCell(item.domain_enabled, item.domain_days_remaining, item.domain_expires_at, 'domain');
+    const urgencyCell = renderUrgencyBadge(item.urgency);
+
+    return `
+      <tr id="asset-row-${escapeHtml(item.monitor_id)}" class="hover:bg-white/5 transition">
+        <td class="py-3 px-4">
+          <div class="font-sans font-medium text-white text-sm">${escapeHtml(item.name)}</div>
+          <div class="text-[11px] text-white/50 truncate max-w-xs font-mono">${escapeHtml(item.url)}</div>
+        </td>
+        <td class="py-3 px-4">${sslCell}</td>
+        <td class="py-3 px-4">${domainCell}</td>
+        <td class="py-3 px-4">${urgencyCell}</td>
+        <td class="py-3 px-4 text-right">
+          <button type="button" onclick="forceRefreshAssetRow('${escapeHtml(item.monitor_id)}', this)" class="px-2.5 py-1 text-xs rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 transition inline-flex items-center gap-1 font-sans cursor-pointer active:scale-95" title="Force immediate TLS and domain check">
+            <span>⚡</span><span>Force Refresh</span>
+          </button>
+        </td>
+      </tr>
+    `;
+  }).join('');
+
+  tbody.innerHTML = rowsHtml;
+}
+
+async function forceRefreshAssetRow(monitorId, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<svg class="w-3.5 h-3.5 animate-spin inline mr-1" fill="none" viewBox="0 0 24 24"><circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle><path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8V0C5.373 0 0 5.373 0 12h4zm2 5.291A7.962 7.962 0 014 12H0c0 3.042 1.135 5.824 3 7.938l3-2.647z"></path></svg> Refreshing...`;
+  }
+
+  try {
+    const res = await apiFetch(`/api/admin/monitors/${monitorId}/refresh-assets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
+
+    if (res && res.ok) {
+      const updatedItem = await res.json();
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Asset Refreshed',
+          message: `Live telemetry updated for "${updatedItem.name}"`,
+          type: 'success',
+        });
+      }
+      await loadAssetExpiryData(false);
+    } else {
+      const err = await res.json().catch(() => ({}));
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Refresh Failed',
+          message: err.error || 'Unable to refresh asset telemetry',
+          type: 'error',
+        });
+      }
+    }
+  } catch (err) {
+    console.error('Error refreshing asset:', err);
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Refresh Error',
+        message: err.message || 'Network error occurred',
+        type: 'error',
+      });
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `<span>⚡</span><span>Force Refresh</span>`;
+    }
+  }
+}
+window.forceRefreshAssetRow = forceRefreshAssetRow;
+
+// ── Notification Channels Management & View ─────────────────────────────────
+
+function maskUrl(url) {
+  if (!url) return '';
+  try {
+    const parsed = new URL(url);
+    const parts = parsed.pathname.split('/');
+    if (parts.length > 2) {
+      const last = parts[parts.length - 1];
+      const masked = last.length > 8 ? last.slice(0, 4) + '••••' + last.slice(-4) : '••••••••';
+      parts[parts.length - 1] = masked;
+      return `${parsed.protocol}//${parsed.host}${parts.join('/')}`;
+    }
+    return `${parsed.protocol}//${parsed.host}${parsed.pathname.slice(0, 8)}••••`;
+  } catch (_) {
+    if (url.length > 24) {
+      return url.slice(0, 16) + '••••' + url.slice(-4);
+    }
+    return url;
+  }
+}
+window.maskUrl = maskUrl;
+
+function renderChannelCard(channel) {
+  const typeLower = (channel.type || 'webhook').toLowerCase();
+  let typeBadge = '';
+  if (typeLower === 'discord') {
+    typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-[#5865F2]/15 text-[#5865F2] border border-[#5865F2]/30">Discord</span>`;
+  } else if (typeLower === 'slack') {
+    typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-[#E01E5A]/15 text-[#E01E5A] border border-[#E01E5A]/30">Slack</span>`;
+  } else if (typeLower === 'telegram') {
+    typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-[#24A1DE]/15 text-[#24A1DE] border border-[#24A1DE]/30">Telegram</span>`;
+  } else {
+    typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">Custom Webhook</span>`;
+  }
+
+  const defaultBadge = channel.is_default
+    ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-mono font-semibold uppercase tracking-wider bg-white/10 text-neutral-300 border border-white/15">DEFAULT</span>`
+    : '';
+
+  const masked = maskUrl(channel.url);
+
+  return `
+    <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20 flex flex-col justify-between space-y-4" id="channel-card-${channel.id}">
+      <div class="space-y-2">
+        <div class="flex items-start justify-between gap-2">
+          <div class="space-y-1 min-w-0">
+            <h3 class="font-bold text-white text-sm sm:text-base truncate" title="${escapeHtml(channel.name)}">${escapeHtml(channel.name)}</h3>
+            <div class="flex items-center gap-1.5 flex-wrap">
+              ${typeBadge}
+              ${defaultBadge}
+            </div>
+          </div>
+          <!-- Action Menu -->
+          <div class="flex items-center gap-1 shrink-0">
+            <button onclick="openEditChannelModal('${channel.id}')" class="p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition cursor-pointer" title="Edit Channel">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
+              </svg>
+            </button>
+            <button onclick="deleteNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}')" class="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer" title="Delete Channel">
+              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
+              </svg>
+            </button>
+          </div>
+        </div>
+
+        <div class="font-mono text-xs text-white/50 truncate select-all bg-black/30 border border-white/5 rounded-xl px-2.5 py-1.5" title="${escapeHtml(channel.url)}">
+          ${escapeHtml(masked)}
+        </div>
+      </div>
+
+      <div class="pt-2 border-t border-white/5 flex items-center justify-between">
+        <span class="text-[10px] font-mono text-white/40">Created ${formatDate(channel.created_at)}</span>
+        <button id="test-chan-btn-${channel.id}" onclick="testNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}', this)" class="px-3 py-1 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
+          <svg class="w-3 h-3 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+          </svg>
+          <span>Test</span>
+        </button>
+      </div>
+    </div>
+  `;
+}
+window.renderChannelCard = renderChannelCard;
+
+function renderNotificationChannels(channels) {
+  const container = document.getElementById('channels-list-container');
+  if (!container) return;
+
+  if (!channels || channels.length === 0) {
+    container.innerHTML = `
+      <div class="col-span-full glass-card rounded-2xl p-12 text-center text-white/50 text-xs space-y-3 border border-white/10">
+        <div class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center mx-auto text-white/40">
+          <svg class="w-5 h-5 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
+          </svg>
+        </div>
+        <p class="font-medium text-white/70">No notification channels registered yet.</p>
+        <p class="text-[11px] text-white/40">Add reusable Discord, Slack, Custom Webhook, or Telegram endpoints to receive instant alerts.</p>
+        <button onclick="openCreateChannelModal()" class="px-4 py-1.5 rounded-xl bg-[#30d158] hover:bg-[#28b84d] text-[#0b0b0c] text-xs font-semibold shadow-sm hover:shadow-[0_0_15px_rgba(48,209,88,0.35)] transition cursor-pointer">
+          + Add First Channel
+        </button>
+      </div>
+    `;
+    return;
+  }
+
+  container.innerHTML = channels.map((c) => renderChannelCard(c)).join('');
+}
+window.renderNotificationChannels = renderNotificationChannels;
+
+async function loadNotificationChannels(showLoader = true) {
+  if (isChannelsLoading) return;
+  isChannelsLoading = true;
+
+  const refreshIcon = document.getElementById('channels-refresh-icon');
+  if (refreshIcon && showLoader) {
+    refreshIcon.classList.add('animate-spin');
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/channels');
+    if (res && res.ok) {
+      const data = await res.json();
+      window.cachedChannels = data;
+      renderNotificationChannels(data);
+    } else {
+      console.warn('Failed to fetch notification channels:', res?.status);
+    }
+  } catch (err) {
+    console.error('Error fetching notification channels:', err);
+  } finally {
+    isChannelsLoading = false;
+    if (refreshIcon) {
+      refreshIcon.classList.remove('animate-spin');
+    }
+  }
+}
+window.loadNotificationChannels = loadNotificationChannels;
+
+async function testNotificationChannel(id, name, btn) {
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = `<span class="inline-block w-3 h-3 border-2 border-white/20 border-t-white rounded-full animate-spin"></span> Testing...`;
+  }
+  try {
+    const res = await apiFetch(`/api/admin/channels/${id}/test`, { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+    if (res.ok && data.success !== false) {
+      showToast({
+        title: 'Channel Probe Delivered',
+        message: data.message || `Test notification delivered to "${name}"`,
+        type: 'success',
+      });
+    } else {
+      showToast({
+        title: 'Channel Test Failed',
+        message: data.error || 'Failed to dispatch test notification',
+        type: 'error',
+      });
+    }
+  } catch (err) {
+    showToast({
+      title: 'Channel Test Error',
+      message: err.message || 'Network error while testing channel',
+      type: 'error',
+    });
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = `
+        <svg class="w-3 h-3 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+        </svg>
+        <span>Test</span>
+      `;
+    }
+  }
+}
+window.testNotificationChannel = testNotificationChannel;
+
+async function deleteNotificationChannel(id, name) {
+  if (!confirm(`Delete notification channel "${name}"? This channel will be unlinked from all monitors.`)) return;
+
+  try {
+    const res = await apiFetch(`/api/admin/channels/${id}`, { method: 'DELETE' });
+    if (res && res.ok) {
+      showToast({
+        title: 'Channel Deleted',
+        message: `Notification channel "${name}" removed`,
+        type: 'success',
+      });
+      loadNotificationChannels(false);
+      if (typeof loadMonitorChannelsChecklist === 'function') {
+        loadMonitorChannelsChecklist();
+      }
+    } else {
+      showToast({
+        title: 'Delete Failed',
+        message: 'Failed to delete notification channel',
+        type: 'error',
+      });
+    }
+  } catch (err) {
+    showToast({
+      title: 'Error',
+      message: err.message || 'Network error while deleting channel',
+      type: 'error',
+    });
+  }
+}
+window.deleteNotificationChannel = deleteNotificationChannel;
+
+function openCreateChannelModal(isInline = false) {
+  isChannelModalInline = isInline;
+  const modal = document.getElementById('channel-modal');
+  const title = document.getElementById('channel-modal-title');
+  const form = document.getElementById('channel-form');
+  const idEl = document.getElementById('channel-form-id');
+
+  if (title) title.innerText = 'Add Notification Channel';
+  if (idEl) idEl.value = '';
+  if (form) form.reset();
+
+  const typeEl = document.getElementById('channel-form-type');
+  if (typeEl) typeEl.value = 'discord';
+
+  if (modal) modal.classList.remove('hidden');
+}
+window.openCreateChannelModal = openCreateChannelModal;
+
+function openEditChannelModal(id) {
+  isChannelModalInline = false;
+  const modal = document.getElementById('channel-modal');
+  const title = document.getElementById('channel-modal-title');
+  const idEl = document.getElementById('channel-form-id');
+  const nameEl = document.getElementById('channel-form-name');
+  const typeEl = document.getElementById('channel-form-type');
+  const urlEl = document.getElementById('channel-form-url');
+  const defaultEl = document.getElementById('channel-form-default');
+
+  const channel = (window.cachedChannels || []).find((c) => c.id === id);
+  if (!channel) return;
+
+  if (title) title.innerText = 'Edit Notification Channel';
+  if (idEl) idEl.value = channel.id;
+  if (nameEl) nameEl.value = channel.name;
+  if (typeEl) typeEl.value = (channel.type || 'discord').toLowerCase();
+  if (urlEl) urlEl.value = channel.url;
+  if (defaultEl) defaultEl.checked = channel.is_default;
+
+  if (modal) modal.classList.remove('hidden');
+}
+window.openEditChannelModal = openEditChannelModal;
+
+function closeChannelModal() {
+  const modal = document.getElementById('channel-modal');
+  if (modal) modal.classList.add('hidden');
+  isChannelModalInline = false;
+}
+window.closeChannelModal = closeChannelModal;
+
+async function submitChannelForm(e) {
+  if (e && typeof e.preventDefault === 'function') {
+    e.preventDefault();
+  }
+
+  const id = document.getElementById('channel-form-id')?.value?.trim();
+  const name = document.getElementById('channel-form-name')?.value?.trim();
+  const type = document.getElementById('channel-form-type')?.value?.trim();
+  const url = document.getElementById('channel-form-url')?.value?.trim();
+  const is_default = document.getElementById('channel-form-default')?.checked || false;
+
+  const saveBtn = document.getElementById('save-channel-btn');
+  const originalText = saveBtn ? saveBtn.innerText : 'Save Channel';
+
+  if (!name || !url) {
+    showToast({
+      title: 'Validation Error',
+      message: 'Name and URL are required',
+      type: 'error',
+    });
+    return;
+  }
+
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Saving...';
+  }
+
+  try {
+    const endpoint = id ? `/api/admin/channels/${id}` : '/api/admin/channels';
+    const method = id ? 'PUT' : 'POST';
+
+    const res = await apiFetch(endpoint, {
+      method,
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ name, type, url, is_default }),
+    });
+
+    if (res && res.ok) {
+      const savedChannel = await res.json();
+      closeChannelModal();
+      showToast({
+        title: id ? 'Channel Updated' : 'Channel Created',
+        message: `Notification channel "${name}" successfully saved`,
+        type: 'success',
+      });
+
+      // Refresh channels cache
+      await loadNotificationChannels(false);
+
+      // If opened inline from monitor modal, re-render checklist and check this channel
+      if (typeof loadMonitorChannelsChecklist === 'function') {
+        const currentlyChecked = Array.from(
+          document.querySelectorAll('input[name="monitor-channel"]:checked')
+        ).map((cb) => cb.value);
+        if (!currentlyChecked.includes(savedChannel.id)) {
+          currentlyChecked.push(savedChannel.id);
+        }
+        await loadMonitorChannelsChecklist(currentlyChecked);
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      showToast({
+        title: 'Save Error',
+        message: err.error || 'Failed to save channel',
+        type: 'error',
+      });
+    }
+  } catch (err) {
+    showToast({
+      title: 'Error',
+      message: err.message || 'Network error occurred',
+      type: 'error',
+    });
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = originalText;
+    }
+  }
+}
+window.submitChannelForm = submitChannelForm;
 
 // ── Initialization & Auto-Refresh Loop (Every 5 seconds) ─────────────────────
 
@@ -961,6 +2184,42 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const passwordBackdrop = document.getElementById('password-modal');
+  if (passwordBackdrop) {
+    passwordBackdrop.addEventListener('click', (e) => {
+      if (e.target === passwordBackdrop) {
+        closePasswordModal();
+      }
+    });
+  }
+
+  const detailBackdrop = document.getElementById('monitor-detail-modal');
+  if (detailBackdrop) {
+    detailBackdrop.addEventListener('click', (e) => {
+      if (e.target === detailBackdrop) {
+        closeMonitorDetailModal();
+      }
+    });
+  }
+
+  const channelBackdrop = document.getElementById('channel-modal');
+  if (channelBackdrop) {
+    channelBackdrop.addEventListener('click', (e) => {
+      if (e.target === channelBackdrop) {
+        closeChannelModal();
+      }
+    });
+  }
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const channelModal = document.getElementById('channel-modal');
+      if (channelModal && !channelModal.classList.contains('hidden')) {
+        closeChannelModal();
+      }
+    }
+  });
+
   const isAuthOrStatusPage =
     window.location.pathname.includes('login') ||
     window.location.pathname.includes('status');
@@ -971,7 +2230,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
     // Auto-refresh every 5 seconds per PRD requirements
     setInterval(() => {
-      fetchDashboardData(false);
+      if (currentAdminView === 'assets') {
+        loadAssetExpiryData(false);
+      } else if (currentAdminView === 'channels') {
+        loadNotificationChannels(false);
+      } else {
+        fetchDashboardData(false);
+      }
     }, 5000);
   }
 });

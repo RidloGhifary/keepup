@@ -105,6 +105,8 @@ pub async fn test_webhook_direct(
         downtime_duration: Some("0 seconds (Manual Test Alert)".to_string()),
         downtime_duration_secs: Some(0),
         timestamp: chrono::Utc::now().to_rfc3339(),
+        domain_days_remaining: None,
+        domain_expires_at: None,
     };
 
     let use_default = payload.use_default_template;
@@ -182,6 +184,8 @@ pub async fn test_webhook(
         downtime_duration: Some("0 seconds (Manual Test Alert)".to_string()),
         downtime_duration_secs: Some(0),
         timestamp: chrono::Utc::now().to_rfc3339(),
+        domain_days_remaining: None,
+        domain_expires_at: None,
     };
 
     let use_default = webhook.use_default_template;

@@ -328,6 +328,22 @@
     .status-bar-down {
       background-color: var(--status-down);
     }
+
+    /* Monitor Detail Modal Adaptations */
+    #monitor-detail-modal-card {
+      background: #0b0b0c !important;
+      border: 1px solid var(--card-border) !important;
+      color: var(--text-primary) !important;
+      box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6) !important;
+    }
+    [data-theme="light"] #monitor-detail-modal-card {
+      background: #ffffff !important;
+      border-color: rgba(0, 0, 0, 0.12) !important;
+      color: #1d1d1f !important;
+    }
+    [data-theme="light"] #monitor-detail-modal {
+      background-color: rgba(0, 0, 0, 0.35) !important;
+    }
     .status-bar-degraded {
       background-color: var(--status-degraded);
     }
@@ -429,7 +445,7 @@
   <button 
     id="theme-toggle-btn" 
     type="button" 
-    onclick="toggleTheme()" 
+    data-action="toggle-theme" 
     class="fixed top-4 right-4 sm:top-6 sm:right-6 z-50 rounded-full bg-white/10 p-2.5 text-neutral-300 hover:text-white hover:bg-white/20 border border-white/10 backdrop-blur-md shadow-lg shadow-black/20 transition-all duration-200 active:scale-95 group focus:outline-none" 
     title="Toggle Theme (Auto / Dark / Light)" 
     aria-label="Toggle Theme"
@@ -491,11 +507,11 @@
         </div>
 
         <div class="flex items-center gap-1 p-0.5 rounded-full bg-white/5 border border-white/10 text-[10px] font-sans">
-          <button type="button" onclick="setTheme('auto')" data-theme-btn="auto" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Auto (Match System Mode)">Auto</button>
-          <button type="button" onclick="setTheme('default')" data-theme-btn="default" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="System Dark Theme">Dark</button>
-          <button type="button" onclick="setTheme('oled')" data-theme-btn="oled" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="OLED Pitch Black Theme">OLED</button>
-          <button type="button" onclick="setTheme('midnight')" data-theme-btn="midnight" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Midnight Navy Theme">Midnight</button>
-          <button type="button" onclick="setTheme('light')" data-theme-btn="light" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Clean Light Theme">Light</button>
+          <button type="button" data-theme-btn="auto" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Auto (Match System Mode)">Auto</button>
+          <button type="button" data-theme-btn="default" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="System Dark Theme">Dark</button>
+          <button type="button" data-theme-btn="oled" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="OLED Pitch Black Theme">OLED</button>
+          <button type="button" data-theme-btn="midnight" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Midnight Navy Theme">Midnight</button>
+          <button type="button" data-theme-btn="light" class="px-2 py-0.5 rounded-full transition text-white/50 hover:text-white" title="Clean Light Theme">Light</button>
         </div>
       </div>
     </div>
@@ -564,6 +580,115 @@
       </div>
     </div>
   </footer>
+
+  <!-- ── 11. Monitor Detail View Modal / Drawer ─────────────────────────────── -->
+  <div id="monitor-detail-modal" class="fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 hidden">
+    <div id="monitor-detail-modal-card" class="w-full max-w-3xl bg-zinc-950 border border-white/10 rounded-2xl shadow-2xl overflow-hidden max-h-[92vh] flex flex-col relative text-white">
+      
+      <!-- Modal Header -->
+      <div class="p-5 sm:p-6 border-b border-white/10 flex items-start justify-between gap-4 bg-white/[0.02]">
+        <div class="min-w-0 space-y-1">
+          <div class="flex flex-wrap items-center gap-2">
+            <h3 id="detail-modal-name" class="text-lg sm:text-xl font-bold tracking-tight text-white truncate">Monitor Details</h3>
+            <span id="detail-modal-method" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-white/10 text-neutral-300 border border-white/10 uppercase tracking-wider">GET</span>
+            <span id="detail-modal-status-badge" class="px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border-emerald-500/20">UP</span>
+          </div>
+          <p id="detail-modal-url" class="text-xs text-neutral-400 font-mono truncate select-all">https://...</p>
+        </div>
+
+        <div class="flex items-center gap-2 shrink-0">
+          <button id="detail-modal-ping-btn" type="button" onclick="triggerDetailPing()" class="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" title="Execute out-of-band manual ping">
+            <span id="detail-ping-icon">⚡</span>
+            <span id="detail-ping-text">Ping Now</span>
+          </button>
+          <button type="button" data-action="close-detail-modal" onclick="closeMonitorDetailModal()" class="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition" title="Close Modal">
+            <svg class="w-5 h-5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+            </svg>
+          </button>
+        </div>
+      </div>
+
+      <!-- Modal Scrollable Content -->
+      <div id="detail-modal-content" class="p-5 sm:p-6 overflow-y-auto space-y-6 flex-1">
+        
+        <!-- SLA Telemetry Row (3 Cards) -->
+        <div>
+          <div class="text-[11px] font-mono uppercase tracking-wider text-neutral-400 mb-2">Uptime SLAs</div>
+          <div class="grid grid-cols-3 gap-3">
+            <div class="bg-black/40 border border-white/10 rounded-xl p-3.5 text-center">
+              <div class="text-[10px] font-mono uppercase tracking-wider text-neutral-400">24h Uptime</div>
+              <div id="detail-sla-24h" class="text-lg sm:text-xl font-bold font-mono text-emerald-400 mt-1">100.0%</div>
+            </div>
+            <div class="bg-black/40 border border-white/10 rounded-xl p-3.5 text-center">
+              <div class="text-[10px] font-mono uppercase tracking-wider text-neutral-400">7d Uptime</div>
+              <div id="detail-sla-7d" class="text-lg sm:text-xl font-bold font-mono text-emerald-400 mt-1">100.0%</div>
+            </div>
+            <div class="bg-black/40 border border-white/10 rounded-xl p-3.5 text-center">
+              <div class="text-[10px] font-mono uppercase tracking-wider text-neutral-400">30d Uptime</div>
+              <div id="detail-sla-30d" class="text-lg sm:text-xl font-bold font-mono text-emerald-400 mt-1">100.0%</div>
+            </div>
+          </div>
+        </div>
+
+        <!-- Latency Breakdown Bar & SVG Chart -->
+        <div class="space-y-3">
+          <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+            <span class="text-[11px] font-mono uppercase tracking-wider text-neutral-400">24h Latency Breakdown</span>
+            <!-- Monospace pills -->
+            <div class="flex flex-wrap items-center gap-1.5 font-mono text-xs">
+              <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-neutral-300">P50: <strong id="detail-lat-p50" class="text-white">0ms</strong></span>
+              <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-neutral-300">P95: <strong id="detail-lat-p95" class="text-white">0ms</strong></span>
+              <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-neutral-300">P99: <strong id="detail-lat-p99" class="text-white">0ms</strong></span>
+              <span class="px-2 py-0.5 rounded bg-white/5 border border-white/10 text-neutral-400">Avg: <strong id="detail-lat-avg" class="text-white">0ms</strong></span>
+            </div>
+          </div>
+
+          <!-- Interactive SVG Hourly Latency Bar Chart (24 Bars) -->
+          <div class="bg-black/40 border border-white/10 rounded-xl p-4 space-y-2">
+            <div id="detail-latency-chart" class="w-full flex items-center justify-center min-h-[80px]">
+              <!-- Rendered dynamically -->
+            </div>
+            <div class="flex items-center justify-between text-[10px] font-mono text-neutral-500 pt-1 border-t border-white/5">
+              <span>24 hours ago</span>
+              <span>Hourly Average Response Time</span>
+              <span>Current Hour</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- Recent Check Logs History Table -->
+        <div class="space-y-2.5">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-mono uppercase tracking-wider text-neutral-400">Recent Check Logs (50 most recent)</span>
+            <span id="detail-logs-count" class="text-[10px] font-mono text-neutral-500">0 logs</span>
+          </div>
+
+          <div class="bg-black/40 border border-white/10 rounded-xl overflow-hidden">
+            <div class="overflow-x-auto max-h-64 overflow-y-auto">
+              <table class="w-full text-left border-collapse text-xs">
+                <thead class="bg-white/5 border-b border-white/10 sticky top-0 text-[10px] font-mono uppercase tracking-wider text-neutral-400">
+                  <tr>
+                    <th class="py-2.5 px-3">Timestamp</th>
+                    <th class="py-2.5 px-3">HTTP Status</th>
+                    <th class="py-2.5 px-3">Response Time</th>
+                    <th class="py-2.5 px-3">Result / Error</th>
+                  </tr>
+                </thead>
+                <tbody id="detail-logs-tbody" class="divide-y divide-white/5 font-mono">
+                  <tr>
+                    <td colspan="4" class="py-6 text-center text-neutral-500 font-sans">Loading check history...</td>
+                  </tr>
+                </tbody>
+              </table>
+            </div>
+          </div>
+        </div>
+
+      </div>
+
+    </div>
+  </div>
 
   <!-- Status Page Client Script -->
   <script src="/status.js"></script>

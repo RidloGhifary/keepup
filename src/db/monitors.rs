@@ -19,13 +19,31 @@ pub struct Monitor {
     pub last_status: String,
     pub down_since: Option<String>,
     pub created_at: String,
+    #[sqlx(default)]
+    pub check_domain_expiry: i32,
+    #[sqlx(default)]
+    pub domain_warning_days: i32,
+    pub domain_expires_at: Option<String>,
+    pub domain_days_remaining: Option<i32>,
+    pub last_domain_alert_days: Option<i32>,
+    pub domain_last_checked_at: Option<String>,
+    #[sqlx(default)]
+    pub check_ssl: i32,
+    #[sqlx(default)]
+    pub ssl_warning_days: i32,
+    pub ssl_expires_at: Option<String>,
+    pub ssl_days_remaining: Option<i32>,
+    pub ssl_last_checked_at: Option<String>,
 }
 
 /// Fetch a single monitor by its primary ID.
 pub async fn get_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Monitor, AppError> {
     sqlx::query_as::<_, Monitor>(
         "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-                is_active, is_public, last_status, down_since, created_at \
+                is_active, is_public, last_status, down_since, created_at, \
+                check_domain_expiry, domain_warning_days, domain_expires_at, \
+                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
          FROM monitors WHERE id = ?",
     )
     .bind(id)
@@ -57,11 +75,27 @@ pub async fn update_monitor(
         .is_public
         .map(|b| if b { 1 } else { 0 })
         .unwrap_or(existing.is_public);
+    let check_domain_expiry = payload
+        .check_domain_expiry
+        .map(|b| if b { 1 } else { 0 })
+        .unwrap_or(existing.check_domain_expiry);
+    let domain_warning_days = payload
+        .domain_warning_days
+        .unwrap_or(existing.domain_warning_days);
+    let check_ssl = payload
+        .check_ssl
+        .map(|b| if b { 1 } else { 0 })
+        .unwrap_or(existing.check_ssl);
+    let ssl_warning_days = payload
+        .ssl_warning_days
+        .unwrap_or(existing.ssl_warning_days);
 
     sqlx::query(
         "UPDATE monitors \
          SET name = ?, url = ?, check_interval_secs = ?, timeout_secs = ?, \
-             max_retries = ?, is_active = ?, is_public = ? \
+             max_retries = ?, is_active = ?, is_public = ?, \
+             check_domain_expiry = ?, domain_warning_days = ?, \
+             check_ssl = ?, ssl_warning_days = ? \
          WHERE id = ?",
     )
     .bind(&name)
@@ -71,11 +105,93 @@ pub async fn update_monitor(
     .bind(max_retries)
     .bind(is_active)
     .bind(is_public)
+    .bind(check_domain_expiry)
+    .bind(domain_warning_days)
+    .bind(check_ssl)
+    .bind(ssl_warning_days)
     .bind(id)
     .execute(pool)
     .await?;
 
     get_monitor_by_id(pool, id).await
+}
+
+/// Update domain expiration telemetry for a monitor.
+pub async fn update_domain_expiry(
+    pool: &SqlitePool,
+    id: &str,
+    expires_at: Option<&str>,
+    days_remaining: Option<i32>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE monitors \
+         SET domain_expires_at = ?, domain_days_remaining = ?, domain_last_checked_at = datetime('now') \
+         WHERE id = ?",
+    )
+    .bind(expires_at)
+    .bind(days_remaining)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Update SSL certificate expiration telemetry for a monitor.
+pub async fn update_ssl_expiry(
+    pool: &SqlitePool,
+    id: &str,
+    expires_at: Option<&str>,
+    days_remaining: Option<i32>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE monitors \
+         SET ssl_expires_at = ?, ssl_days_remaining = ?, ssl_last_checked_at = datetime('now') \
+         WHERE id = ?",
+    )
+    .bind(expires_at)
+    .bind(days_remaining)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Query all active monitors where either check_ssl or check_domain_expiry is enabled.
+pub async fn get_asset_expiry_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, AppError> {
+    let rows = sqlx::query_as::<_, Monitor>(
+        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
+                is_active, is_public, last_status, down_since, created_at, \
+                check_domain_expiry, domain_warning_days, domain_expires_at, \
+                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
+         FROM monitors \
+         WHERE is_active = 1 AND (check_ssl = 1 OR check_domain_expiry = 1)",
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(rows)
+}
+
+/// Update milestone alert suppression tracker for domain expiration.
+pub async fn update_domain_alert_milestone(
+    pool: &SqlitePool,
+    id: &str,
+    milestone_days: Option<i32>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE monitors \
+         SET last_domain_alert_days = ? \
+         WHERE id = ?",
+    )
+    .bind(milestone_days)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
 }
 
 /// Update the operational status and down_since timestamp for a monitor.
@@ -513,5 +629,53 @@ mod tests {
                 assert!(latency_24h[i].timestamp > latency_24h[i - 1].timestamp);
             }
         }
+    }
+
+    #[tokio::test]
+    async fn test_domain_expiry_db_persistence() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .unwrap();
+
+        let monitor_id = "test-mon-domain-persist";
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, max_retries, is_active, is_public, last_status, check_domain_expiry, domain_warning_days) \
+             VALUES (?, 'Domain Test', 'https://example.com', 60, 5, 3, 1, 1, 'UP', 1, 30)"
+        )
+        .bind(monitor_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Initially domain fields are None
+        let mon = get_monitor_by_id(&pool, monitor_id).await.unwrap();
+        assert_eq!(mon.check_domain_expiry, 1);
+        assert_eq!(mon.domain_warning_days, 30);
+        assert_eq!(mon.domain_expires_at, None);
+        assert_eq!(mon.domain_days_remaining, None);
+
+        // Update domain expiry
+        update_domain_expiry(&pool, monitor_id, Some("2028-01-01T00:00:00Z"), Some(450))
+            .await
+            .unwrap();
+
+        let updated = get_monitor_by_id(&pool, monitor_id).await.unwrap();
+        assert_eq!(updated.domain_expires_at.as_deref(), Some("2028-01-01T00:00:00Z"));
+        assert_eq!(updated.domain_days_remaining, Some(450));
+        assert!(updated.domain_last_checked_at.is_some());
+
+        // Update alert milestone
+        update_domain_alert_milestone(&pool, monitor_id, Some(14))
+            .await
+            .unwrap();
+        let mon_with_milestone = get_monitor_by_id(&pool, monitor_id).await.unwrap();
+        assert_eq!(mon_with_milestone.last_domain_alert_days, Some(14));
     }
 }

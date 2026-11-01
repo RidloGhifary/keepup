@@ -1,6 +1,7 @@
 pub mod checks;
 pub mod maintenance;
 pub mod monitors;
+pub mod notifications;
 pub mod status_pages;
 pub mod webhooks;
 

@@ -8,7 +8,7 @@ use tokio::time;
 use tracing::{error, info, warn};
 
 use super::http::{ping_http, CheckResult};
-use crate::notifier::{self, AlertPayload};
+use crate::notifier::AlertPayload;
 
 // ── Row type for the monitors query ──────────────────────────────────────────
 
@@ -25,6 +25,23 @@ struct Monitor {
     max_retries: i32,
     last_status: String,
     down_since: Option<String>,
+    #[sqlx(default)]
+    pub check_domain_expiry: i32,
+    #[sqlx(default)]
+    #[allow(dead_code)]
+    pub domain_warning_days: i32,
+    pub domain_expires_at: Option<String>,
+    pub domain_days_remaining: Option<i32>,
+    pub last_domain_alert_days: Option<i32>,
+    pub domain_last_checked_at: Option<String>,
+    #[sqlx(default)]
+    pub check_ssl: i32,
+    #[sqlx(default)]
+    #[allow(dead_code)]
+    pub ssl_warning_days: i32,
+    pub ssl_expires_at: Option<String>,
+    pub ssl_days_remaining: Option<i32>,
+    pub ssl_last_checked_at: Option<String>,
 }
 
 // ── In-memory per-monitor state ──────────────────────────────────────────────
@@ -114,7 +131,7 @@ pub async fn run_scheduler(
                         let pool = pool.clone();
                         let client = client.clone();
                         tokio::spawn(async move {
-                            notifier::dispatch_alerts(&pool, &client, &payload).await;
+                            crate::alerting::dispatch_alerts(&pool, &client, &payload).await;
                         });
                     }
                 }
@@ -153,7 +170,7 @@ pub async fn run_scheduler(
                                 let pool = pool.clone();
                                 let client = client.clone();
                                 tokio::spawn(async move {
-                                    notifier::dispatch_alerts(&pool, &client, &payload).await;
+                                    crate::alerting::dispatch_alerts(&pool, &client, &payload).await;
                                 });
                             }
                         }
@@ -187,6 +204,137 @@ async fn run_check_and_evaluate(
         .await
         .unwrap_or(false);
 
+    // ── Check RDAP domain registration expiration if enabled ────────
+    let mut domain_days: Option<i32> = monitor.domain_days_remaining;
+    let mut domain_expires: Option<String> = monitor.domain_expires_at.clone();
+
+    if monitor.check_domain_expiry == 1 {
+        let needs_lookup = match &monitor.domain_last_checked_at {
+            None => true,
+            Some(last_str) => match chrono::DateTime::parse_from_rfc3339(last_str) {
+                Ok(dt) => (Utc::now() - dt.with_timezone(&Utc)).num_hours() >= 12,
+                Err(_) => true,
+            },
+        } || monitor.domain_expires_at.is_none();
+
+        if needs_lookup {
+            match crate::checker::domain::check_domain_expiration(client, &monitor.url).await {
+                Ok(info) => {
+                    domain_days = Some(info.days_remaining as i32);
+                    domain_expires = Some(info.expires_at.clone());
+                    if let Err(e) = crate::db::monitors::update_domain_expiry(
+                        pool,
+                        &monitor.id,
+                        Some(&info.expires_at),
+                        Some(info.days_remaining as i32),
+                    )
+                    .await
+                    {
+                        error!(monitor_id = %monitor.id, "Failed to update domain expiry in DB: {e}");
+                    }
+                }
+                Err(e) => {
+                    warn!(monitor = %monitor.name, "RDAP domain expiration check failed: {e}");
+                }
+            }
+        } else if let Some(ref exp_str) = monitor.domain_expires_at {
+            if let Ok((_, remaining)) = crate::checker::domain::calculate_days_remaining(exp_str, Utc::now()) {
+                domain_days = Some(remaining as i32);
+            }
+        }
+
+        // Milestone Alert Suppression Tracking: only dispatch at [30, 14, 7, 3, 1] days
+        if let Some(days) = domain_days {
+            if days <= monitor.domain_warning_days {
+                let milestone = [0, 1, 3, 7, 14, 30]
+                    .into_iter()
+                    .find(|&m| days <= m && m <= monitor.domain_warning_days);
+
+                if let Some(m) = milestone {
+                    if monitor.last_domain_alert_days != Some(m) {
+                        info!(
+                            monitor = %monitor.name,
+                            days_remaining = days,
+                            milestone = m,
+                            "Domain expiration alert milestone reached; dispatching alert"
+                        );
+
+                        if let Err(e) = crate::db::monitors::update_domain_alert_milestone(
+                            pool,
+                            &monitor.id,
+                            Some(m),
+                        )
+                        .await
+                        {
+                            error!(monitor_id = %monitor.id, "Failed to record domain alert milestone: {e}");
+                        }
+
+                        let pool_alert = pool.clone();
+                        let client_alert = client.clone();
+                        let alert_payload = AlertPayload {
+                            monitor_id: Some(monitor.id.clone()),
+                            monitor_name: monitor.name.clone(),
+                            monitor_url: monitor.url.clone(),
+                            new_status: "DOMAIN_EXPIRING_SOON".to_string(),
+                            old_status: monitor.last_status.clone(),
+                            http_status: None,
+                            response_time_ms: None,
+                            error_msg: Some(if days <= 0 {
+                                format!("Domain registration has expired ({days} days remaining)")
+                            } else {
+                                format!("Domain registration expires in {days} day(s)")
+                            }),
+                            downtime_duration: None,
+                            downtime_duration_secs: None,
+                            timestamp: Utc::now().to_rfc3339(),
+                            domain_days_remaining: Some(days as i64),
+                            domain_expires_at: domain_expires.clone(),
+                        };
+
+                        tokio::spawn(async move {
+                            crate::alerting::dispatch_alerts(&pool_alert, &client_alert, &alert_payload).await;
+                        });
+                    }
+                }
+            } else if monitor.last_domain_alert_days.is_some() {
+                let _ = crate::db::monitors::update_domain_alert_milestone(pool, &monitor.id, None).await;
+            }
+        }
+    }
+
+    // ── Check TLS / SSL certificate expiration if enabled ───────────
+    let mut ssl_days: Option<i32> = monitor.ssl_days_remaining;
+    if monitor.check_ssl == 1 {
+        let needs_ssl_lookup = match &monitor.ssl_last_checked_at {
+            None => true,
+            Some(last_str) => match chrono::DateTime::parse_from_rfc3339(last_str) {
+                Ok(dt) => (Utc::now() - dt.with_timezone(&Utc)).num_hours() >= 12,
+                Err(_) => true,
+            },
+        } || monitor.ssl_expires_at.is_none();
+
+        if needs_ssl_lookup {
+            match crate::checker::tls::check_ssl_expiration(&monitor.url, 10).await {
+                Ok(info) => {
+                    ssl_days = Some(info.days_remaining as i32);
+                    if let Err(e) = crate::db::monitors::update_ssl_expiry(
+                        pool,
+                        &monitor.id,
+                        Some(&info.expires_at),
+                        Some(info.days_remaining as i32),
+                    )
+                    .await
+                    {
+                        error!(monitor_id = %monitor.id, "Failed to update SSL expiry in DB: {e}");
+                    }
+                }
+                Err(e) => {
+                    warn!(monitor = %monitor.name, "TLS/SSL certificate check failed: {e}");
+                }
+            }
+        }
+    }
+
     if in_maintenance {
         let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
 
@@ -197,7 +345,7 @@ async fn run_check_and_evaluate(
             is_up: true,
             error_msg: Some("MAINTENANCE".to_string()),
         };
-        if let Err(e) = insert_check_log(pool, &monitor.id, &maint_result).await {
+        if let Err(e) = insert_check_log(pool, &monitor.id, &maint_result, domain_days, ssl_days).await {
             error!(monitor_id = %monitor.id, "Failed to insert check log during maintenance: {e}");
         }
 
@@ -220,7 +368,7 @@ async fn run_check_and_evaluate(
     let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
 
     // Persist the raw check result.
-    if let Err(e) = insert_check_log(pool, &monitor.id, &result).await {
+    if let Err(e) = insert_check_log(pool, &monitor.id, &result, domain_days, ssl_days).await {
         error!(monitor_id = %monitor.id, "Failed to insert check log: {e}");
         return (prev.clone(), None);
     }
@@ -270,6 +418,8 @@ async fn run_check_and_evaluate(
                 downtime_duration: Some(downtime),
                 downtime_duration_secs: Some(downtime_seconds),
                 timestamp: now.to_rfc3339(),
+                domain_days_remaining: domain_days.map(|d| d as i64),
+                domain_expires_at: domain_expires.clone(),
             };
 
             return (next, Some(payload));
@@ -337,6 +487,8 @@ async fn run_check_and_evaluate(
                 downtime_duration: None,
                 downtime_duration_secs: None,
                 timestamp: now_rfc3339,
+                domain_days_remaining: domain_days.map(|d| d as i64),
+                domain_expires_at: domain_expires,
             };
 
             return (next, Some(payload));
@@ -352,7 +504,10 @@ async fn run_check_and_evaluate(
 async fn fetch_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Monitor>, sqlx::Error> {
     sqlx::query_as::<_, Monitor>(
         r#"
-        SELECT m.id, m.name, m.url, m.check_interval_secs, m.timeout_secs, m.max_retries, m.last_status, m.down_since
+        SELECT m.id, m.name, m.url, m.check_interval_secs, m.timeout_secs, m.max_retries, m.last_status, m.down_since,
+               m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
+               m.last_domain_alert_days, m.domain_last_checked_at,
+               m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at
         FROM   monitors m
         WHERE  m.id = ? AND m.is_active = 1
         "#,
@@ -367,7 +522,10 @@ async fn fetch_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Monit
 async fn fetch_due_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, sqlx::Error> {
     sqlx::query_as::<_, Monitor>(
         r#"
-        SELECT m.id, m.name, m.url, m.check_interval_secs, m.timeout_secs, m.max_retries, m.last_status, m.down_since
+        SELECT m.id, m.name, m.url, m.check_interval_secs, m.timeout_secs, m.max_retries, m.last_status, m.down_since,
+               m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
+               m.last_domain_alert_days, m.domain_last_checked_at,
+               m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at
         FROM   monitors m
         WHERE  m.is_active = 1
           AND  NOT EXISTS (
@@ -387,18 +545,23 @@ async fn insert_check_log(
     pool: &SqlitePool,
     monitor_id: &str,
     result: &CheckResult,
+    domain_days_remaining: Option<i32>,
+    ssl_days_remaining: Option<i32>,
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         r#"
-        INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, error_msg, checked_at, created_at)
-        VALUES (?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP)
+        INSERT INTO check_logs (monitor_id, status_code, latency_ms, response_time_ms, is_up, error_msg, checked_at, created_at, domain_days_remaining, ssl_days_remaining)
+        VALUES (?, ?, ?, ?, ?, ?, CURRENT_TIMESTAMP, CURRENT_TIMESTAMP, ?, ?)
         "#,
     )
     .bind(monitor_id)
     .bind(result.status_code)
     .bind(result.latency_ms)
+    .bind(result.latency_ms)
     .bind(result.is_up as i32)
     .bind(&result.error_msg)
+    .bind(domain_days_remaining)
+    .bind(ssl_days_remaining)
     .execute(pool)
     .await?;
 
@@ -488,6 +651,17 @@ mod tests {
             max_retries: 1,
             last_status: "UP".to_string(),
             down_since: None,
+            check_domain_expiry: 0,
+            domain_warning_days: 30,
+            domain_expires_at: None,
+            domain_days_remaining: None,
+            last_domain_alert_days: None,
+            domain_last_checked_at: None,
+            check_ssl: 0,
+            ssl_warning_days: 30,
+            ssl_expires_at: None,
+            ssl_days_remaining: None,
+            ssl_last_checked_at: None,
         };
 
         let prev = MonitorState {
@@ -515,5 +689,53 @@ mod tests {
             .unwrap();
         assert_eq!(log.0, 1, "is_up should be 1 during maintenance to prevent SLA penalty");
         assert_eq!(log.1.as_deref(), Some("MAINTENANCE"));
+    }
+
+    #[tokio::test]
+    async fn test_domain_expiry_milestone_suppression() {
+        use sqlx::sqlite::SqlitePoolOptions;
+
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .unwrap();
+
+        let monitor_id = "test-sched-domain-1";
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, max_retries, is_active, is_public, last_status, check_domain_expiry, domain_warning_days, domain_days_remaining, domain_expires_at, last_domain_alert_days, domain_last_checked_at) \
+             VALUES (?, 'Domain Test', 'http://127.0.0.1:9', 60, 1, 1, 1, 1, 'UP', 1, 30, 14, datetime('now', '+14 days'), NULL, datetime('now'))"
+        )
+        .bind(monitor_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let client = reqwest::Client::new();
+        let monitor = fetch_monitor_by_id(&pool, monitor_id).await.unwrap().unwrap();
+
+        let prev = MonitorState {
+            status: "UP".to_string(),
+            consecutive_failures: 0,
+            last_state_change: Utc::now(),
+        };
+
+        // First evaluation: 14 days remaining <= 30 warning threshold. Milestone 14 has not been alerted.
+        let (_new_state, _alert) = run_check_and_evaluate(&pool, &client, &monitor, &prev).await;
+
+        // DB should record last_domain_alert_days = 14
+        let updated = fetch_monitor_by_id(&pool, monitor_id).await.unwrap().unwrap();
+        assert_eq!(updated.last_domain_alert_days, Some(14));
+
+        // Second evaluation with same monitor (milestone 14 already alerted):
+        // Re-run evaluation: should NOT re-alert milestone 14 (suppressed)
+        let (_new_state2, _alert2) = run_check_and_evaluate(&pool, &client, &updated, &prev).await;
+        let updated2 = fetch_monitor_by_id(&pool, monitor_id).await.unwrap().unwrap();
+        assert_eq!(updated2.last_domain_alert_days, Some(14));
     }
 }

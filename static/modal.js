@@ -23,16 +23,16 @@ function switchModalTab(tab) {
     'flex-1 py-2 px-3 rounded-xl transition-all duration-200 text-neutral-500 dark:text-white/50 hover:text-neutral-900 dark:hover:text-white';
 
   if (tab === 'monitors') {
-    btnMonitors.className = activeClass;
-    btnWebhooks.className = inactiveClass;
-    formMonitor.classList.remove('hidden');
-    formWebhook.classList.add('hidden');
+    if (btnMonitors) btnMonitors.className = activeClass;
+    if (btnWebhooks) btnWebhooks.className = inactiveClass;
+    if (formMonitor) formMonitor.classList.remove('hidden');
+    if (formWebhook) formWebhook.classList.add('hidden');
   } else {
-    btnWebhooks.className = activeClass;
-    btnMonitors.className = inactiveClass;
-    formWebhook.classList.remove('hidden');
-    formMonitor.classList.add('hidden');
-    fetchWebhooksForModal();
+    if (btnWebhooks) btnWebhooks.className = activeClass;
+    if (btnMonitors) btnMonitors.className = inactiveClass;
+    if (formWebhook) formWebhook.classList.remove('hidden');
+    if (formMonitor) formMonitor.classList.add('hidden');
+    if (typeof fetchWebhooksForModal === 'function') fetchWebhooksForModal();
   }
 }
 
@@ -62,11 +62,58 @@ function closeModal() {
   }, 200);
 }
 
+function toggleDomainWarningInput() {
+  const expiryEl = document.getElementById('m-domain-expiry');
+  const container = document.getElementById('m-domain-warning-container');
+  if (!expiryEl || !container) return;
+  if (expiryEl.checked) {
+    container.classList.remove('hidden');
+  } else {
+    container.classList.add('hidden');
+  }
+}
+window.toggleDomainWarningInput = toggleDomainWarningInput;
+
+function toggleSslWarningInput() {
+  const sslEl = document.getElementById('m-ssl');
+  const container = document.getElementById('m-ssl-warning-container');
+  if (!sslEl || !container) return;
+  if (sslEl.checked) {
+    container.classList.remove('hidden');
+  } else {
+    container.classList.add('hidden');
+  }
+}
+window.toggleSslWarningInput = toggleSslWarningInput;
+
+function validateUrlInput(input) {
+  const indicator = document.getElementById('url-validation-indicator');
+  if (!indicator) return;
+  const val = (input?.value || '').trim();
+  if (!val) {
+    indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-white/30"></span><span class="text-white/40">HTTP / HTTPS</span>`;
+    return;
+  }
+  try {
+    const parsed = new URL(val);
+    if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
+      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#30d158]"></span><span class="text-[#30d158] font-semibold">${parsed.protocol.toUpperCase().replace(':', '')} VALID</span>`;
+    } else {
+      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">INVALID PROTOCOL</span>`;
+    }
+  } catch (_) {
+    if (val.startsWith('http://') || val.startsWith('https://')) {
+      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span><span class="text-amber-400">INCOMPLETE</span>`;
+    } else {
+      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">MISSING PROTOCOL</span>`;
+    }
+  }
+}
+window.validateUrlInput = validateUrlInput;
+
 // ── Open Modals with Dynamic Data ────────────────────────────────────────────
 
 function openEditMonitorModal(data) {
-  switchModalTab('monitors');
-
   let monitor = null;
   if (typeof data === 'string') {
     monitor = (window.allMonitors || []).find((m) => m.id === data);
@@ -79,9 +126,9 @@ function openEditMonitorModal(data) {
   const submitBtn = document.getElementById('save-monitor-btn');
 
   if (monitor) {
-    title.innerText = 'Edit Health Monitor';
-    subtitle.innerText = `Updating target configuration for "${monitor.name}"`;
-    submitBtn.innerText = 'Save Changes';
+    if (title) title.innerText = `Edit Monitor: ${monitor.name}`;
+    if (subtitle) subtitle.innerText = `Updating target configuration and health check telemetry for ${monitor.url}`;
+    if (submitBtn) submitBtn.innerText = 'Save Changes';
 
     document.getElementById('edit-monitor-id').value = monitor.id;
     document.getElementById('m-name').value = monitor.name;
@@ -91,36 +138,94 @@ function openEditMonitorModal(data) {
     document.getElementById('m-retries').value = monitor.max_retries;
     document.getElementById('m-active').checked = monitor.is_active === 1;
     document.getElementById('m-public').checked = monitor.is_public === 1;
+
+    const domainExpiryEl = document.getElementById('m-domain-expiry');
+    const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
+    if (domainExpiryEl) {
+      domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
+      toggleDomainWarningInput();
+    }
+    if (domainWarningDaysEl) {
+      domainWarningDaysEl.value = monitor.domain_warning_days || 30;
+    }
+
+    const sslEl = document.getElementById('m-ssl');
+    const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
+    if (sslEl) {
+      sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
+      toggleSslWarningInput();
+    }
+    if (sslWarningDaysEl) {
+      sslWarningDaysEl.value = monitor.ssl_warning_days || 30;
+    }
+    const urlInput = document.getElementById('m-url');
+    if (urlInput) validateUrlInput(urlInput);
+    loadMonitorChannelsChecklist(monitor.id);
   } else {
-    title.innerText = 'New Health Monitor';
-    subtitle.innerText = 'Add a new service to ping and track uptime';
-    submitBtn.innerText = 'Create Target';
+    if (title) title.innerText = 'Add New Monitor';
+    if (subtitle) subtitle.innerText = 'Configure synthetic HTTP/TCP probes, SLA thresholds, and alert routing';
+    if (submitBtn) submitBtn.innerText = 'Create Monitor';
 
     document.getElementById('edit-monitor-id').value = '';
-    document.getElementById('monitor-form').reset();
+    const form = document.getElementById('monitor-form');
+    if (form) form.reset();
     document.getElementById('m-interval').value = 60;
     document.getElementById('m-timeout').value = 5;
     document.getElementById('m-retries').value = 3;
     document.getElementById('m-active').checked = true;
     document.getElementById('m-public').checked = true;
+
+    const domainExpiryEl = document.getElementById('m-domain-expiry');
+    const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
+    if (domainExpiryEl) {
+      domainExpiryEl.checked = false;
+      toggleDomainWarningInput();
+    }
+    if (domainWarningDaysEl) {
+      domainWarningDaysEl.value = 30;
+    }
+
+    const sslEl = document.getElementById('m-ssl');
+    const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
+    if (sslEl) {
+      sslEl.checked = false;
+      toggleSslWarningInput();
+    }
+    if (sslWarningDaysEl) {
+      sslWarningDaysEl.value = 30;
+    }
+    const urlInput = document.getElementById('m-url');
+    if (urlInput) validateUrlInput(urlInput);
+    loadMonitorChannelsChecklist(null);
   }
 
   showModal();
 }
 
 function openEditWebhookModal(data) {
-  switchModalTab('webhooks');
-
-  let webhook = null;
-  if (typeof data === 'string') {
-    webhook = cachedWebhooks.find((w) => w.id === data);
-  } else if (data && typeof data === 'object') {
-    webhook = data;
+  const webhookModal = document.getElementById('webhook-modal');
+  if (webhookModal) {
+    let webhook = null;
+    if (typeof data === 'string') {
+      webhook = cachedWebhooks.find((w) => w.id === data);
+    } else if (data && typeof data === 'object') {
+      webhook = data;
+    }
+    populateWebhookForm(webhook);
+    webhookModal.classList.remove('hidden');
+    return;
   }
-
-  populateWebhookForm(webhook);
-  showModal();
+  if (typeof openCreateChannelModal === 'function') {
+    openCreateChannelModal();
+  }
 }
+window.openEditWebhookModal = openEditWebhookModal;
+
+function closeWebhookModal() {
+  const webhookModal = document.getElementById('webhook-modal');
+  if (webhookModal) webhookModal.classList.add('hidden');
+}
+window.closeWebhookModal = closeWebhookModal;
 
 function toggleTemplateMode() {
   const isDefaultEl = document.getElementById('w-use-default');
@@ -282,6 +387,14 @@ async function handleMonitorSubmit(e) {
     submitBtn.innerText = id ? 'Saving...' : 'Creating...';
   }
 
+  const domainExpiryEl = document.getElementById('m-domain-expiry');
+  const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
+  const sslEl = document.getElementById('m-ssl');
+  const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
+
+  const channelCheckboxes = document.querySelectorAll('input[name="monitor-channel"]:checked');
+  const channel_ids = Array.from(channelCheckboxes).map((cb) => cb.value);
+
   const payload = {
     name: document.getElementById('m-name')?.value?.trim() || '',
     url: document.getElementById('m-url')?.value?.trim() || '',
@@ -290,6 +403,11 @@ async function handleMonitorSubmit(e) {
     max_retries: parseInt(document.getElementById('m-retries')?.value || '3'),
     is_active: document.getElementById('m-active') ? document.getElementById('m-active').checked : true,
     is_public: document.getElementById('m-public') ? document.getElementById('m-public').checked : true,
+    check_domain_expiry: domainExpiryEl ? domainExpiryEl.checked : false,
+    domain_warning_days: domainWarningDaysEl ? parseInt(domainWarningDaysEl.value || '30') : 30,
+    check_ssl: sslEl ? sslEl.checked : false,
+    ssl_warning_days: sslWarningDaysEl ? parseInt(sslWarningDaysEl.value || '30') : 30,
+    channel_ids,
   };
 
   try {
@@ -331,6 +449,74 @@ async function handleMonitorSubmit(e) {
     }
   }
 }
+
+// ── Notification Channels Multi-Select Checklist in Monitor Form ─────────────
+
+async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
+  const container = document.getElementById('monitor-channels-checklist');
+  if (!container) return;
+
+  container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">Loading channels...</div>`;
+
+  try {
+    let channels = window.cachedChannels || [];
+    if (!channels.length) {
+      const res = await apiFetch('/api/admin/channels');
+      if (res && res.ok) {
+        channels = await res.json();
+        window.cachedChannels = channels;
+      }
+    }
+
+    if (!channels || !channels.length) {
+      container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">No channels configured yet. Click "+ Create New Channel" above.</div>`;
+      return;
+    }
+
+    let selectedIds = new Set();
+    if (Array.isArray(monitorIdOrSelectedIds)) {
+      selectedIds = new Set(monitorIdOrSelectedIds);
+    } else if (typeof monitorIdOrSelectedIds === 'string' && monitorIdOrSelectedIds) {
+      const res = await apiFetch(`/api/admin/monitors/${monitorIdOrSelectedIds}/channels`);
+      if (res && res.ok) {
+        const ids = await res.json();
+        selectedIds = new Set(ids);
+      }
+    } else {
+      // For new monitor, pre-select default channels
+      channels.forEach((c) => {
+        if (c.is_default) selectedIds.add(c.id);
+      });
+    }
+
+    container.innerHTML = channels
+      .map((c) => {
+        const isChecked = selectedIds.has(c.id);
+        const typeBadge = (c.type || 'webhook').toUpperCase();
+        return `
+        <label class="flex items-center justify-between p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition cursor-pointer select-none">
+          <div class="flex items-center gap-2.5 min-w-0">
+            <input type="checkbox" name="monitor-channel" value="${c.id}" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-white/20 text-[#30d158] bg-black/40 focus:ring-0 cursor-pointer accent-[#30d158]">
+            <span class="text-white font-medium text-xs truncate">${escapeHtml(c.name)}</span>
+            <span class="text-[10px] text-white/40 uppercase font-mono">(${typeBadge})</span>
+          </div>
+          ${c.is_default ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 font-mono">DEFAULT</span>' : ''}
+        </label>
+      `;
+      })
+      .join('');
+  } catch (err) {
+    container.innerHTML = `<div class="text-[11px] text-rose-400">Failed to load channels checklist.</div>`;
+  }
+}
+window.loadMonitorChannelsChecklist = loadMonitorChannelsChecklist;
+
+function openCreateChannelInline() {
+  if (typeof openCreateChannelModal === 'function') {
+    openCreateChannelModal(true);
+  }
+}
+window.openCreateChannelInline = openCreateChannelInline;
 
 async function submitWebhookForm(e) {
   if (e && typeof e.preventDefault === 'function') {

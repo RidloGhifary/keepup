@@ -18,6 +18,11 @@ pub struct UpdateMonitorDto {
     pub max_retries: Option<i32>,
     pub is_active: Option<bool>,
     pub is_public: Option<bool>,
+    pub check_domain_expiry: Option<bool>,
+    pub domain_warning_days: Option<i32>,
+    pub check_ssl: Option<bool>,
+    pub ssl_warning_days: Option<i32>,
+    pub channel_ids: Option<Vec<String>>,
 }
 
 impl UpdateMonitorDto {
@@ -55,6 +60,20 @@ impl UpdateMonitorDto {
             if retries < 1 {
                 return Err(AppError::BadRequest(
                     "max_retries must be at least 1".to_string(),
+                ));
+            }
+        }
+        if let Some(days) = self.domain_warning_days {
+            if days < 1 {
+                return Err(AppError::BadRequest(
+                    "domain_warning_days must be at least 1 day".to_string(),
+                ));
+            }
+        }
+        if let Some(days) = self.ssl_warning_days {
+            if days < 1 {
+                return Err(AppError::BadRequest(
+                    "ssl_warning_days must be at least 1 day".to_string(),
                 ));
             }
         }

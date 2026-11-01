@@ -68,6 +68,7 @@
           <li class="docs-nav-item"><a href="#overview">Overview</a></li>
           <li class="docs-nav-item"><a href="#quickstart">Docker Quickstart</a></li>
           <li class="docs-nav-item"><a href="#docker-compose">Docker Compose</a></li>
+          <li class="docs-nav-item"><a href="#docker-multiarch">Multi-Arch Builds (Buildx)</a></li>
           <li class="docs-nav-item"><a href="#building-source">Building from Source &amp; Cargo</a></li>
         </ul>
       </div>
@@ -149,17 +150,28 @@
           <button class="copy-btn" onclick="copyCode(this)">Copy</button>
           <pre><code>docker run -d \
   --name keepup \
-  -p 3000:3000 \
-  -v ./data:/app/data \
+  -p 8080:8080 \
+  -v ./data:/data \
   -e ADMIN_USER=admin \
   -e ADMIN_PASSWORD=supersecret \
   ridloghfry/keepup:latest</code></pre>
         </div>
 
+        <div class="p-4 bg-white/5 border border-white/10 rounded-xl space-y-2 font-mono text-xs my-4">
+          <div class="text-emerald-400 font-semibold uppercase tracking-wider text-[10px]">Initial Dashboard Login</div>
+          <div class="flex items-center justify-between text-neutral-300">
+            <span>Username: <code class="text-white bg-white/10 px-1.5 py-0.5 rounded">admin</code></span>
+            <span>Password: <code class="text-white bg-white/10 px-1.5 py-0.5 rounded">admin</code></span>
+          </div>
+          <p class="text-neutral-500 font-sans text-[11px] pt-1">
+            ⚠️ Change these default credentials immediately in production by setting environment variables <code class="text-neutral-400">ADMIN_USER</code> and <code class="text-neutral-400">ADMIN_PASSWORD</code>.
+          </p>
+        </div>
+
         <p>Once started, access the two endpoints:</p>
         <ul>
-          <li><strong>Admin Dashboard:</strong> <code>http://localhost:3000/</code> (Login with your configured credentials)</li>
-          <li><strong>Public Status Page:</strong> <code>http://localhost:3000/status</code> (Customer-facing, no authentication required)</li>
+          <li><strong>Admin Dashboard:</strong> <code>http://localhost:8080/</code> (Login with your configured credentials)</li>
+          <li><strong>Public Status Page:</strong> <code>http://localhost:8080/status</code> (Customer-facing, no authentication required)</li>
         </ul>
       </section>
 
@@ -177,12 +189,12 @@ services:
     container_name: keepup
     restart: unless-stopped
     ports:
-      - "3000:3000"
+      - "8080:8080"
     volumes:
-      - ./data:/app/data
+      - ./data:/data
     environment:
-      - PORT=3000
-      - KEEPUP_DB_PATH=/app/data/keepup.db
+      - PORT=8080
+      - KEEPUP_DB_PATH=/data/keepup.db
       - ADMIN_USER=admin
       - ADMIN_PASSWORD=change_this_to_strong_password
       - JWT_SECRET=generate_a_random_32_character_secret_here
@@ -193,6 +205,21 @@ services:
         <div class="code-wrapper">
           <button class="copy-btn" onclick="copyCode(this)">Copy</button>
           <pre><code>docker compose up -d</code></pre>
+        </div>
+      </section>
+
+      <section id="docker-multiarch">
+        <h2>Multi-Architecture Docker Builds (amd64 / arm64)</h2>
+        <p>KeepUp ships official multi-architecture container images supporting both <code>linux/amd64</code> (Intel/AMD) and <code>linux/arm64</code> (Apple Silicon, AWS Graviton, Raspberry Pi) using <code>cargo-chef</code> for optimized layer caching.</p>
+
+        <p>Build and test multi-architecture images locally with Docker Buildx:</p>
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code># Build multi-architecture container image locally
+docker buildx build --platform linux/amd64,linux/arm64 -t ridloghfry/keepup:test .
+
+# Inspect published multi-architecture manifest
+docker buildx imagetools inspect ridloghfry/keepup:latest</code></pre>
         </div>
       </section>
 
@@ -214,6 +241,17 @@ cargo build --release
 cargo install --path .
 keepup</code></pre>
         </div>
+
+        <div class="p-4 bg-white/5 border border-white/10 rounded-xl space-y-2 font-mono text-xs my-4">
+          <div class="text-emerald-400 font-semibold uppercase tracking-wider text-[10px]">Initial Dashboard Login</div>
+          <div class="flex items-center justify-between text-neutral-300">
+            <span>Username: <code class="text-white bg-white/10 px-1.5 py-0.5 rounded">admin</code></span>
+            <span>Password: <code class="text-white bg-white/10 px-1.5 py-0.5 rounded">admin</code></span>
+          </div>
+          <p class="text-neutral-500 font-sans text-[11px] pt-1">
+            ⚠️ Change these default credentials immediately in production by setting environment variables <code class="text-neutral-400">ADMIN_USER</code> and <code class="text-neutral-400">ADMIN_PASSWORD</code>.
+          </p>
+        </div>
       </section>
 
       <!-- Configuration -->
@@ -233,12 +271,12 @@ keepup</code></pre>
             <tbody>
               <tr>
                 <td><code>PORT</code></td>
-                <td><code>3000</code></td>
+                <td><code>8080</code></td>
                 <td>HTTP port KeepUp listens on.</td>
               </tr>
               <tr>
                 <td><code>KEEPUP_DB_PATH</code></td>
-                <td><code>data/keepup.db</code></td>
+                <td><code>./data/keepup.db</code></td>
                 <td>Filesystem path to the SQLite database file.</td>
               </tr>
               <tr>
@@ -248,7 +286,7 @@ keepup</code></pre>
               </tr>
               <tr>
                 <td><code>ADMIN_PASSWORD</code></td>
-                <td><code>admin123</code></td>
+                <td><code>admin</code></td>
                 <td>Password for dashboard authentication (strongly recommended to change in production).</td>
               </tr>
               <tr>

@@ -58,6 +58,129 @@ pub async fn get_latency_percentiles(
     })
 }
 
+/// Uptime SLA percentages over 24h, 7d, and 30d windows.
+#[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
+pub struct UptimeSlas {
+    pub uptime_24h: f64,
+    pub uptime_7d: f64,
+    pub uptime_30d: f64,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct SlaAggRow {
+    total_24h: i64,
+    up_24h: i64,
+    total_7d: i64,
+    up_7d: i64,
+    total_30d: i64,
+    up_30d: i64,
+}
+
+/// Compute uptime percentages over 24h, 7d, and 30d windows ((successful_checks / total_checks) * 100).
+pub async fn get_uptime_slas(
+    pool: &SqlitePool,
+    monitor_id: &str,
+) -> Result<UptimeSlas, sqlx::Error> {
+    let row = sqlx::query_as::<_, SlaAggRow>(
+        r#"
+        SELECT 
+            COUNT(CASE WHEN COALESCE(created_at, checked_at) >= datetime('now', '-24 hours') THEN 1 END) AS total_24h,
+            COUNT(CASE WHEN COALESCE(created_at, checked_at) >= datetime('now', '-24 hours') AND is_up = 1 THEN 1 END) AS up_24h,
+            COUNT(CASE WHEN COALESCE(created_at, checked_at) >= datetime('now', '-7 days') THEN 1 END) AS total_7d,
+            COUNT(CASE WHEN COALESCE(created_at, checked_at) >= datetime('now', '-7 days') AND is_up = 1 THEN 1 END) AS up_7d,
+            COUNT(CASE WHEN COALESCE(created_at, checked_at) >= datetime('now', '-30 days') THEN 1 END) AS total_30d,
+            COUNT(CASE WHEN COALESCE(created_at, checked_at) >= datetime('now', '-30 days') AND is_up = 1 THEN 1 END) AS up_30d
+        FROM check_logs
+        WHERE monitor_id = ?
+        "#,
+    )
+    .bind(monitor_id)
+    .fetch_one(pool)
+    .await?;
+
+    let calc_pct = |total: i64, up: i64| -> f64 {
+        if total == 0 {
+            100.0
+        } else {
+            ((up as f64 / total as f64) * 10000.0).round() / 100.0
+        }
+    };
+
+    Ok(UptimeSlas {
+        uptime_24h: calc_pct(row.total_24h, row.up_24h),
+        uptime_7d: calc_pct(row.total_7d, row.up_7d),
+        uptime_30d: calc_pct(row.total_30d, row.up_30d),
+    })
+}
+
+/// Detailed check-log record for deep-dive monitor telemetry.
+#[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
+pub struct DetailCheckLog {
+    pub id: i64,
+    pub created_at: String,
+    pub status_code: Option<i32>,
+    pub response_time_ms: Option<i64>,
+    pub error_message: Option<String>,
+    pub tls_days_remaining: Option<i64>,
+    pub domain_days_remaining: Option<i64>,
+    pub is_up: bool,
+}
+
+#[derive(Debug, sqlx::FromRow)]
+struct RawCheckLogRow {
+    id: i64,
+    created_at: String,
+    status_code: Option<i32>,
+    response_time_ms: Option<i64>,
+    error_msg: Option<String>,
+    is_up: i32,
+    domain_days_remaining: Option<i64>,
+}
+
+/// Fetch the most recent check logs for a monitor (up to limit entries).
+pub async fn get_recent_check_logs(
+    pool: &SqlitePool,
+    monitor_id: &str,
+    limit: i64,
+) -> Result<Vec<DetailCheckLog>, sqlx::Error> {
+    let rows = sqlx::query_as::<_, RawCheckLogRow>(
+        r#"
+        SELECT 
+            id,
+            COALESCE(created_at, checked_at) AS created_at,
+            status_code,
+            COALESCE(response_time_ms, latency_ms) AS response_time_ms,
+            error_msg,
+            is_up,
+            domain_days_remaining
+        FROM check_logs
+        WHERE monitor_id = ?
+        ORDER BY COALESCE(created_at, checked_at) DESC, id DESC
+        LIMIT ?
+        "#,
+    )
+    .bind(monitor_id)
+    .bind(limit)
+    .fetch_all(pool)
+    .await?;
+
+    let logs = rows
+        .into_iter()
+        .map(|r| DetailCheckLog {
+            id: r.id,
+            created_at: r.created_at,
+            status_code: r.status_code,
+            response_time_ms: r.response_time_ms,
+            error_message: r.error_msg,
+            tls_days_remaining: None,
+            domain_days_remaining: r.domain_days_remaining,
+            is_up: r.is_up == 1,
+        })
+        .collect();
+
+    Ok(logs)
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -195,5 +318,53 @@ pub mod tests {
         // When requesting 48 hours, both are included
         let res_48 = get_latency_percentiles(&pool, "m-window", 48).await.unwrap();
         assert_eq!(res_48.avg, (50 + 999) / 2);
+    }
+
+    #[tokio::test]
+    async fn test_get_uptime_slas_and_recent_logs() {
+        let pool = setup_test_db().await;
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('m-sla', 'SLA Test', 'https://test.local', 1, 1)"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // When no logs exist, SLAs return 100.0%
+        let empty_slas = get_uptime_slas(&pool, "m-sla").await.unwrap();
+        assert_eq!(empty_slas.uptime_24h, 100.0);
+        assert_eq!(empty_slas.uptime_7d, 100.0);
+        assert_eq!(empty_slas.uptime_30d, 100.0);
+
+        // Add 3 UP logs and 1 DOWN log within last 24h
+        for _ in 0..3 {
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, checked_at, created_at)
+                 VALUES ('m-sla', 200, 25, 1, datetime('now', '-1 hour'), datetime('now', '-1 hour'))"
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, error_msg, checked_at, created_at)
+             VALUES ('m-sla', 500, 45, 0, 'Internal Server Error', datetime('now', '-2 hours'), datetime('now', '-2 hours'))"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let slas = get_uptime_slas(&pool, "m-sla").await.unwrap();
+        // 3 up out of 4 total = 75.0%
+        assert_eq!(slas.uptime_24h, 75.0);
+        assert_eq!(slas.uptime_7d, 75.0);
+        assert_eq!(slas.uptime_30d, 75.0);
+
+        let logs = get_recent_check_logs(&pool, "m-sla", 50).await.unwrap();
+        assert_eq!(logs.len(), 4);
+        assert_eq!(logs[0].response_time_ms, Some(25));
+        assert!(logs[0].is_up);
     }
 }

@@ -17,16 +17,23 @@ tower = { version = "0.5", features = ["util"] }
 # Database
 sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
 
+# TLS & Certificates
+tokio-rustls = "0.26"
+webpki-roots = "0.26"
+rustls-pki-types = "1.0"
+x509-parser = "0.16"
+
 # HTTP Client & Webhooks
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Embedded Assets
-rust-embed = { version = "8.4", features = ["axum"] }
+rust-embed = { version = "8.4", features = ["axum", "interpolate-folder-path"] }
 
 # Serialization & Utilities
 serde = { version = "1.0", features = ["derive"] }
 serde_json = "1.0"
 chrono = { version = "0.4", features = ["serde"] }
+regex = "1.10"
 tracing = "0.1"
 tracing-subscriber = { version = "0.3", features = ["env-filter"] }
 anyhow = "1.0"
@@ -41,3 +48,5 @@ subtle = "2.6"
 time = "0.3"
 tower_governor = "0.4"
 governor = "0.6"
+sha2 = "0.10"
+hex = "0.4"

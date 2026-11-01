@@ -26,6 +26,16 @@ pub struct CreateMonitor {
     pub is_active: bool,
     #[serde(default = "default_true")]
     pub is_public: bool,
+    #[serde(default)]
+    pub check_domain_expiry: bool,
+    #[serde(default = "default_warning_days")]
+    pub domain_warning_days: i32,
+    #[serde(default)]
+    pub check_ssl: bool,
+    #[serde(default = "default_warning_days")]
+    pub ssl_warning_days: i32,
+    #[serde(default)]
+    pub channel_ids: Option<Vec<String>>,
 }
 
 fn default_interval() -> i32 {
@@ -40,6 +50,9 @@ fn default_retries() -> i32 {
 fn default_true() -> bool {
     true
 }
+fn default_warning_days() -> i32 {
+    30
+}
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -49,7 +62,10 @@ pub async fn list(
 ) -> Result<Json<Vec<MonitorRow>>, AppError> {
     let rows = sqlx::query_as::<_, MonitorRow>(
         "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at \
+               is_active, is_public, last_status, down_since, created_at, \
+               check_domain_expiry, domain_warning_days, domain_expires_at, \
+               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
          FROM monitors ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
@@ -65,7 +81,10 @@ pub async fn get_one(
 ) -> Result<Json<MonitorRow>, AppError> {
     let row = sqlx::query_as::<_, MonitorRow>(
         "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at \
+               is_active, is_public, last_status, down_since, created_at, \
+               check_domain_expiry, domain_warning_days, domain_expires_at, \
+               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
          FROM monitors WHERE id = ?",
     )
     .bind(&id)
@@ -85,8 +104,9 @@ pub async fn create(
 
     sqlx::query(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
-                               max_retries, is_active, is_public, last_status, down_since) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL)",
+                               max_retries, is_active, is_public, last_status, down_since, \
+                               check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&body.name)
@@ -96,12 +116,36 @@ pub async fn create(
     .bind(body.max_retries)
     .bind(body.is_active as i32)
     .bind(body.is_public as i32)
+    .bind(body.check_domain_expiry as i32)
+    .bind(body.domain_warning_days)
+    .bind(body.check_ssl as i32)
+    .bind(body.ssl_warning_days)
     .execute(&state.db)
     .await?;
 
+    // Bind notification channels: explicitly selected or defaults if omitted
+    let channel_ids_to_assign = match body.channel_ids {
+        Some(ref ids) => ids.clone(),
+        None => {
+            crate::db::notifications::list_channels(&state.db)
+                .await
+                .unwrap_or_default()
+                .into_iter()
+                .filter(|c| c.is_default)
+                .map(|c| c.id)
+                .collect()
+        }
+    };
+    if !channel_ids_to_assign.is_empty() {
+        let _ = crate::db::notifications::set_monitor_channels(&state.db, &id, &channel_ids_to_assign).await;
+    }
+
     let row = sqlx::query_as::<_, MonitorRow>(
         "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at \
+               is_active, is_public, last_status, down_since, created_at, \
+               check_domain_expiry, domain_warning_days, domain_expires_at, \
+               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
          FROM monitors WHERE id = ?",
     )
     .bind(&id)

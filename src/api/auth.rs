@@ -6,6 +6,7 @@ use axum_extra::extract::cookie::{Cookie, CookieJar, SameSite};
 use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation};
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
+use sha2::{Digest, Sha256};
 use subtle::ConstantTimeEq;
 use time::Duration;
 
@@ -37,6 +38,40 @@ pub fn constant_time_compare(a: &str, b: &str) -> bool {
         return false;
     }
     a_bytes.ct_eq(b_bytes).into()
+}
+
+/// Compute a salted SHA-256 hash for password persistence.
+pub fn hash_password(password: &str) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(b"keepup_salt_v1:");
+    hasher.update(password.as_bytes());
+    format!("sha256:{}", hex::encode(hasher.finalize()))
+}
+
+/// Verify a candidate password against active credentials (hashed or plaintext fallback).
+pub fn verify_password(attempt: &str, stored: &str) -> bool {
+    if let Some(expected_hash) = stored.strip_prefix("sha256:") {
+        let mut hasher = Sha256::new();
+        hasher.update(b"keepup_salt_v1:");
+        hasher.update(attempt.as_bytes());
+        let computed = hex::encode(hasher.finalize());
+        constant_time_compare(&computed, expected_hash)
+    } else {
+        constant_time_compare(attempt, stored)
+    }
+}
+
+/// Fetch active admin password from SQLite `app_config`, falling back to static config.
+pub async fn get_active_admin_password(pool: &sqlx::SqlitePool, default_password: &str) -> String {
+    let row: Result<Option<(String,)>, sqlx::Error> =
+        sqlx::query_as("SELECT value FROM app_config WHERE key = 'admin_password'")
+            .fetch_optional(pool)
+            .await;
+
+    match row {
+        Ok(Some((val,))) => val,
+        _ => default_password.to_string(),
+    }
 }
 
 /// Generate a signed JWT token valid for 7 days.
@@ -75,7 +110,8 @@ pub async fn login(
     Json(payload): Json<LoginPayload>,
 ) -> Result<(CookieJar, Json<Value>), AppError> {
     let user_valid = constant_time_compare(&payload.username, &state.config.admin_user);
-    let pass_valid = constant_time_compare(&payload.password, &state.config.admin_password);
+    let active_password = get_active_admin_password(&state.db, &state.config.admin_password).await;
+    let pass_valid = verify_password(&payload.password, &active_password);
 
     if !user_valid || !pass_valid {
         return Err(AppError::Unauthorized(
@@ -199,5 +235,18 @@ mod tests {
         .expect("Failed to encode token");
 
         assert!(validate_jwt(&expired_token, secret).is_err());
+    }
+
+    #[test]
+    fn test_hash_and_verify_password() {
+        let plain = "mypassword123";
+        let hashed = hash_password(plain);
+        assert!(hashed.starts_with("sha256:"));
+        assert!(verify_password(plain, &hashed));
+        assert!(!verify_password("wrongpassword", &hashed));
+
+        // Legacy / fallback plaintext support
+        assert!(verify_password("admin", "admin"));
+        assert!(!verify_password("wrong", "admin"));
     }
 }

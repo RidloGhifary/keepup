@@ -167,6 +167,9 @@ async function apiFetch(url, options = {}) {
 
     // ── 401 Unauthorized ──────────────────────────────────────────────────────
     if (res.status === 401) {
+      if (options.skipAuthRedirect || url.includes('/change-password')) {
+        return res;
+      }
       const isLoginPage =
         window.location.pathname.endsWith('/login.html') ||
         window.location.pathname === '/login';

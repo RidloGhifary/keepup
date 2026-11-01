@@ -1,55 +1,39 @@
-# ==============================================================================
-# Stage 1: Builder (Rust Alpine for Rust Edition 2024 & Modern Crates Support)
-# ==============================================================================
-FROM rust:alpine AS builder
-
+# Stage 1: Chef Planner
+FROM --platform=$BUILDPLATFORM lukemathwalker/cargo-chef:latest-rust-alpine AS planner
 WORKDIR /app
-
-# Install build dependencies for static musl compilation
-RUN apk add --no-cache musl-dev pkgconfig openssl-dev openssl-libs-static
-
-# Dependency layer caching: Copy manifest files and pre-compile dependencies
-COPY Cargo.toml Cargo.lock ./
-RUN mkdir -p src static migrations && \
-    echo "fn main() {}" > src/main.rs && \
-    cargo build --release && \
-    rm -rf src
-
-# Copy real project sources, migrations, and static frontend assets
 COPY . .
+RUN cargo chef prepare --recipe-path recipe.json
 
-# Recompile standalone binary with real project source code
-RUN touch src/main.rs && cargo build --release
+# Stage 2: Dependency Builder
+FROM lukemathwalker/cargo-chef:latest-rust-alpine AS builder
+WORKDIR /app
+RUN apk add --no-cache build-base musl-dev sqlite-dev pkgconfig
+COPY --from=planner /app/recipe.json recipe.json
+RUN cargo chef cook --release --recipe-path recipe.json
 
-# ==============================================================================
-# Stage 2: Minimal Production Runtime (Alpine 3.21)
-# ==============================================================================
+# Stage 3: Application Compiler
+COPY . .
+RUN cargo build --release --bin keepup
+
+# Final minimal & secure runtime image
 FROM alpine:3.21 AS runtime
 
+# Upgrade base OS packages & install minimal dependencies
+RUN apk upgrade --no-cache && \
+    apk add --no-cache ca-certificates tzdata sqlite-libs && \
+    addgroup -S keepup && adduser -S keepup -G keepup && \
+    mkdir -p /data /app && \
+    chown -R keepup:keepup /data /app
+
 WORKDIR /app
 
-# Install runtime utilities:
-# - ca-certificates: TLS probe verification
-# - tzdata: UTC/local timestamping for incident logs
-# - curl: container healthcheck probing
-RUN apk add --no-cache ca-certificates tzdata curl
+# Copy single Rust release binary
+COPY --from=builder --chown=keepup:keepup /app/target/release/keepup /app/keepup
 
-# Create persistent storage directory for the SQLite database
-RUN mkdir -p /app/data
+USER keepup
 
-# Copy compiled standalone executable from Builder stage
-COPY --from=builder /app/target/release/keepup /usr/local/bin/keepup
+ENV PORT=8080
+ENV KEEPUP_DB_PATH=/data/keepup.db
+EXPOSE 8080
 
-# Expose internal Axum web server port
-EXPOSE 3000
-
-# Default environment configuration
-ENV PORT=3000 \
-    RUST_LOG=info,keepup=debug \
-    KEEPUP_DB_PATH=/app/data/keepup.db \
-    DATABASE_URL=sqlite:///app/data/keepup.db?mode=rwc \
-    ADMIN_USER=admin \
-    ADMIN_PASSWORD=keepup123
-
-# Launch the single-binary application
-ENTRYPOINT ["/usr/local/bin/keepup"]
+ENTRYPOINT ["/app/keepup"]

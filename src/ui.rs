@@ -12,7 +12,7 @@ use crate::AppState;
 
 /// Embedded static directory containing dashboard UI assets.
 #[derive(RustEmbed)]
-#[folder = "static/"]
+#[folder = "$STATIC_DIR"]
 struct Assets;
 
 /// Direct handler for public status pages (e.g. `/status` and `/status/*path`).

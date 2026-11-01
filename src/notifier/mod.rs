@@ -52,6 +52,10 @@ pub struct AlertPayload {
     pub downtime_duration_secs: Option<u64>,
     /// ISO 8601 timestamp string.
     pub timestamp: String,
+    /// Days remaining until domain registration expires.
+    pub domain_days_remaining: Option<i64>,
+    /// Formatted expiration timestamp of domain registration.
+    pub domain_expires_at: Option<String>,
 }
 
 /// Query all enabled webhooks and dispatch `payload` to each one.

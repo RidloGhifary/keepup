@@ -284,6 +284,65 @@ function getMockStatusData() {
 let statusData = { status: 'Checking...', monitors: [] };
 let countdownSeconds = 30;
 let countdownTimer = null;
+let statusFetchController = null;
+
+// ── Lightweight Component Helpers (Micro-renders) ───────────────────────────
+
+function renderPercentilePill(label, value, colorClass) {
+  return `<span class="font-mono text-xs bg-white/5 border border-white/10 px-2.5 py-1 rounded-md ${colorClass}"><span class="text-white/40 text-[10px] mr-1">${label}</span><strong>${value}</strong></span>`;
+}
+
+function renderPercentilePills(lat) {
+  const hasLatencyData =
+    Boolean(lat && (lat.p50 > 0 || lat.p95 > 0 || lat.p99 > 0 || lat.avg > 0));
+  const p50Val = lat && (hasLatencyData || lat.p50 !== undefined) ? `${lat.p50 || 0}ms` : '—';
+  const p95Val = lat && (hasLatencyData || lat.p95 !== undefined) ? `${lat.p95 || 0}ms` : '—';
+  const p99Val = lat && (hasLatencyData || lat.p99 !== undefined) ? `${lat.p99 || 0}ms` : '—';
+  const avgVal = lat && (hasLatencyData || lat.avg !== undefined) ? `${lat.avg || 0}ms` : '—';
+
+  return `
+    <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
+      ${renderPercentilePill('P50', p50Val, 'text-emerald-400')}
+      ${renderPercentilePill('P95', p95Val, 'text-yellow-400')}
+      ${renderPercentilePill('P99', p99Val, 'text-rose-400')}
+      ${renderPercentilePill('AVG', avgVal, 'text-neutral-400')}
+    </div>
+  `;
+}
+
+function renderMaintenanceBannerItem(w) {
+  const endFormatted = formatTimeUtc(w.end_time);
+  return `
+    <div class="glass-card rounded-2xl p-4 sm:p-5 border border-purple-500/30 bg-purple-500/10 shadow-lg text-white">
+      <div class="flex items-start gap-3.5">
+        <div class="p-2 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-500/30 shrink-0 mt-0.5">
+          <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
+          </svg>
+        </div>
+        <div class="flex-1 min-w-0">
+          <div class="flex items-center gap-2">
+            <span class="text-[10px] font-bold uppercase tracking-wider text-purple-300 bg-purple-500/20 px-2 py-0.5 rounded-md border border-purple-500/30 font-mono">
+              Scheduled Maintenance in Progress
+            </span>
+          </div>
+          <h3 class="text-sm sm:text-base font-semibold text-white mt-1.5">${escapeHtml(w.title)}</h3>
+          ${w.description ? `<p class="text-xs text-white/70 mt-1">${escapeHtml(w.description)}</p>` : ''}
+          <div class="text-[11px] text-white/50 font-mono mt-2 flex items-center gap-2">
+            <span>Window Ends: <strong class="text-white">${escapeHtml(endFormatted)}</strong></span>
+          </div>
+        </div>
+      </div>
+    </div>
+  `;
+}
+
+// Fast batch DOM insertion to minimize browser reflows
+function batchInsertHTML(container, htmlString) {
+  if (!container) return;
+  const fragment = document.createRange().createContextualFragment(htmlString);
+  container.replaceChildren(fragment);
+}
 
 // ── Public Status Fetcher ────────────────────────────────────────────────────
 
@@ -326,18 +385,20 @@ function renderNotFoundStatus(slug) {
     countBadge.innerText = '0 components';
   }
   if (container) {
-    container.innerHTML = `
-      <div class="glass-card rounded-2xl p-10 text-center text-white/50 text-xs">
+    batchInsertHTML(
+      container,
+      `<div class="glass-card rounded-2xl p-10 text-center text-white/50 text-xs">
         No components configured for status page "${escapeHtml(slug)}".
-      </div>
-    `;
+      </div>`
+    );
   }
   if (timelineSection) {
-    timelineSection.innerHTML = `
-      <div class="p-6 text-center text-white/40 text-xs">
+    batchInsertHTML(
+      timelineSection,
+      `<div class="p-6 text-center text-white/40 text-xs">
         No incident history recorded for this page.
-      </div>
-    `;
+      </div>`
+    );
   }
   document.title = '404 - Status Page Not Found — KeepUp';
 }
@@ -364,8 +425,15 @@ async function loadStatusData() {
     return;
   }
 
+  // Single-flight AbortController: abort any pending request before launching new tick
+  if (statusFetchController) {
+    statusFetchController.abort();
+  }
+  statusFetchController = new AbortController();
+  const signal = statusFetchController.signal;
+
   try {
-    const res = await fetch(`/api/public/status/${encodeURIComponent(slug)}`);
+    const res = await fetch(`/api/public/status/${encodeURIComponent(slug)}`, { signal });
     if (!res.ok) {
       if (res.status === 404) {
         if (loadingEl) loadingEl.style.display = 'none';
@@ -429,17 +497,27 @@ async function loadStatusData() {
     if (monitors.length === 0) {
       if (countBadge) countBadge.innerText = '0 components';
       if (container) {
-        container.innerHTML = `<div class="p-6 text-center text-neutral-400 font-mono text-xs">No monitors assigned to this status page.</div>`;
+        batchInsertHTML(
+          container,
+          `<div class="p-6 text-center text-neutral-400 font-mono text-xs">No monitors assigned to this status page.</div>`
+        );
       }
       return;
     }
 
     renderMonitors(monitors, data.groups);
   } catch (err) {
+    if (err.name === 'AbortError' || signal.aborted) {
+      // Single-flight abort superseded by newer tick; suppress error
+      return;
+    }
     console.error('Failed to load status page:', err);
     if (loadingEl) loadingEl.style.display = 'none';
     if (container) {
-      container.innerHTML = `<div class="p-6 text-center text-rose-400 font-mono text-xs">Failed to load status telemetry. Please try again.</div>`;
+      batchInsertHTML(
+        container,
+        `<div class="p-6 text-center text-rose-400 font-mono text-xs">Failed to load status telemetry. Please try again.</div>`
+      );
     }
   }
 }
@@ -526,38 +604,12 @@ function renderMaintenanceBanners(windows) {
   });
 
   if (activeWindows.length === 0) {
-    container.innerHTML = '';
+    container.replaceChildren();
     return;
   }
 
-  container.innerHTML = activeWindows
-    .map((w) => {
-      const endFormatted = formatTimeUtc(w.end_time);
-      return `
-        <div class="glass-card rounded-2xl p-4 sm:p-5 border border-purple-500/30 bg-purple-500/10 shadow-lg text-white">
-          <div class="flex items-start gap-3.5">
-            <div class="p-2 rounded-xl bg-purple-500/20 text-purple-400 border border-purple-500/30 shrink-0 mt-0.5">
-              <svg class="w-5 h-5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z" />
-              </svg>
-            </div>
-            <div class="flex-1 min-w-0">
-              <div class="flex items-center gap-2">
-                <span class="text-[10px] font-bold uppercase tracking-wider text-purple-300 bg-purple-500/20 px-2 py-0.5 rounded-md border border-purple-500/30 font-mono">
-                  Scheduled Maintenance in Progress
-                </span>
-              </div>
-              <h3 class="text-sm sm:text-base font-semibold text-white mt-1.5">${escapeHtml(w.title)}</h3>
-              ${w.description ? `<p class="text-xs text-white/70 mt-1">${escapeHtml(w.description)}</p>` : ''}
-              <div class="text-[11px] text-white/50 font-mono mt-2 flex items-center gap-2">
-                <span>Window Ends: <strong class="text-white">${escapeHtml(endFormatted)}</strong></span>
-              </div>
-            </div>
-          </div>
-        </div>
-      `;
-    })
-    .join('');
+  const html = activeWindows.map(renderMaintenanceBannerItem).join('');
+  batchInsertHTML(container, html);
 }
 
 // ── Monitors & Services List (Categorized Group Support) ─────────────────────
@@ -574,16 +626,18 @@ function renderMonitorsList(monitors, groups) {
   }
 
   if (totalCount === 0) {
-    container.innerHTML = `
-      <div class="glass-card rounded-2xl p-10 text-center text-white/50 text-xs">
+    batchInsertHTML(
+      container,
+      `<div class="glass-card rounded-2xl p-10 text-center text-white/50 text-xs">
         No public services are currently exposed on this status page.
-      </div>
-    `;
+      </div>`
+    );
     return;
   }
 
+  let html = '';
   if (groups && groups.length > 0) {
-    container.innerHTML = groups
+    html = groups
       .map((group) => `
         <div class="status-group space-y-3 pt-3">
           <div class="flex items-center justify-between px-1">
@@ -602,10 +656,10 @@ function renderMonitorsList(monitors, groups) {
       `)
       .join('');
   } else {
-    container.innerHTML = monitors
-      .map((m) => renderServiceCard(m))
-      .join('');
+    html = monitors.map((m) => renderServiceCard(m)).join('');
   }
+
+  batchInsertHTML(container, html);
 }
 
 // ── Single Public Service Card with 7-Day Interactive Uptime Bar ────────────
@@ -648,17 +702,8 @@ function renderServiceCard(m) {
   const latencyBarsHtml = generate24hLatencyBars(m);
   const avgLatencyText = getAverageLatencyText(m);
 
-  // Extract 24-Hour Latency Percentiles (P50, P95, P99, AVG)
-  const lat = m.latency || {};
-  const hasLatencyData =
-    lat && (lat.p50 > 0 || lat.p95 > 0 || lat.p99 > 0 || lat.avg > 0);
-  const p50Val = hasLatencyData || lat.p50 !== undefined ? `${lat.p50 || 0}ms` : '—';
-  const p95Val = hasLatencyData || lat.p95 !== undefined ? `${lat.p95 || 0}ms` : '—';
-  const p99Val = hasLatencyData || lat.p99 !== undefined ? `${lat.p99 || 0}ms` : '—';
-  const avgVal = hasLatencyData || lat.avg !== undefined ? `${lat.avg || 0}ms` : '—';
-
   return `
-    <div class="glass-card rounded-2xl p-5 sm:p-6 shadow-xl transition-all duration-200 hover:border-white/20 space-y-4">
+    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-5 sm:p-6 shadow-xl transition-all duration-200 hover:border-white/20 space-y-4 cursor-pointer">
       <!-- Card Header -->
       <div class="flex items-center justify-between gap-3">
         <div class="flex items-center gap-3 min-w-0">
@@ -721,20 +766,7 @@ function renderServiceCard(m) {
         <!-- 24-Hour Percentiles Summary Row -->
         <div class="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-black/5 dark:border-white/5">
           <span class="text-[11px] text-white/50 font-mono">24h Response Percentiles</span>
-          <div class="flex flex-wrap items-center gap-1.5 sm:gap-2">
-            <span class="font-mono text-xs bg-white/5 border border-white/10 px-2.5 py-1 rounded-md text-emerald-400">
-              <span class="text-white/40 text-[10px] mr-1">P50</span><strong>${p50Val}</strong>
-            </span>
-            <span class="font-mono text-xs bg-white/5 border border-white/10 px-2.5 py-1 rounded-md text-yellow-400">
-              <span class="text-white/40 text-[10px] mr-1">P95</span><strong>${p95Val}</strong>
-            </span>
-            <span class="font-mono text-xs bg-white/5 border border-white/10 px-2.5 py-1 rounded-md text-rose-400">
-              <span class="text-white/40 text-[10px] mr-1">P99</span><strong>${p99Val}</strong>
-            </span>
-            <span class="font-mono text-xs bg-white/5 border border-white/10 px-2.5 py-1 rounded-md text-neutral-400">
-              <span class="text-white/40 text-[10px] mr-1">AVG</span><strong>${avgVal}</strong>
-            </span>
-          </div>
+          ${renderPercentilePills(m.latency)}
         </div>
       </div>
     </div>
@@ -754,6 +786,38 @@ function getAverageLatencyText(monitor) {
     return `${monitor.last_latency_ms} ms`;
   }
   return '—';
+}
+
+// ── Cached Intl Formatters for Zero Long-Task (<50ms) Renders ────────────────
+
+const shortDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+});
+const shortTimeFormatter = new Intl.DateTimeFormat('en-US', {
+  hour: 'numeric',
+  minute: '2-digit',
+});
+const fullDateFormatter = new Intl.DateTimeFormat('en-US', {
+  month: 'short',
+  day: 'numeric',
+  year: 'numeric',
+});
+
+function formatSlotTime(date) {
+  try {
+    return `${shortDateFormatter.format(date)} ${shortTimeFormatter.format(date)}`;
+  } catch {
+    return date.toISOString ? date.toISOString().slice(5, 16).replace('T', ' ') : String(date);
+  }
+}
+
+function formatFullDate(date) {
+  try {
+    return fullDateFormatter.format(date);
+  } catch {
+    return date.toISOString ? date.toISOString().slice(0, 10) : String(date);
+  }
 }
 
 function generate24hLatencyBars(monitor) {
@@ -793,16 +857,7 @@ function generate24hLatencyBars(monitor) {
     .slice(-24)
     .map((slot) => {
       const date = new Date(slot.timestamp);
-      const timeStr =
-        date.toLocaleDateString('en-US', {
-          month: 'short',
-          day: 'numeric',
-        }) +
-        ' ' +
-        date.toLocaleTimeString('en-US', {
-          hour: 'numeric',
-          minute: '2-digit',
-        });
+      const timeStr = formatSlotTime(date);
 
       let barColorClass = 'bg-[#0a84ff] hover:bg-[#30d158]';
       let heightPct = 12;
@@ -856,11 +911,7 @@ function generate7DayBars(monitor) {
     // Render the 7 distinct daily buckets returned by backend
     for (const day of history.slice(-totalDays)) {
       const dateObj = new Date(day.date + 'T00:00:00');
-      const formattedDate = dateObj.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
+      const formattedDate = formatFullDate(dateObj);
 
       let barColorClass = 'bg-[#30d158]';
       let tooltip = '';
@@ -899,11 +950,7 @@ function generate7DayBars(monitor) {
       const dayDate = new Date(now);
       dayDate.setDate(now.getDate() - i);
 
-      const formattedDate = dayDate.toLocaleDateString('en-US', {
-        month: 'short',
-        day: 'numeric',
-        year: 'numeric',
-      });
+      const formattedDate = formatFullDate(dayDate);
 
       let barColorClass = 'bg-[#30d158]';
       let tooltip = `${formattedDate} • Operational (Uptime: 100.00%)`;
@@ -1012,7 +1059,7 @@ function renderIncidentTimeline(data) {
     `;
   }
 
-  container.innerHTML = maintTimelineHtml + todayIncidentHtml + pastDaysHtml;
+  batchInsertHTML(container, maintTimelineHtml + todayIncidentHtml + pastDaysHtml);
 }
 
 // ── Refresh & Countdown Logic ────────────────────────────────────────────────
@@ -1070,9 +1117,357 @@ function escapeHtml(str) {
   );
 }
 
+// ── Centralized Event Delegation ─────────────────────────────────────────────
+
+// ── Monitor Detail View Controller ──────────────────────────────────────────
+
+let currentDetailMonitorId = null;
+
+async function openMonitorDetailModal(id) {
+  currentDetailMonitorId = id;
+  const modal = document.getElementById('monitor-detail-modal');
+  if (!modal) return;
+
+  modal.classList.remove('hidden');
+
+  // Loading skeleton state
+  const nameEl = document.getElementById('detail-modal-name');
+  const urlEl = document.getElementById('detail-modal-url');
+  const tbodyEl = document.getElementById('detail-logs-tbody');
+  const chartEl = document.getElementById('detail-latency-chart');
+  const countEl = document.getElementById('detail-logs-count');
+
+  if (nameEl) nameEl.textContent = 'Loading monitor telemetry...';
+  if (urlEl) urlEl.textContent = '—';
+  if (countEl) countEl.textContent = '...';
+  if (chartEl) {
+    chartEl.innerHTML = '<div class="text-xs text-neutral-500 font-mono py-6">Loading latency telemetry...</div>';
+  }
+  if (tbodyEl) {
+    tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">Loading check history...</td></tr>';
+  }
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/details`, {
+      credentials: 'include',
+    });
+
+    if (!res.ok) {
+      if (nameEl) nameEl.textContent = 'Monitor Details';
+      if (tbodyEl) {
+        tbodyEl.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-rose-400 font-sans">Failed to load telemetry (${res.status} ${res.statusText})</td></tr>`;
+      }
+      return;
+    }
+
+    const data = await res.json();
+    renderMonitorDetailData(data);
+  } catch (err) {
+    if (nameEl) nameEl.textContent = 'Monitor Details';
+    if (tbodyEl) {
+      tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-rose-400 font-sans">Unable to connect to server</td></tr>';
+    }
+  }
+}
+
+function closeMonitorDetailModal() {
+  const modal = document.getElementById('monitor-detail-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+  currentDetailMonitorId = null;
+}
+
+function renderDetailHourlySvg(hourlyList) {
+  const list = Array.isArray(hourlyList) && hourlyList.length > 0 ? hourlyList : [];
+  const items = [];
+  for (let i = 0; i < 24; i++) {
+    items.push(list[i] || { avg_latency_ms: 0, status: 'NO_DATA', timestamp: '' });
+  }
+
+  const maxLat = Math.max(
+    ...items.map((h) => (typeof h.avg_latency_ms === 'number' ? h.avg_latency_ms : 0)),
+    50
+  );
+
+  const bars = items
+    .map((item, idx) => {
+      const lat = typeof item.avg_latency_ms === 'number' ? item.avg_latency_ms : 0;
+      const status = item.status || 'NO_DATA';
+      let fill = 'rgba(255, 255, 255, 0.12)';
+      if (status === 'UP') fill = '#30D158';
+      else if (status === 'DEGRADED') fill = '#FFD60A';
+      else if (status === 'DOWN') fill = '#FF453A';
+
+      const barHeight = Math.max(4, Math.round((lat / maxLat) * 55));
+      const x = idx * 20 + 3;
+      const y = 65 - barHeight;
+
+      let timeLabel = `${24 - idx}h ago`;
+      if (item.timestamp) {
+        try {
+          timeLabel = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
+        } catch (_) {}
+      }
+
+      return `<rect x="${x}" y="${y}" width="14" height="${barHeight}" rx="2" fill="${fill}" class="transition-opacity hover:opacity-75 cursor-pointer">
+        <title>${timeLabel}: ${lat} ms (${status})</title>
+      </rect>`;
+    })
+    .join('');
+
+  return `<svg viewBox="0 0 480 70" class="w-full h-16 overflow-visible" preserveAspectRatio="none">${bars}</svg>`;
+}
+
+function renderMonitorDetailData(data) {
+  if (!data || !data.monitor) return;
+  const m = data.monitor;
+  const slas = data.slas || { uptime_24h: 100, uptime_7d: 100, uptime_30d: 100 };
+  const lat = data.latency || { p50: 0, p95: 0, p99: 0, avg: 0 };
+  const logs = data.logs || [];
+  const hourly = data.hourly_latency || [];
+
+  // 1. Header Section
+  const nameEl = document.getElementById('detail-modal-name');
+  const urlEl = document.getElementById('detail-modal-url');
+  const methodEl = document.getElementById('detail-modal-method');
+  const statusBadge = document.getElementById('detail-modal-status-badge');
+
+  if (nameEl) nameEl.textContent = m.name || 'Monitor';
+  if (urlEl) urlEl.textContent = m.url || '';
+  if (methodEl) methodEl.textContent = m.method || 'GET';
+
+  if (statusBadge) {
+    const isPaused = !m.is_active;
+    const status = m.status || (isPaused ? 'PAUSED' : 'UP');
+    statusBadge.textContent = status;
+
+    if (isPaused) {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-neutral-500/15 text-neutral-400 border-neutral-500/20';
+    } else if (status === 'MAINTENANCE') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-purple-500/15 text-purple-400 border-purple-500/20';
+    } else if (status === 'DOWN') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-rose-500/15 text-rose-400 border-rose-500/20';
+    } else if (status === 'DEGRADED') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-amber-500/15 text-amber-400 border-amber-500/20';
+    } else {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border-emerald-500/20';
+    }
+  }
+
+  // 2. SLA Telemetry Row (3 Cards)
+  const sla24 = document.getElementById('detail-sla-24h');
+  const sla7d = document.getElementById('detail-sla-7d');
+  const sla30 = document.getElementById('detail-sla-30d');
+
+  if (sla24) {
+    sla24.textContent = `${slas.uptime_24h.toFixed(2)}%`;
+    sla24.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_24h >= 99 ? 'text-emerald-400' : slas.uptime_24h >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
+  }
+  if (sla7d) {
+    sla7d.textContent = `${slas.uptime_7d.toFixed(2)}%`;
+    sla7d.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_7d >= 99 ? 'text-emerald-400' : slas.uptime_7d >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
+  }
+  if (sla30) {
+    sla30.textContent = `${slas.uptime_30d.toFixed(2)}%`;
+    sla30.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_30d >= 99 ? 'text-emerald-400' : slas.uptime_30d >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
+  }
+
+  // 3. Latency Breakdown Bar
+  const p50El = document.getElementById('detail-lat-p50');
+  const p95El = document.getElementById('detail-lat-p95');
+  const p99El = document.getElementById('detail-lat-p99');
+  const avgEl = document.getElementById('detail-lat-avg');
+
+  if (p50El) p50El.textContent = `${lat.p50}ms`;
+  if (p95El) p95El.textContent = `${lat.p95}ms`;
+  if (p99El) p99El.textContent = `${lat.p99}ms`;
+  if (avgEl) avgEl.textContent = `${lat.avg}ms`;
+
+  // 4. Interactive SVG Latency Chart
+  const chartEl = document.getElementById('detail-latency-chart');
+  if (chartEl) {
+    chartEl.innerHTML = renderDetailHourlySvg(hourly);
+  }
+
+  // 5. Recent Check Logs Table
+  const countEl = document.getElementById('detail-logs-count');
+  const tbodyEl = document.getElementById('detail-logs-tbody');
+
+  if (countEl) countEl.textContent = `${logs.length} logs`;
+  if (tbodyEl) {
+    if (logs.length === 0) {
+      tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">No check logs recorded yet for this target.</td></tr>';
+      return;
+    }
+
+    const rowsHtml = logs.map((log) => {
+      const isUp = log.is_up;
+      const statusNum = log.status_code;
+      const is2xx = statusNum && statusNum >= 200 && statusNum < 300;
+
+      const rowClass = isUp && is2xx
+        ? 'hover:bg-white/5 transition'
+        : 'bg-rose-500/10 hover:bg-rose-500/15 text-rose-200 transition';
+
+      const statusTag = is2xx
+        ? `<span class="text-emerald-400 font-semibold">${statusNum}</span>`
+        : `<span class="text-rose-400 font-semibold">${statusNum || '—'}</span>`;
+
+      const resultTag = isUp
+        ? '<span class="text-emerald-400">UP</span>'
+        : `<span class="text-rose-400 font-semibold">${log.error_message ? escapeHtml(log.error_message) : 'Check Failed'}</span>`;
+
+      let dateStr = log.created_at;
+      try {
+        dateStr = new Date(log.created_at).toLocaleString();
+      } catch (_) {}
+
+      return `<tr class="${rowClass}">
+        <td class="py-2 px-3 text-neutral-400">${dateStr}</td>
+        <td class="py-2 px-3">${statusTag}</td>
+        <td class="py-2 px-3 text-white">${log.response_time_ms !== null ? log.response_time_ms + ' ms' : '—'}</td>
+        <td class="py-2 px-3 max-w-xs truncate">${resultTag}</td>
+      </tr>`;
+    }).join('');
+
+    tbodyEl.innerHTML = rowsHtml;
+  }
+}
+
+async function triggerDetailPing() {
+  if (!currentDetailMonitorId) return;
+
+  const btn = document.getElementById('detail-modal-ping-btn');
+  const icon = document.getElementById('detail-ping-icon');
+  const text = document.getElementById('detail-ping-text');
+
+  if (btn) btn.disabled = true;
+  if (icon) icon.textContent = '⏳';
+  if (text) text.textContent = 'Pinging...';
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/ping`, {
+      method: 'POST',
+      credentials: 'include',
+      skipAuthRedirect: true,
+    });
+
+    if (res.status === 401) {
+      if (typeof window.showToast === 'function') {
+        window.showToast({
+          title: 'Authentication Required',
+          message: 'Admin login required to trigger on-demand ping.',
+          type: 'warning',
+        });
+      } else {
+        alert('Admin login required to trigger on-demand ping.');
+      }
+      return;
+    }
+
+    if (!res.ok) {
+      if (typeof window.showToast === 'function') {
+        window.showToast({
+          title: 'Ping Failed',
+          message: `Server returned HTTP ${res.status}`,
+          type: 'error',
+        });
+      }
+      return;
+    }
+
+    const pingData = await res.json();
+    if (typeof window.showToast === 'function') {
+      window.showToast({
+        title: `Ping Result: ${pingData.status}`,
+        message: `HTTP ${pingData.status_code || '—'} in ${pingData.latency_ms} ms`,
+        type: pingData.status === 'UP' ? 'success' : 'error',
+      });
+    }
+
+    // Refresh telemetry immediately
+    const detailsRes = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/details`, {
+      credentials: 'include',
+    });
+    if (detailsRes.ok) {
+      const detailsData = await detailsRes.json();
+      renderMonitorDetailData(detailsData);
+    }
+  } catch (err) {
+    if (typeof window.showToast === 'function') {
+      window.showToast({
+        title: 'Ping Error',
+        message: err.message || 'Network error executing ping',
+        type: 'error',
+      });
+    }
+  } finally {
+    if (btn) btn.disabled = false;
+    if (icon) icon.textContent = '⚡';
+    if (text) text.textContent = 'Ping Now';
+  }
+}
+
+// Global exports
+window.openMonitorDetailModal = openMonitorDetailModal;
+window.closeMonitorDetailModal = closeMonitorDetailModal;
+window.triggerDetailPing = triggerDetailPing;
+
+document.addEventListener('click', (e) => {
+  const detailCard = e.target.closest('[data-action="open-detail"]');
+  if (detailCard && !e.target.closest('button, a, input, select, textarea, label')) {
+    const id = detailCard.dataset.id;
+    if (id) openMonitorDetailModal(id);
+    return;
+  }
+
+  const closeBtn = e.target.closest('[data-action="close-detail-modal"]');
+  if (closeBtn) {
+    closeMonitorDetailModal();
+    return;
+  }
+
+  // Theme pill selector (Auto, Dark, OLED, Midnight, Light)
+  const themeBtn = e.target.closest('[data-theme-btn]');
+  if (themeBtn) {
+    const theme = themeBtn.getAttribute('data-theme-btn');
+    if (theme) setTheme(theme);
+    return;
+  }
+
+  // Floating top theme toggle button
+  const toggleBtn = e.target.closest('#theme-toggle-btn, [data-action="toggle-theme"]');
+  if (toggleBtn) {
+    toggleTheme();
+    return;
+  }
+});
+
+// Escape key listener for detail modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const detailModal = document.getElementById('monitor-detail-modal');
+    if (detailModal && !detailModal.classList.contains('hidden')) {
+      closeMonitorDetailModal();
+    }
+  }
+});
+
 // ── DOM Initialization ───────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+  const detailBackdrop = document.getElementById('monitor-detail-modal');
+  if (detailBackdrop) {
+    detailBackdrop.addEventListener('click', (e) => {
+      if (e.target === detailBackdrop) {
+        closeMonitorDetailModal();
+      }
+    });
+  }
+
   initAutoTheme();
   loadStatusData();
   startAutoRefreshCountdown();

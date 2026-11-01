@@ -35,6 +35,7 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let public_api = Router::new()
         .merge(public::public_routes())
         .route("/monitors/:id/history", get(logs::public_history))
+        .route("/monitors/:id/details", get(admin::get_monitor_details))
         .route("/badge/:id", get(public::badge));
 
     // ── Direct /api administrative routes (protected with require_auth) ──
@@ -96,6 +97,28 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .put(maintenance::update_maintenance)
                 .delete(maintenance::delete_maintenance),
         )
+        .route("/admin/change-password", post(admin::change_password))
+        .route("/change-password", post(admin::change_password))
+        .route("/admin/monitors/:id/ping", post(admin::ping_monitor))
+        .route("/monitors/:id/ping", post(admin::ping_monitor))
+        .route("/admin/assets/expiry", get(admin::get_asset_expiry))
+        .route("/assets/expiry", get(admin::get_asset_expiry))
+        .route("/admin/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
+        .route("/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
+        .route("/admin/channels", get(admin::list_channels).post(admin::create_channel))
+        .route("/channels", get(admin::list_channels).post(admin::create_channel))
+        .route(
+            "/admin/channels/:id",
+            put(admin::update_channel).delete(admin::delete_channel),
+        )
+        .route(
+            "/channels/:id",
+            put(admin::update_channel).delete(admin::delete_channel),
+        )
+        .route("/admin/channels/:id/test", post(admin::test_channel))
+        .route("/channels/:id/test", post(admin::test_channel))
+        .route("/admin/monitors/:id/channels", get(admin::get_monitor_channels))
+        .route("/monitors/:id/channels", get(admin::get_monitor_channels))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::require_auth,
@@ -161,6 +184,28 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .put(maintenance::update_maintenance)
                 .delete(maintenance::delete_maintenance),
         )
+        .route("/admin/change-password", post(admin::change_password))
+        .route("/change-password", post(admin::change_password))
+        .route("/admin/monitors/:id/ping", post(admin::ping_monitor))
+        .route("/monitors/:id/ping", post(admin::ping_monitor))
+        .route("/admin/assets/expiry", get(admin::get_asset_expiry))
+        .route("/assets/expiry", get(admin::get_asset_expiry))
+        .route("/admin/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
+        .route("/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
+        .route("/admin/channels", get(admin::list_channels).post(admin::create_channel))
+        .route("/channels", get(admin::list_channels).post(admin::create_channel))
+        .route(
+            "/admin/channels/:id",
+            put(admin::update_channel).delete(admin::delete_channel),
+        )
+        .route(
+            "/channels/:id",
+            put(admin::update_channel).delete(admin::delete_channel),
+        )
+        .route("/admin/channels/:id/test", post(admin::test_channel))
+        .route("/channels/:id/test", post(admin::test_channel))
+        .route("/admin/monitors/:id/channels", get(admin::get_monitor_channels))
+        .route("/monitors/:id/channels", get(admin::get_monitor_channels))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::require_auth,
@@ -171,12 +216,16 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .nest("/auth", auth_routes.clone())
         .nest("/public", public_api.clone())
         .route("/badge/:id", get(public::badge))
+        .route("/admin/monitors/:id/details", get(admin::get_monitor_details))
+        .route("/monitors/:id/details", get(admin::get_monitor_details))
         .merge(api_direct_protected);
 
     let v1_combined = Router::new()
         .nest("/auth", auth_routes)
         .nest("/public", public_api)
         .route("/badge/:id", get(public::badge))
+        .route("/admin/monitors/:id/details", get(admin::get_monitor_details))
+        .route("/monitors/:id/details", get(admin::get_monitor_details))
         .merge(admin_v1_protected);
 
     Router::new()
