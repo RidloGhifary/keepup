@@ -170,11 +170,13 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     let api_combined = Router::new()
         .nest("/auth", auth_routes.clone())
         .nest("/public", public_api.clone())
+        .route("/badge/:id", get(public::badge))
         .merge(api_direct_protected);
 
     let v1_combined = Router::new()
         .nest("/auth", auth_routes)
         .nest("/public", public_api)
+        .route("/badge/:id", get(public::badge))
         .merge(admin_v1_protected);
 
     Router::new()

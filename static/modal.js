@@ -1373,6 +1373,10 @@ document.addEventListener('DOMContentLoaded', () => {
       if (maintModal && !maintModal.classList.contains('hidden')) {
         closeMaintenanceModal();
       }
+      const badgeModal = document.getElementById('badge-modal');
+      if (badgeModal && !badgeModal.classList.contains('hidden') && typeof closeBadgeModal === 'function') {
+        closeBadgeModal();
+      }
     }
   });
 });

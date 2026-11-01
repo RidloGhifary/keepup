@@ -99,6 +99,7 @@ async fn main() -> anyhow::Result<()> {
     let app = axum::Router::new()
         .route("/status", axum::routing::get(ui::status_page_handler))
         .route("/status/*path", axum::routing::get(ui::status_page_handler))
+        .route("/badge/:id", axum::routing::get(api::public::badge))
         .merge(api::router(state.clone()))
         .fallback(ui::static_handler)
         .layer(cors)

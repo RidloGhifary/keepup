@@ -337,6 +337,11 @@ function renderMonitorCard(m) {
                 : `<svg class="w-4 h-4 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
             }
           </button>
+          <button onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
+            </svg>
+          </button>
           <button onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
             Edit
           </button>
@@ -412,6 +417,11 @@ function renderMonitorListRow(m) {
         <div class="flex items-center gap-1.5 shrink-0">
           <button onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
             ${m.is_active === 1 ? '⏸' : '▶'}
+          </button>
+          <button onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+            <svg class="w-4 h-4" fill="none" stroke="currentColor" viewBox="0 0 24 24">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
+            </svg>
           </button>
           <button onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
           <button onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
@@ -649,9 +659,308 @@ function formatDate(str) {
 
 // showToast is provided globally by static/toast.js
 
+// ── Status Badge Embed Modal Logic ───────────────────────────────────────────
+
+let currentBadgeMonitor = { id: '', name: '' };
+let currentBadgeStyle = 'shield';
+let currentBadgeFormat = 'markdown';
+
+function estimateBadgeTextWidth(text) {
+  let width = 0;
+  for (let i = 0; i < text.length; i++) {
+    const ch = text[i];
+    if (['m', 'M', 'W', 'w', '@'].includes(ch)) width += 9.2;
+    else if (ch >= 'A' && ch <= 'Z') width += 7.5;
+    else if (['i', 'l', '!', '|', '.', ':', ';', "'", ' '].includes(ch)) width += 3.6;
+    else if (['f', 'r', 't', 'j'].includes(ch)) width += 4.8;
+    else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === '-' || ch === '_') width += 6.2;
+    else width += 6.5;
+  }
+  return width;
+}
+
+function renderBadgePreviewSvg(name, status, style) {
+  const normStatus = (status || 'UP').toUpperCase();
+  let statusText = 'operational';
+  let color = '#30D158';
+  let textColor = '#09090b';
+
+  if (normStatus === 'DOWN' || normStatus === 'DOWNTIME' || normStatus === 'OUTAGE') {
+    statusText = 'downtime';
+    color = '#FF453A';
+    textColor = '#ffffff';
+  } else if (normStatus === 'DEGRADED') {
+    statusText = 'degraded';
+    color = '#FFD60A';
+    textColor = '#09090b';
+  } else if (normStatus === 'MAINTENANCE') {
+    statusText = 'maintenance';
+    color = '#A855F7';
+    textColor = '#ffffff';
+  }
+
+  const safeName = escapeHtml(name || 'Service');
+  const safeStatus = escapeHtml(statusText);
+
+  if (style === 'dot') {
+    const statusUpper = safeStatus.toUpperCase();
+    const fullText = `${name}: ${statusText.toUpperCase()}`;
+    const width = Math.max(160, Math.round(fullText.length * 7.5) + 38);
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="28" viewBox="0 0 ${width} 28" fill="none" role="img" aria-label="${safeName}: ${statusUpper}">
+  <title>${safeName}: ${statusUpper}</title>
+  <rect width="${width}" height="28" rx="6" fill="#18181b" stroke="rgba(255,255,255,0.1)"/>
+  <circle cx="16" cy="14" r="4" fill="${color}">
+    <animate attributeName="opacity" values="0.7;1;0.7" dur="2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="16" cy="14" r="7" stroke="${color}" stroke-width="1.2" fill="none" opacity="0.4">
+    <animate attributeName="r" values="4;8" dur="2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.6;0" dur="2s" repeatCount="indefinite"/>
+  </circle>
+  <text x="28" y="18" fill="#e4e4e7" font-family="monospace,Courier,monospace" font-size="11" font-weight="600">${safeName}: ${statusUpper}</text>
+</svg>`;
+  }
+
+  if (style === 'compact') {
+    const labelUpper = escapeHtml((name || 'Service').toUpperCase());
+    const statusUpper = safeStatus.toUpperCase();
+    const fullText = `${(name || 'Service').toUpperCase()} // ${statusText.toUpperCase()}`;
+    const width = Math.max(170, Math.round(fullText.length * 7.2) + 32);
+    const endX = width - 10;
+    return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="26" viewBox="0 0 ${width} 26" fill="none" role="img" aria-label="${labelUpper} // ${statusUpper}">
+  <title>${labelUpper} // ${statusUpper}</title>
+  <rect width="${width}" height="26" rx="4" fill="#09090b" stroke="${color}" stroke-opacity="0.4" stroke-width="1"/>
+  <rect x="5" y="5" width="5" height="16" rx="1.5" fill="${color}"/>
+  <text x="16" y="17" fill="#a1a1aa" font-family="monospace,Courier,monospace" font-size="10" font-weight="600">${labelUpper}</text>
+  <text x="${endX}" y="17" text-anchor="end" fill="${color}" font-family="monospace,Courier,monospace" font-size="10" font-weight="700">${statusUpper}</text>
+</svg>`;
+  }
+
+  // Classic Shield (2-part vector badge matching KeepUp standard)
+  const leftLabel = `KeepUp | ${name || 'Service'}`;
+  const rightLabel = statusText;
+  const leftEsc = escapeHtml(leftLabel);
+  const rightEsc = escapeHtml(rightLabel);
+  const leftW = Math.max(40, Math.round(estimateBadgeTextWidth(leftLabel) + 16));
+  const rightW = Math.max(40, Math.round(estimateBadgeTextWidth(rightLabel) + 16));
+  const totalW = leftW + rightW;
+  const leftCenterX = Math.round(leftW / 2);
+  const rightCenterX = Math.round(leftW + rightW / 2);
+  const clipId = `k-badge-preview-${totalW}`;
+
+  return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="20" role="img" aria-label="${leftEsc}: ${rightEsc}">
+  <title>${leftEsc}: ${rightEsc}</title>
+  <clipPath id="${clipId}">
+    <rect width="${totalW}" height="20" rx="4" fill="#fff"/>
+  </clipPath>
+  <g clip-path="url(#${clipId})">
+    <rect width="${leftW}" height="20" fill="#18181b"/>
+    <rect x="${leftW}" width="${rightW}" height="20" fill="${color}"/>
+  </g>
+  <g fill="#fff" text-anchor="middle" font-family="system-ui,-apple-system,BlinkMacSystemFont,'Segoe UI',Roboto,Helvetica,sans-serif" text-rendering="geometricPrecision" font-size="11">
+    <text x="${leftCenterX}" y="14" fill="#a1a1aa">${leftEsc}</text>
+    <text x="${rightCenterX}" y="14" fill="${textColor}" font-weight="600">${rightEsc}</text>
+  </g>
+</svg>`;
+}
+
+function updateBadgeModalContent() {
+  if (!currentBadgeMonitor.id) return;
+
+  const origin = (window.location.origin && window.location.origin !== 'null')
+    ? window.location.origin
+    : 'http://localhost:8080';
+  const badgeUrl = `${origin}/api/badge/${currentBadgeMonitor.id}?style=${currentBadgeStyle}`;
+
+  let snippet = '';
+  if (currentBadgeFormat === 'markdown') {
+    snippet = `![${currentBadgeMonitor.name} Status](${badgeUrl})`;
+  } else if (currentBadgeFormat === 'html') {
+    snippet = `<img src="${badgeUrl}" alt="${escapeHtml(currentBadgeMonitor.name)} Status" />`;
+  } else {
+    snippet = badgeUrl;
+  }
+
+  const codeEl = document.getElementById('badge-modal-code');
+  if (codeEl) {
+    codeEl.textContent = snippet;
+  }
+
+  let liveStatus = 'UP';
+  const live = statusMap[currentBadgeMonitor.id];
+  if (live && live.current_status) {
+    liveStatus = live.current_status;
+  } else if (Array.isArray(window.allMonitors)) {
+    const found = window.allMonitors.find((m) => m.id === currentBadgeMonitor.id);
+    if (found && found.last_status) {
+      liveStatus = found.last_status;
+    }
+  }
+
+  const previewContainer = document.getElementById('badge-modal-preview');
+  if (previewContainer) {
+    previewContainer.innerHTML = renderBadgePreviewSvg(
+      currentBadgeMonitor.name,
+      liveStatus,
+      currentBadgeStyle
+    );
+  }
+}
+
+function setBadgeModalStyle(style) {
+  currentBadgeStyle = style;
+
+  const styles = ['shield', 'dot', 'compact'];
+  styles.forEach((s) => {
+    const btn = document.getElementById(`badge-style-${s}`);
+    if (!btn) return;
+    if (s === style) {
+      btn.className =
+        'badge-style-btn py-2 px-2.5 rounded-xl border text-xs font-medium text-center transition flex flex-col items-center gap-0.5 bg-black/5 dark:bg-white/10 border-emerald-500/50 text-neutral-900 dark:text-white shadow-sm font-semibold';
+    } else {
+      btn.className =
+        'badge-style-btn py-2 px-2.5 rounded-xl border text-xs font-medium text-center transition flex flex-col items-center gap-0.5 border-black/5 dark:border-white/10 text-neutral-500 dark:text-white/60 hover:text-neutral-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5';
+    }
+  });
+
+  updateBadgeModalContent();
+}
+
+function setBadgeModalFormat(format) {
+  currentBadgeFormat = format;
+
+  const formats = ['markdown', 'html', 'url'];
+  formats.forEach((f) => {
+    const btn = document.getElementById(`badge-fmt-${f}`);
+    if (!btn) return;
+    if (f === format) {
+      btn.className =
+        'badge-fmt-btn py-1 px-3 rounded-lg transition-all text-xs font-mono bg-white dark:bg-white/10 text-neutral-900 dark:text-white shadow-sm font-semibold';
+    } else {
+      btn.className =
+        'badge-fmt-btn py-1 px-3 rounded-lg transition-all text-xs font-mono text-neutral-500 dark:text-white/50 hover:text-neutral-900 dark:hover:text-white';
+    }
+  });
+
+  updateBadgeModalContent();
+}
+
+function openBadgeModal(monitorId, monitorName) {
+  currentBadgeMonitor = { id: monitorId, name: monitorName };
+
+  const titleEl = document.getElementById('badge-modal-title');
+  const subtitleEl = document.getElementById('badge-modal-subtitle');
+  if (titleEl) titleEl.innerText = monitorName;
+  if (subtitleEl) subtitleEl.innerText = `Status Badge Embed • /api/badge/${monitorId}`;
+
+  // Apply current active styles and format
+  setBadgeModalStyle(currentBadgeStyle || 'shield');
+  setBadgeModalFormat(currentBadgeFormat || 'markdown');
+
+  const backdrop = document.getElementById('badge-modal');
+  const card = document.getElementById('badge-modal-card');
+  if (!backdrop || !card) return;
+
+  backdrop.classList.remove('hidden');
+  requestAnimationFrame(() => {
+    card.classList.remove('scale-95', 'opacity-0');
+    card.classList.add('scale-100', 'opacity-100');
+  });
+}
+
+function closeBadgeModal() {
+  const backdrop = document.getElementById('badge-modal');
+  const card = document.getElementById('badge-modal-card');
+  if (!backdrop || !card) return;
+
+  card.classList.remove('scale-100', 'opacity-100');
+  card.classList.add('scale-95', 'opacity-0');
+
+  setTimeout(() => {
+    backdrop.classList.add('hidden');
+  }, 200);
+}
+
+async function copyBadgeModalCode(btn) {
+  const codeEl = document.getElementById('badge-modal-code');
+  if (!codeEl) return;
+  const text = codeEl.innerText || codeEl.textContent;
+  if (!text) return;
+
+  const btnEl = btn || document.getElementById('badge-modal-copy-btn');
+  const label = btnEl ? (btnEl.querySelector('.copy-label') || btnEl.querySelector('span') || btnEl) : null;
+  const originalText = label ? label.innerText : 'Copy Code';
+
+  const onSuccess = () => {
+    if (label) {
+      label.innerText = 'Copied!';
+      setTimeout(() => {
+        label.innerText = originalText;
+      }, 2000);
+    }
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Badge Copied',
+        message: 'Embed snippet copied to clipboard',
+        type: 'success',
+      });
+    }
+  };
+
+  try {
+    await navigator.clipboard.writeText(text);
+    onSuccess();
+  } catch (_) {
+    const textarea = document.createElement('textarea');
+    textarea.value = text;
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
+    document.body.appendChild(textarea);
+    textarea.select();
+    try {
+      document.execCommand('copy');
+      onSuccess();
+    } catch (e) {
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Copy Failed',
+          message: 'Could not copy to clipboard',
+          type: 'error',
+        });
+      }
+    }
+    document.body.removeChild(textarea);
+  }
+}
+
+// Global exports for inline HTML onclick handlers
+window.openBadgeModal = openBadgeModal;
+window.closeBadgeModal = closeBadgeModal;
+window.setBadgeModalStyle = setBadgeModalStyle;
+window.setBadgeModalFormat = setBadgeModalFormat;
+window.copyBadgeModalCode = copyBadgeModalCode;
+
+// Escape key listener for badge modal
+document.addEventListener('keydown', (e) => {
+  if (e.key === 'Escape') {
+    const badgeModal = document.getElementById('badge-modal');
+    if (badgeModal && !badgeModal.classList.contains('hidden')) {
+      closeBadgeModal();
+    }
+  }
+});
+
 // ── Initialization & Auto-Refresh Loop (Every 5 seconds) ─────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+  const badgeBackdrop = document.getElementById('badge-modal');
+  if (badgeBackdrop) {
+    badgeBackdrop.addEventListener('click', (e) => {
+      if (e.target === badgeBackdrop) {
+        closeBadgeModal();
+      }
+    });
+  }
+
   const isAuthOrStatusPage =
     window.location.pathname.includes('login') ||
     window.location.pathname.includes('status');

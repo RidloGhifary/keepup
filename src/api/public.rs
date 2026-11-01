@@ -316,6 +316,10 @@ pub struct BadgeQuery {
     pub status: Option<String>,
     /// Whether to include latency in operational badge text (e.g. "operational | 18ms").
     pub latency: Option<bool>,
+    /// Custom badge label override (e.g. "Landingpage", "Database Cluster").
+    pub label: Option<String>,
+    /// Visual style variant: "shield" (default), "dot", "compact".
+    pub style: Option<String>,
 }
 
 /// Internal monitor status enum for badge rendering.
@@ -432,6 +436,46 @@ pub fn render_badge_svg(
     )
 }
 
+/// Renders dot minimal badge SVG markup (pulsing radar dot with label and status).
+pub fn render_dot_badge_svg(label: &str, status_text: &str, color: &str) -> String {
+    let label_escaped = escape_xml(label);
+    let status_upper = escape_xml(&status_text.to_uppercase());
+    let full_text = format!("{}: {}", label, status_text.to_uppercase());
+    let width = ((full_text.len() as f32 * 7.5) + 38.0).round().max(160.0) as u32;
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="28" viewBox="0 0 {width} 28" fill="none" role="img" aria-label="{label_escaped}: {status_upper}">
+  <title>{label_escaped}: {status_upper}</title>
+  <rect width="{width}" height="28" rx="6" fill="#18181b" stroke="rgba(255,255,255,0.1)"/>
+  <circle cx="16" cy="14" r="4" fill="{color}">
+    <animate attributeName="opacity" values="0.7;1;0.7" dur="2s" repeatCount="indefinite"/>
+  </circle>
+  <circle cx="16" cy="14" r="7" stroke="{color}" stroke-width="1.2" fill="none" opacity="0.4">
+    <animate attributeName="r" values="4;8" dur="2s" repeatCount="indefinite"/>
+    <animate attributeName="opacity" values="0.6;0" dur="2s" repeatCount="indefinite"/>
+  </circle>
+  <text x="28" y="18" fill="#e4e4e7" font-family="monospace,Courier,monospace" font-size="11" font-weight="600">{label_escaped}: {status_upper}</text>
+</svg>"##
+    )
+}
+
+/// Renders monospace compact badge SVG markup (telemetry pill with left color accent bar and monospace font).
+pub fn render_compact_badge_svg(label: &str, status_text: &str, color: &str) -> String {
+    let label_upper = escape_xml(&label.to_uppercase());
+    let status_upper = escape_xml(&status_text.to_uppercase());
+    let full_text = format!("{} // {}", label.to_uppercase(), status_text.to_uppercase());
+    let width = ((full_text.len() as f32 * 7.2) + 32.0).round().max(170.0) as u32;
+    let end_x = width.saturating_sub(10);
+    format!(
+        r##"<svg xmlns="http://www.w3.org/2000/svg" width="{width}" height="26" viewBox="0 0 {width} 26" fill="none" role="img" aria-label="{label_upper} // {status_upper}">
+  <title>{label_upper} // {status_upper}</title>
+  <rect width="{width}" height="26" rx="4" fill="#09090b" stroke="{color}" stroke-opacity="0.4" stroke-width="1"/>
+  <rect x="5" y="5" width="5" height="16" rx="1.5" fill="{color}"/>
+  <text x="16" y="17" fill="#a1a1aa" font-family="monospace,Courier,monospace" font-size="10" font-weight="600">{label_upper}</text>
+  <text x="{end_x}" y="17" text-anchor="end" fill="{color}" font-family="monospace,Courier,monospace" font-size="10" font-weight="700">{status_upper}</text>
+</svg>"##
+    )
+}
+
 #[derive(sqlx::FromRow)]
 struct MonitorBadgeRow {
     id: String,
@@ -465,21 +509,26 @@ pub async fn badge(
 
     let (left_label, right_label, status_bg, status_text_color, title_text) = match monitor {
         Some(m) if m.is_public == 1 && m.is_active == 1 => {
+            let left = params
+                .label
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| format!("KeepUp | {}", m.name));
+
             if let Some(ref override_status) = params.status {
                 let status_lower = override_status.to_lowercase();
                 let status_enum = match status_lower.as_str() {
-                    "down" | "downtime" => MonitorBadgeStatus::Down,
+                    "down" | "downtime" | "outage" => MonitorBadgeStatus::Down,
                     "degraded" => MonitorBadgeStatus::Degraded,
                     "maintenance" => MonitorBadgeStatus::Maintenance,
                     "not_found" | "not found" => MonitorBadgeStatus::NotFound,
                     _ => MonitorBadgeStatus::Up,
                 };
-                let left = format!("KeepUp | {}", m.name);
                 let right = status_enum.default_label().to_string();
                 let title = format!("{left}: {right}");
                 (left, right, status_enum.bg_color(), status_enum.text_color(), title)
             } else if crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id).await.unwrap_or(false) {
-                let left = format!("KeepUp | {}", m.name);
                 let right = "maintenance".to_string();
                 let title = format!("{left}: maintenance");
                 (
@@ -546,7 +595,6 @@ pub async fn badge(
                     }
                 };
 
-                let left = format!("KeepUp | {}", m.name);
                 let title = match (&status_enum, latest_latency) {
                     (MonitorBadgeStatus::Up, Some(ms)) => {
                         format!("{left}: operational ({ms}ms, {uptime_24h:.1}% 24h)")
@@ -576,20 +624,35 @@ pub async fn badge(
         }
         _ => {
             let status_enum = MonitorBadgeStatus::NotFound;
-            let left = "KeepUp".to_string();
+            let left = params
+                .label
+                .as_deref()
+                .filter(|s| !s.trim().is_empty())
+                .map(|s| s.to_string())
+                .unwrap_or_else(|| "KeepUp".to_string());
             let right = status_enum.default_label().to_string();
-            let title = "KeepUp: monitor not found".to_string();
+            let title = format!("{left}: not found");
             (left, right, status_enum.bg_color(), status_enum.text_color(), title)
         }
     };
 
-    let svg_body = render_badge_svg(
-        &left_label,
-        &right_label,
-        status_bg,
-        status_text_color,
-        &title_text,
-    );
+    let style_choice = params
+        .style
+        .as_deref()
+        .map(|s| s.to_ascii_lowercase())
+        .unwrap_or_default();
+
+    let svg_body = match style_choice.as_str() {
+        "dot" => render_dot_badge_svg(&left_label, &right_label, status_bg),
+        "compact" => render_compact_badge_svg(&left_label, &right_label, status_bg),
+        _ => render_badge_svg(
+            &left_label,
+            &right_label,
+            status_bg,
+            status_text_color,
+            &title_text,
+        ),
+    };
 
     let headers = [
         (header::CONTENT_TYPE, "image/svg+xml; charset=utf-8"),
@@ -634,6 +697,19 @@ mod tests {
         let svg = render_badge_svg("Auth & <Billing> \"v1\"", "status", "#30D158", "#09090b", "Title & 'Quotes'");
         assert!(svg.contains("Auth &amp; &lt;Billing&gt; &quot;v1&quot;"));
         assert!(svg.contains("Title &amp; &apos;Quotes&apos;"));
+    }
+
+    #[test]
+    fn test_render_dot_and_compact_badge_svg() {
+        let dot_svg = render_dot_badge_svg("Landingpage", "operational", "#30D158");
+        assert!(dot_svg.contains("Landingpage: OPERATIONAL"));
+        assert!(dot_svg.contains("#30D158"));
+        assert!(dot_svg.contains("<circle"));
+
+        let compact_svg = render_compact_badge_svg("Landingpage", "degraded", "#FFD60A");
+        assert!(compact_svg.contains("LANDINGPAGE"));
+        assert!(compact_svg.contains("DEGRADED"));
+        assert!(compact_svg.contains("#FFD60A"));
     }
 
     #[test]
@@ -816,7 +892,7 @@ mod tests {
         let res_lat = badge(
             State(state.clone()),
             Path("lat-srv.svg".to_string()),
-            Query(BadgeQuery { status: None, latency: Some(true) }),
+            Query(BadgeQuery { status: None, latency: Some(true), ..Default::default() }),
         )
         .await
         .unwrap()
@@ -854,7 +930,7 @@ mod tests {
         let res_override = badge(
             State(state.clone()),
             Path("api-srv.svg".to_string()),
-            Query(BadgeQuery { status: Some("degraded".to_string()), latency: None }),
+            Query(BadgeQuery { status: Some("degraded".to_string()), latency: None, ..Default::default() }),
         )
         .await
         .unwrap()
@@ -889,6 +965,40 @@ mod tests {
         assert!(router_str.contains("KeepUp | API Gateway"));
         assert!(router_str.contains("<svg"));
         assert!(router_str.contains("</svg>"));
+
+        // 9. Full Router test: GET /api/badge/api-srv?style=compact&label=Landingpage
+        let app2 = crate::api::router(state.clone()).with_state(state.clone());
+        let req2 = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/badge/api-srv?style=compact&label=Landingpage")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res2 = app2.oneshot(req2).await.unwrap();
+        assert_eq!(res2.status(), StatusCode::OK);
+        assert_eq!(res2.headers().get("content-type").unwrap(), "image/svg+xml; charset=utf-8");
+        let bytes2 = axum::body::to_bytes(res2.into_body(), 1024 * 64).await.unwrap();
+        let str2 = String::from_utf8(bytes2.to_vec()).unwrap();
+        assert!(str2.contains("LANDINGPAGE"));
+        assert!(str2.contains("DEGRADED"));
+        assert!(str2.contains("#FFD60A"));
+
+        // 10. Full Router test: GET /api/badge/<uuid>?style=compact&label=Landingpage (not in DB yet)
+        let app3 = crate::api::router(state.clone()).with_state(state.clone());
+        let req3 = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/badge/9716245a-2032-4303-b46c-8cf54f13330f?style=compact&label=Landingpage")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res3 = app3.oneshot(req3).await.unwrap();
+        assert_eq!(res3.status(), StatusCode::OK);
+        assert_eq!(res3.headers().get("content-type").unwrap(), "image/svg+xml; charset=utf-8");
+        let bytes3 = axum::body::to_bytes(res3.into_body(), 1024 * 64).await.unwrap();
+        let str3 = String::from_utf8(bytes3.to_vec()).unwrap();
+        assert!(str3.contains("LANDINGPAGE"));
+        assert!(str3.contains("NOT FOUND"));
+        assert!(str3.contains("#71717A"));
     }
 
     async fn setup_test_pool() -> sqlx::SqlitePool {

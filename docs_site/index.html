@@ -78,27 +78,9 @@
 
       <h1 class="hero-title">Ultra-Lightweight Uptime Monitoring &amp; Status Pages</h1>
       
-      <p class="hero-subtitle">
+      <p class="hero-subtitle mb-16">
         Effortless high-frequency synthetic checks, stateful spam-free alerts to Discord &amp; Slack, and glassmorphic status pages — all in a single self-contained binary with zero external database dependencies.
       </p>
-
-      <div class="hero-actions">
-        <!-- Primary CTA: Clean white button with black text -->
-        <a href="docs.html" class="btn btn-primary btn-lg">
-          <span>Read Documentation</span>
-          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.2" d="M9 5l7 7-7 7"/>
-          </svg>
-        </a>
-
-        <!-- Secondary CTA: Quickstart -->
-        <a href="#quickstart" class="btn btn-secondary btn-lg" style="gap: 0.5rem;">
-          <svg width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
-          </svg>
-          <span>Get Started</span>
-        </a>
-      </div>
 
       <!-- ── Multi-Tab Quickstart Command Block ───────────────────────────── -->
       <div id="quickstart" class="quickstart-box" style="scroll-margin-top: 80px;">
@@ -432,7 +414,7 @@
                 </label>
                 <button id="badge-copy-btn" type="button" class="inline-flex items-center gap-1.5 px-3 py-1 text-xs font-mono font-semibold text-white bg-white/10 hover:bg-white/20 border border-white/15 rounded-lg transition cursor-pointer">
                   <svg class="w-3.5 h-3.5 text-neutral-300" fill="none" stroke="currentColor" viewBox="0 0 24 24"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/></svg>
-                  <span>Copy Code</span>
+                  <span class="copy-label">Copy Code</span>
                 </button>
               </div>
               <div class="bg-black/80 border border-white/10 rounded-xl p-4 overflow-x-auto">
@@ -752,6 +734,30 @@
 
       let activeFormat = 'markdown'; // 'markdown' | 'html' | 'url'
 
+      const escapeXml = (str) => {
+        return String(str).replace(/[<>&'"]/g, (c) => {
+          switch (c) {
+            case '<': return '&lt;';
+            case '>': return '&gt;';
+            case '&': return '&amp;';
+            case '\'': return '&apos;';
+            case '"': return '&quot;';
+            default: return c;
+          }
+        });
+      };
+
+      const getBaseDomain = () => {
+        const isStaticOrDocs = !window.location.hostname ||
+                               window.location.hostname === 'github.io' ||
+                               window.location.hostname.endsWith('.github.io') ||
+                               window.location.protocol === 'file:' ||
+                               window.location.pathname.includes('/docs_site');
+        return (!isStaticOrDocs && window.location.origin && window.location.origin !== 'null')
+          ? window.location.origin
+          : 'https://your-keepup-domain.com';
+      };
+
       const generateSvgMarkup = (label, status, style) => {
         const colors = {
           operational: '#30D158',
@@ -773,7 +779,7 @@
               <animate attributeName="r" values="4;8" dur="2s" repeatCount="indefinite"/>
               <animate attributeName="opacity" values="0.6;0" dur="2s" repeatCount="indefinite"/>
             </circle>
-            <text x="28" y="18" fill="#e4e4e7" font-family="monospace" font-size="11" font-weight="600">${label}: ${statusText}</text>
+            <text x="28" y="18" fill="#e4e4e7" font-family="monospace" font-size="11" font-weight="600">${escapeXml(label)}: ${statusText}</text>
           </svg>`;
         }
 
@@ -784,7 +790,7 @@
           return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="26" viewBox="0 0 ${width} 26" fill="none">
             <rect width="${width}" height="26" rx="4" fill="#09090b" stroke="${color}" stroke-opacity="0.4" stroke-width="1"/>
             <rect x="5" y="5" width="5" height="16" rx="1.5" fill="${color}"/>
-            <text x="16" y="17" fill="#a1a1aa" font-family="monospace" font-size="10" font-weight="600">${labelUpper}</text>
+            <text x="16" y="17" fill="#a1a1aa" font-family="monospace" font-size="10" font-weight="600">${escapeXml(labelUpper)}</text>
             <text x="${width - 10}" y="17" text-anchor="end" fill="${color}" font-family="monospace" font-size="10" font-weight="700">${statusText}</text>
           </svg>`;
         }
@@ -796,13 +802,13 @@
         return `<svg xmlns="http://www.w3.org/2000/svg" width="${totalW}" height="28" viewBox="0 0 ${totalW} 28" fill="none">
           <rect width="${totalW}" height="28" rx="6" fill="#18181b" stroke="rgba(255,255,255,0.1)"/>
           <path d="M0 6C0 2.68629 2.68629 0 6 0H${labelW}V28H6C2.68629 28 0 25.3137 0 22V6Z" fill="#27272a"/>
-          <text x="12" y="18" fill="#a1a1aa" font-family="sans-serif" font-size="11" font-weight="600">${label}</text>
+          <text x="12" y="18" fill="#a1a1aa" font-family="sans-serif" font-size="11" font-weight="600">${escapeXml(label)}</text>
           <text x="${labelW + 12}" y="18" fill="${color}" font-family="monospace" font-size="11" font-weight="700">${statusText}</text>
         </svg>`;
       };
 
       const updateWidget = () => {
-        const label = labelInput ? (labelInput.value || 'System') : 'System';
+        const label = (labelInput && labelInput.value.length > 0) ? labelInput.value : 'KeepUp API';
         const status = document.querySelector('input[name="badge-status"]:checked')?.value || 'operational';
         const style = document.querySelector('input[name="badge-style"]:checked')?.value || 'shield';
         
@@ -813,12 +819,14 @@
         }
 
         // 2. Format Snippet
-        const targetUrl = `https://status.yourdomain.com/api/badge/demo?style=${style}`;
+        const baseDomain = getBaseDomain();
+        const encodedLabel = encodeURIComponent(label);
+        const targetUrl = `${baseDomain}/api/badge/<monitor_id>?style=${style}&label=${encodedLabel}`;
         let snippet = '';
         if (activeFormat === 'markdown') {
           snippet = `![${label} Status](${targetUrl})`;
         } else if (activeFormat === 'html') {
-          snippet = `<img src="${targetUrl}" alt="${label} Status" />`;
+          snippet = `<img src="${targetUrl}" alt="${escapeXml(label)} Status" />`;
         } else {
           snippet = targetUrl;
         }
@@ -828,9 +836,17 @@
       };
 
       // Event Listeners
-      if (labelInput) labelInput.addEventListener('input', updateWidget);
-      statusInputs.forEach(i => i.addEventListener('change', updateWidget));
-      styleInputs.forEach(i => i.addEventListener('change', updateWidget));
+      if (labelInput) {
+        ['input', 'change', 'keyup'].forEach(evt => labelInput.addEventListener(evt, updateWidget));
+      }
+      statusInputs.forEach(i => {
+        i.addEventListener('change', updateWidget);
+        i.addEventListener('input', updateWidget);
+      });
+      styleInputs.forEach(i => {
+        i.addEventListener('change', updateWidget);
+        i.addEventListener('input', updateWidget);
+      });
 
       formatTabs.forEach(tab => {
         tab.addEventListener('click', () => {
@@ -847,22 +863,14 @@
 
       if (copyBtn) {
         copyBtn.addEventListener('click', async () => {
-          const textToCopy = codeBox ? codeBox.textContent : '';
+          const textToCopy = codeBox ? (codeBox.innerText || codeBox.textContent) : '';
           if (!textToCopy) return;
           try {
             await navigator.clipboard.writeText(textToCopy);
+            showCopyFeedback(copyBtn, 'Copied!');
           } catch (_) {
-            const ta = document.createElement('textarea');
-            ta.value = textToCopy;
-            ta.style.position = 'fixed';
-            ta.style.opacity = '0';
-            document.body.appendChild(ta);
-            ta.select();
-            document.execCommand('copy');
-            document.body.removeChild(ta);
+            fallbackCopyText(textToCopy, copyBtn, 'Copied!');
           }
-          copyBtn.textContent = 'Copied!';
-          setTimeout(() => { copyBtn.textContent = 'Copy Code'; }, 2000);
         });
       }
 
@@ -923,7 +931,7 @@
     });
 
     function showCopyFeedback(btn, feedbackText) {
-      const label = btn.querySelector('.copy-label') || btn;
+      const label = btn.querySelector('.copy-label') || btn.querySelector('span') || btn;
       const originalText = label.innerText || label.textContent;
       label.innerText = feedbackText;
       setTimeout(() => {
