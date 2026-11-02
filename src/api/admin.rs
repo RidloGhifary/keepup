@@ -467,14 +467,26 @@ pub async fn change_password(
 
 // ── Notification Channel Admin Handlers ─────────────────────────────────────
 
+fn default_true_bool() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CreateChannelRequest {
     pub name: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "provider")]
     pub channel_type: String,
     pub url: String,
     #[serde(default)]
     pub is_default: bool,
+    #[serde(default = "default_true_bool")]
+    pub is_enabled: bool,
+    #[serde(default = "default_true_bool")]
+    pub use_default_template: bool,
+    #[serde(default = "default_true_bool")]
+    pub notify_on_resolve: bool,
+    #[serde(default, alias = "message_template")]
+    pub custom_template: Option<String>,
 }
 
 impl CreateChannelRequest {
@@ -488,7 +500,7 @@ impl CreateChannelRequest {
             return Err(AppError::BadRequest("Channel URL must begin with http:// or https://".to_string()));
         }
         let ctype = self.channel_type.trim().to_lowercase();
-        if !["discord", "slack", "webhook", "telegram", "generic"].contains(&ctype.as_str()) {
+        if !["discord", "slack", "webhook", "telegram", "generic", "generic_webhook"].contains(&ctype.as_str()) {
             return Err(AppError::BadRequest(
                 "Invalid channel type. Supported types: discord, slack, webhook, telegram".to_string(),
             ));
@@ -500,10 +512,15 @@ impl CreateChannelRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UpdateChannelRequest {
     pub name: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "provider")]
     pub channel_type: Option<String>,
     pub url: Option<String>,
     pub is_default: Option<bool>,
+    pub is_enabled: Option<bool>,
+    pub use_default_template: Option<bool>,
+    pub notify_on_resolve: Option<bool>,
+    #[serde(default, alias = "message_template")]
+    pub custom_template: Option<String>,
 }
 
 impl UpdateChannelRequest {
@@ -515,13 +532,16 @@ impl UpdateChannelRequest {
         }
         if let Some(ref url) = self.url {
             let u = url.trim();
-            if !(u.starts_with("http://") || u.starts_with("https://")) {
+            if !u.is_empty()
+                && !crate::db::notifications::is_masked_url(u)
+                && !(u.starts_with("http://") || u.starts_with("https://"))
+            {
                 return Err(AppError::BadRequest("Channel URL must begin with http:// or https://".to_string()));
             }
         }
         if let Some(ref ctype) = self.channel_type {
             let c = ctype.trim().to_lowercase();
-            if !["discord", "slack", "webhook", "telegram", "generic"].contains(&c.as_str()) {
+            if !["discord", "slack", "webhook", "telegram", "generic", "generic_webhook"].contains(&c.as_str()) {
                 return Err(AppError::BadRequest(
                     "Invalid channel type. Supported types: discord, slack, webhook, telegram".to_string(),
                 ));
@@ -531,12 +551,19 @@ impl UpdateChannelRequest {
     }
 }
 
-/// `GET /api/admin/channels` — List all saved notification channels.
+fn normalize_channel_type(raw: &str) -> String {
+    match raw.trim().to_lowercase().as_str() {
+        "generic" | "generic_webhook" => "webhook".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// `GET /api/admin/channels` — List all saved notification channels (with masked URLs).
 pub async fn list_channels(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<crate::db::notifications::NotificationChannel>>, AppError> {
     let channels = crate::db::notifications::list_channels(&state.db).await?;
-    Ok(Json(channels))
+    Ok(Json(channels.into_iter().map(|c| c.masked_view()).collect()))
 }
 
 /// `POST /api/admin/channels` — Create a reusable notification channel.
@@ -549,17 +576,21 @@ pub async fn create_channel(
     let channel = crate::db::notifications::NotificationChannel {
         id: uuid::Uuid::new_v4().to_string(),
         name: payload.name.trim().to_string(),
-        channel_type: payload.channel_type.trim().to_lowercase(),
+        channel_type: normalize_channel_type(&payload.channel_type),
         url: payload.url.trim().to_string(),
         is_default: payload.is_default,
+        is_enabled: payload.is_enabled,
+        use_default_template: payload.use_default_template,
+        notify_on_resolve: payload.notify_on_resolve,
+        custom_template: payload.custom_template.filter(|s| !s.trim().is_empty()),
         created_at: chrono::Utc::now().to_rfc3339(),
     };
 
     let created = crate::db::notifications::create_channel(&state.db, channel).await?;
-    Ok((axum::http::StatusCode::CREATED, Json(created)))
+    Ok((axum::http::StatusCode::CREATED, Json(created.masked_view())))
 }
 
-/// `PUT /api/admin/channels/:id` — Update channel details.
+/// `PUT /api/admin/channels/:id` — Update channel details (preserving existing secret URL when omitted or masked).
 pub async fn update_channel(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -575,10 +606,25 @@ pub async fn update_channel(
     let channel_type = payload
         .channel_type
         .as_deref()
-        .map(|s| s.trim().to_lowercase())
+        .map(normalize_channel_type)
         .unwrap_or(existing.channel_type);
-    let url = payload.url.as_deref().map(str::trim).unwrap_or(&existing.url);
+    let url = match payload.url.as_deref().map(str::trim) {
+        Some(u) if !u.is_empty() && !crate::db::notifications::is_masked_url(u) => u,
+        _ => &existing.url,
+    };
     let is_default = payload.is_default.unwrap_or(existing.is_default);
+    let is_enabled = payload.is_enabled.unwrap_or(existing.is_enabled);
+    let use_default_template = payload
+        .use_default_template
+        .unwrap_or(existing.use_default_template);
+    let notify_on_resolve = payload
+        .notify_on_resolve
+        .unwrap_or(existing.notify_on_resolve);
+    let custom_template = match &payload.custom_template {
+        Some(tpl) if tpl.trim().is_empty() => None,
+        Some(tpl) => Some(tpl.as_str()),
+        None => existing.custom_template.as_deref(),
+    };
 
     let updated = crate::db::notifications::update_channel(
         &state.db,
@@ -587,10 +633,14 @@ pub async fn update_channel(
         &channel_type,
         url,
         is_default,
+        is_enabled,
+        use_default_template,
+        notify_on_resolve,
+        custom_template,
     )
     .await?;
 
-    Ok(Json(updated))
+    Ok(Json(updated.masked_view()))
 }
 
 /// `DELETE /api/admin/channels/:id` — Remove a channel and unbind from monitors.
@@ -649,14 +699,6 @@ pub async fn get_monitor_channels(
     let channel_ids = crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id).await?;
     Ok(Json(channel_ids))
 }
-
-// ── Webhook Admin Handlers (delegated to crate::api::webhooks) ───────────────
-
-#[allow(unused_imports)]
-pub use crate::api::webhooks::{
-    create_webhook, delete_webhook, list_webhooks, test_webhook, test_webhook_direct,
-    update_webhook,
-};
 
 // ── Status Page Admin Handlers (delegated to crate::api::status_pages) ───────
 
@@ -1298,7 +1340,7 @@ mod tests {
         assert!(hit_counter.load(Ordering::SeqCst) >= 1);
 
         // Test parallel alert dispatcher decoupling
-        let payload = crate::notifier::AlertPayload {
+        let payload = crate::alerting::AlertPayload {
             monitor_id: None,
             monitor_name: "Mock Service".to_string(),
             monitor_url: "https://mock.service".to_string(),

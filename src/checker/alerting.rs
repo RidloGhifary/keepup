@@ -1,5 +1,5 @@
 use serde_json::{json, Value};
-use crate::notifier::AlertPayload;
+use crate::alerting::AlertPayload;
 
 /// Status colors used for Discord rich embeds.
 pub const COLOR_STATUS_GREEN: u32 = 0x30D158; // #30D158

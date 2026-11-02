@@ -6,7 +6,6 @@ mod config;
 mod db;
 mod error;
 mod middleware;
-mod notifier;
 mod ui;
 
 use std::sync::Arc;

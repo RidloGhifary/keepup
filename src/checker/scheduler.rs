@@ -8,7 +8,7 @@ use tokio::time;
 use tracing::{error, info, warn};
 
 use super::http::{ping_http, CheckResult};
-use crate::notifier::AlertPayload;
+use crate::alerting::AlertPayload;
 
 // ── Row type for the monitors query ──────────────────────────────────────────
 
