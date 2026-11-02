@@ -98,7 +98,7 @@
           </button>
         </div>
         <div class="quickstart-body">
-          <pre><code id="quickstart-code-view">docker run -d --name keepup -p 3000:3000 -v keepup-data:/data ridloghfry/keepup:latest</code></pre>
+          <pre><code id="quickstart-code-view">docker run -d --name keepup -p 8080:8080 -v keepup-data:/data ridloghfry/keepup:latest</code></pre>
         </div>
       </div>
 
@@ -593,7 +593,7 @@
         <button class="copy-btn" onclick="copySnippet(this, 'docker-cmd')">Copy</button>
         <pre><code id="docker-cmd">docker run -d \
   --name keepup \
-  -p 3000:3000 \
+  -p 8080:8080 \
   -v keepup-data:/data \
   -e ADMIN_USER=admin \
   -e ADMIN_PASSWORD=supersecret \
@@ -603,8 +603,8 @@
       <div class="modal-nav-links">
         Once running, navigate to:
         <ul>
-          <li>Dashboard: <strong>http://localhost:3000/</strong></li>
-          <li>Public Status: <strong>http://localhost:3000/status</strong></li>
+          <li>Dashboard: <strong>http://localhost:8080/</strong></li>
+          <li>Public Status: <strong>http://localhost:8080/status</strong></li>
         </ul>
       </div>
 
@@ -686,13 +686,26 @@
 
     // 1. Multi-Tab Quickstart Snippet Definitions
     const quickstartSnippets = {
-      'docker-run': 'docker run -d --name keepup -p 3000:3000 -v keepup-data:/data ridloghfry/keepup:latest',
-      'docker-compose': `services:
+      'docker-run': 'docker run -d --name keepup -p 8080:8080 -v keepup-data:/data ridloghfry/keepup:latest',
+      'docker-compose': `version: '3.8'
+
+services:
   keepup:
     image: ridloghfry/keepup:latest
-    ports: ["3000:3000"]
-    volumes: ["keepup-data:/data"]
-    restart: unless-stopped`
+    container_name: keepup
+    restart: unless-stopped
+    ports:
+      - "8080:8080"
+    environment:
+      - PORT=8080
+      - KEEPUP_DB_PATH=/data/keepup.db
+      - ADMIN_USER=admin
+      - ADMIN_PASSWORD=admin
+    volumes:
+      - keepup-data:/data
+
+volumes:
+  keepup-data:`
     };
 
     let activeQuickstartTab = 'docker-run';
@@ -712,7 +725,11 @@
     }
 
     async function copyActiveQuickstart(btn) {
-      const text = quickstartSnippets[activeQuickstartTab];
+      const isCompose = activeQuickstartTab === 'docker-compose';
+      const text = isCompose
+        ? quickstartSnippets['docker-compose']
+        : quickstartSnippets['docker-run'];
+
       if (!text) return;
 
       try {
@@ -933,10 +950,14 @@
 
     function showCopyFeedback(btn, feedbackText) {
       const label = btn.querySelector('.copy-label') || btn.querySelector('span') || btn;
-      const originalText = label.innerText || label.textContent;
+      if (!btn.dataset.originalText) {
+        btn.dataset.originalText = label.innerText || label.textContent || 'Copy Command';
+      }
       label.innerText = feedbackText;
-      setTimeout(() => {
-        label.innerText = originalText;
+      clearTimeout(btn._feedbackTimeout);
+      btn._feedbackTimeout = setTimeout(() => {
+        label.innerText = btn.dataset.originalText;
+        delete btn.dataset.originalText;
       }, 2000);
     }
 
