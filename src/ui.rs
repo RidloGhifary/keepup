@@ -12,8 +12,8 @@ use crate::AppState;
 
 /// Embedded static directory containing dashboard UI assets.
 #[derive(RustEmbed)]
-#[folder = "$STATIC_DIR"]
-struct Assets;
+#[folder = "static/"]
+pub(crate) struct Assets;
 
 /// Direct handler for public status pages (e.g. `/status` and `/status/*path`).
 pub async fn status_page_handler(uri: Uri) -> Response {
@@ -85,6 +85,18 @@ pub async fn static_handler(
                 }
                 "index.html"
             }
+            "modal" | "modal.html" => {
+                // Require authentication for the admin modal view
+                let is_authenticated = jar
+                    .get(SESSION_COOKIE_NAME)
+                    .map(|c| validate_jwt(c.value(), &state.config.jwt_secret).is_ok())
+                    .unwrap_or(false);
+
+                if !is_authenticated {
+                    return Redirect::to("/login.html").into_response();
+                }
+                "modal.html"
+            }
             "login" | "login.html" => {
                 // If already authenticated, redirect directly to dashboard
                 let is_authenticated = jar
@@ -97,9 +109,6 @@ pub async fn static_handler(
                 }
                 "login.html"
             }
-            "docs" | "docs.html" => "docs.html",
-            "landing" | "landing.html" => "landing.html",
-            "modal" | "modal.html" => "modal.html",
             "favicon.ico" => "favicon.svg",
             other => other,
         }
@@ -142,5 +151,118 @@ fn guess_mime(path: &str) -> &'static str {
         "ico" => "image/x-icon",
         "txt" => "text/plain; charset=utf-8",
         _ => "application/octet-stream",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use axum::http::Request;
+    use sqlx::sqlite::SqlitePoolOptions;
+    use tower::ServiceExt;
+
+    async fn build_ui_app() -> (axum::Router, Arc<AppState>) {
+        let pool = SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        let config = crate::config::Config::from_env();
+        let http_client = reqwest::Client::new();
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+        let state = Arc::new(AppState {
+            db: pool,
+            config,
+            http_client,
+            reload_tx,
+        });
+        let app = axum::Router::new()
+            .route("/status", axum::routing::get(status_page_handler))
+            .route("/status/*path", axum::routing::get(status_page_handler))
+            .fallback(static_handler)
+            .with_state(state.clone());
+        (app, state)
+    }
+
+    #[tokio::test]
+    async fn test_unauthenticated_modal_redirects_to_login() {
+        let (app, state) = build_ui_app().await;
+        let res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .uri("/modal.html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert!(
+            res.status().is_redirection(),
+            "expected redirect for unauthenticated /modal.html, got {}",
+            res.status()
+        );
+        assert_eq!(
+            res.headers()
+                .get(header::LOCATION)
+                .and_then(|v| v.to_str().ok()),
+            Some("/login.html")
+        );
+
+        let token = crate::api::auth::create_jwt(
+            &state.config.admin_user,
+            &state.config.jwt_secret,
+        )
+        .unwrap();
+        let auth_res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/modal.html")
+                    .header(
+                        header::COOKIE,
+                        format!("{}={}", SESSION_COOKIE_NAME, token),
+                    )
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(auth_res.status(), StatusCode::OK);
+    }
+
+    #[tokio::test]
+    async fn test_output_css_served_with_css_mime() {
+        let (app, _state) = build_ui_app().await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/output.css")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        assert_eq!(
+            res.headers()
+                .get(header::CONTENT_TYPE)
+                .and_then(|v| v.to_str().ok()),
+            Some("text/css; charset=utf-8")
+        );
+    }
+
+    #[tokio::test]
+    async fn test_duplicate_docs_html_returns_404() {
+        let (app, _state) = build_ui_app().await;
+        let res = app
+            .oneshot(
+                Request::builder()
+                    .uri("/docs.html")
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
 }

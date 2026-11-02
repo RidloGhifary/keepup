@@ -15,6 +15,7 @@ use axum::http::{header, Method};
 use reqwest::Client;
 use sqlx::SqlitePool;
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
 use tracing::info;
 use tracing_subscriber::EnvFilter;
@@ -106,6 +107,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/badge/:id", axum::routing::get(api::public::badge))
         .merge(api::router(state.clone()))
         .fallback(ui::static_handler)
+        .layer(CompressionLayer::new())
         .layer(cors)
         .with_state(state);
 

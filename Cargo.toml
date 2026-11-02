@@ -1,6 +1,6 @@
 [package]
 name = "keepup"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 description = "Ultra-lightweight, single-binary uptime monitoring & public status page engine powered by Rust"
 license = "MIT"
@@ -9,13 +9,12 @@ homepage = "https://github.com/RidloGhifary/keepup"
 
 [dependencies]
 # Async Runtime & Web Framework
-tokio = { version = "1.38", features = ["full"] }
-axum = { version = "0.7", features = ["ws", "macros"] }
-tower-http = { version = "0.5", features = ["cors", "trace"] }
-tower = { version = "0.5", features = ["util"] }
+tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "io-util"] }
+axum = { version = "0.7", features = ["macros"] }
+tower-http = { version = "0.5", features = ["cors", "compression-gzip", "set-header"] }
 
 # Database
-sqlx = { version = "0.7", features = ["runtime-tokio-rustls", "sqlite", "chrono"] }
+sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "migrate"] }
 
 # TLS & Certificates
 tokio-rustls = "0.26"
@@ -27,7 +26,7 @@ x509-parser = "0.16"
 reqwest = { version = "0.12", default-features = false, features = ["json", "rustls-tls"] }
 
 # Embedded Assets
-rust-embed = { version = "8.4", features = ["axum", "interpolate-folder-path"] }
+rust-embed = { version = "8.4", features = ["axum"] }
 
 # Serialization & Utilities
 serde = { version = "1.0", features = ["derive"] }
@@ -42,6 +41,7 @@ uuid = { version = "1.0", features = ["v4"] }
 dotenvy = "0.15"
 
 # Authentication & Security
+argon2 = "0.5"
 jsonwebtoken = "9.3"
 axum-extra = { version = "0.9", features = ["cookie"] }
 subtle = "2.6"
@@ -50,3 +50,6 @@ tower_governor = "0.4"
 governor = "0.6"
 sha2 = "0.10"
 hex = "0.4"
+
+[dev-dependencies]
+tower = { version = "0.5", features = ["util"] }
