@@ -1282,6 +1282,7 @@ dependencies = [
  "governor",
  "hex",
  "jsonwebtoken",
+ "libsqlite3-sys",
  "regex",
  "reqwest",
  "rust-embed",

@@ -20,7 +20,7 @@ FROM alpine:3.21 AS runtime
 
 # Upgrade base OS packages & install minimal dependencies
 RUN apk upgrade --no-cache && \
-    apk add --no-cache ca-certificates tzdata sqlite-libs && \
+    apk add --no-cache ca-certificates tzdata && \
     addgroup -S keepup && adduser -S keepup -G keepup && \
     mkdir -p /data /app && \
     chown -R keepup:keepup /data /app
