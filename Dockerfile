@@ -15,20 +15,20 @@ RUN cargo chef cook --release --recipe-path recipe.json
 COPY . .
 RUN cargo build --release --bin keepup
 
-# Final minimal & secure runtime image
+# Final minimal & hardened runtime image
 FROM alpine:3.21 AS runtime
 
-# Upgrade base OS packages & install minimal dependencies
 RUN apk upgrade --no-cache && \
     apk add --no-cache ca-certificates tzdata sqlite-libs && \
     addgroup -S keepup && adduser -S keepup -G keepup && \
     mkdir -p /data /app && \
-    chown -R keepup:keepup /data /app
+    chown keepup:keepup /data && \
+    chmod 0700 /data
 
 WORKDIR /app
 
-# Copy single Rust release binary
-COPY --from=builder --chown=keepup:keepup /app/target/release/keepup /app/keepup
+# Binary is owned by root:root and read/execute-only (0555) so runtime user cannot modify it
+COPY --from=builder --chown=root:root --chmod=0555 /app/target/release/keepup /app/keepup
 
 USER keepup
 

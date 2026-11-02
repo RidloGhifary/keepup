@@ -89,15 +89,7 @@ mod tests {
             .execute(&pool).await.unwrap();
 
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool,
-            config,
-            http_client,
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool, config);
 
         let app = crate::api::router(state.clone()).with_state(state.clone());
         (app, state)
@@ -110,6 +102,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 

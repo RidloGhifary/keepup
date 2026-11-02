@@ -16,8 +16,10 @@ use crate::AppState;
 
 /// Build a single shared API sub-router that is mounted identically at `/api` and `/api/v1`.
 fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    // ── Authentication endpoints (login protected by IP rate limiter) ──
-    let rate_limiter = crate::middleware::rate_limit::auth_rate_limiter();
+    // ── Authentication endpoints (login + password change protected by IP rate limiter) ──
+    let rate_limiter = crate::middleware::rate_limit::auth_rate_limiter_with_proxy(
+        state.config.trust_proxy_headers,
+    );
 
     let login_route = Router::new()
         .route("/login", post(auth::login))
@@ -35,8 +37,16 @@ fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/monitors/:id/details", get(admin::get_monitor_details))
         .route("/badge/:id", get(public::badge));
 
+    let password_routes = Router::new()
+        .route("/admin/change-password", post(admin::change_password))
+        .route("/change-password", post(admin::change_password))
+        .layer(crate::middleware::rate_limit::auth_rate_limiter_with_proxy(
+            state.config.trust_proxy_headers,
+        ));
+
     // ── Protected administrative routes ───────────────────────────────
     let protected = Router::new()
+        .merge(password_routes)
         .route("/monitors", get(monitors::list).post(monitors::create))
         .route(
             "/monitors/:id",
@@ -85,8 +95,6 @@ fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .put(maintenance::update_maintenance)
                 .delete(maintenance::delete_maintenance),
         )
-        .route("/admin/change-password", post(admin::change_password))
-        .route("/change-password", post(admin::change_password))
         .route("/admin/monitors/:id/ping", post(admin::ping_monitor))
         .route("/monitors/:id/ping", post(admin::ping_monitor))
         .route("/admin/assets/expiry", get(admin::get_asset_expiry))

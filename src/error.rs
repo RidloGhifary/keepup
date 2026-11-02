@@ -1,6 +1,7 @@
 use axum::http::StatusCode;
 use axum::response::{IntoResponse, Response};
 use serde_json::json;
+use tracing::error;
 
 /// Unified application error type.
 #[derive(Debug, thiserror::Error)]
@@ -22,18 +23,40 @@ pub enum AppError {
 
     #[error("Unauthorized: {0}")]
     Unauthorized(String),
+
+    #[error("Forbidden: {0}")]
+    Forbidden(String),
 }
 
-/// Convert `AppError` into an Axum HTTP response with a JSON error payload.
+/// Convert `AppError` into an Axum HTTP response with a sanitized JSON error payload.
 impl IntoResponse for AppError {
     fn into_response(self) -> Response {
         let (status, message) = match &self {
-            AppError::Database(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            AppError::Migration(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
-            AppError::Internal(e) => (StatusCode::INTERNAL_SERVER_ERROR, e.to_string()),
+            AppError::Database(e) => {
+                error!("Database error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+            }
+            AppError::Migration(e) => {
+                error!("Migration error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+            }
+            AppError::Internal(e) => {
+                error!("Internal error: {e}");
+                (
+                    StatusCode::INTERNAL_SERVER_ERROR,
+                    "Internal server error".to_string(),
+                )
+            }
             AppError::NotFound(msg) => (StatusCode::NOT_FOUND, msg.clone()),
             AppError::BadRequest(msg) => (StatusCode::BAD_REQUEST, msg.clone()),
             AppError::Unauthorized(msg) => (StatusCode::UNAUTHORIZED, msg.clone()),
+            AppError::Forbidden(msg) => (StatusCode::FORBIDDEN, msg.clone()),
         };
 
         let body = axum::Json(json!({

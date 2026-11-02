@@ -764,13 +764,7 @@ mod tests {
         .await
         .unwrap();
 
-        let (reload_tx, _) = tokio::sync::broadcast::channel::<String>(10);
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            config: crate::config::Config::from_env(),
-            http_client: reqwest::Client::new(),
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool.clone(), crate::config::Config::from_env());
 
         // 1. Insert active public monitor
         sqlx::query(
@@ -1019,15 +1013,7 @@ mod tests {
     async fn test_public_status_multi_page_and_groups() {
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // Seed 3 monitors: m1 (public), m2 (public), m3 (private)
         sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m1', 'Public API', 'https://api.test', 1, 1)")
@@ -1093,15 +1079,7 @@ mod tests {
         use tower::ServiceExt;
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed monitors
         sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-dash-1', 'Main Dashboard', 'https://dash1.test', 1, 1)")
@@ -1183,15 +1161,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed monitors
         sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-maint-1', 'Payments API', 'https://payments.test', 1, 1)")
@@ -1255,15 +1225,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed active public monitor
         sqlx::query(
@@ -1316,15 +1278,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed 2 monitors
         sqlx::query(
@@ -1422,13 +1376,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            config,
-            http_client: reqwest::Client::new(),
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Insert DRI and Rekadigi monitors
         sqlx::query(

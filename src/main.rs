@@ -8,14 +8,17 @@ mod error;
 mod middleware;
 mod ui;
 
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::http::{header, Method};
+use axum::extract::DefaultBodyLimit;
+use axum::http::{header, HeaderName, HeaderValue, Method};
 use reqwest::Client;
 use sqlx::SqlitePool;
 use tokio::net::TcpListener;
 use tower_http::compression::CompressionLayer;
-use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::cors::CorsLayer;
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
@@ -28,6 +31,88 @@ pub struct AppState {
     pub config: Config,
     pub http_client: Client,
     pub reload_tx: tokio::sync::broadcast::Sender<String>,
+    pub session_version: Arc<AtomicU64>,
+}
+
+impl AppState {
+    pub fn current_session_version(&self) -> u64 {
+        self.session_version.load(Ordering::SeqCst)
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(db: SqlitePool, config: Config) -> Arc<Self> {
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+        Arc::new(Self {
+            db,
+            config,
+            http_client: Client::new(),
+            reload_tx,
+            session_version: Arc::new(AtomicU64::new(1)),
+        })
+    }
+}
+
+/// Assemble the complete Axum HTTP application router with body size limits,
+/// explicit-only CORS, gzip compression, and defensive HTTP security headers.
+pub fn build_http_app(state: Arc<AppState>) -> axum::Router {
+    let mut app = axum::Router::new()
+        .route("/status", axum::routing::get(ui::status_page_handler))
+        .route("/status/*path", axum::routing::get(ui::status_page_handler))
+        .route("/badge/:id", axum::routing::get(api::public::badge))
+        .merge(api::router(state.clone()))
+        .fallback(ui::static_handler)
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(CompressionLayer::new())
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self'; connect-src 'self'",
+            ),
+        ))
+        .with_state(state.clone());
+
+    if !state.config.cors_allowed_origins.is_empty() {
+        let parsed_origins: Vec<HeaderValue> = state
+            .config
+            .cors_allowed_origins
+            .iter()
+            .filter_map(|o| HeaderValue::from_str(o).ok())
+            .collect();
+        if !parsed_origins.is_empty() {
+            let cors = CorsLayer::new()
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::DELETE,
+                    Method::PATCH,
+                    Method::OPTIONS,
+                ])
+                .allow_headers([
+                    header::CONTENT_TYPE,
+                    header::AUTHORIZATION,
+                    header::ACCEPT,
+                    header::COOKIE,
+                ])
+                .allow_origin(parsed_origins)
+                .allow_credentials(true);
+            app = app.layer(cors);
+        }
+    }
+
+    app
 }
 
 #[tokio::main]
@@ -47,13 +132,16 @@ async fn main() -> anyhow::Result<()> {
         .init();
 
     // Load configuration from environment variables.
-    let config = Config::from_env();
+    let mut config = Config::from_env();
     banner::print_banner(env!("CARGO_PKG_VERSION"), config.port, &config.database_url);
     info!(port = config.port, db = %config.database_url, "Starting KeepUp");
 
     // Initialise SQLite pool (WAL mode) and run migrations.
     let pool = db::init_pool(&config.database_url).await?;
     db::run_migrations(&pool).await?;
+
+    // Bootstrap persistent JWT secret, initial Argon2id admin password, and session_version.
+    let initial_session_ver = api::auth::bootstrap_security_state(&pool, &mut config).await?;
 
     // Create broadcast channel for monitor reload notifications.
     let (reload_tx, reload_rx) = tokio::sync::broadcast::channel::<String>(100);
@@ -69,46 +157,13 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         http_client: http_client.clone(),
         reload_tx,
+        session_version: Arc::new(AtomicU64::new(initial_session_ver)),
     });
 
     // Spawn the background health-check scheduler with reload receiver.
     tokio::spawn(checker::scheduler::run_scheduler(pool, http_client, reload_rx));
 
-    // Configure CORS with credentials support for localhost and local origins.
-    let cors = CorsLayer::new()
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::PATCH,
-            Method::OPTIONS,
-        ])
-        .allow_headers([
-            header::CONTENT_TYPE,
-            header::AUTHORIZATION,
-            header::ACCEPT,
-            header::COOKIE,
-        ])
-        .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let origin_bytes = origin.as_bytes();
-            origin_bytes.starts_with(b"http://localhost")
-                || origin_bytes.starts_with(b"http://127.0.0.1")
-                || origin_bytes.starts_with(b"https://localhost")
-                || origin_bytes.starts_with(b"https://127.0.0.1")
-        }))
-        .allow_credentials(true);
-
-    // Build Axum router with explicit status routes, API routes and embedded UI fallback.
-    let app = axum::Router::new()
-        .route("/status", axum::routing::get(ui::status_page_handler))
-        .route("/status/*path", axum::routing::get(ui::status_page_handler))
-        .route("/badge/:id", axum::routing::get(api::public::badge))
-        .merge(api::router(state.clone()))
-        .fallback(ui::static_handler)
-        .layer(CompressionLayer::new())
-        .layer(cors)
-        .with_state(state);
+    let app = build_http_app(state);
 
     // Bind and serve with connection info for client IP rate limiting.
     let addr = format!("0.0.0.0:{}", config.port);

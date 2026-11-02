@@ -111,16 +111,19 @@ pub async fn get_monitor_details(
 
     // If monitor is private (is_public == 0), require valid admin authentication
     if monitor.is_public == 0 {
+        let ver = state.current_session_version();
         let has_cookie_auth = jar
             .get(crate::api::auth::SESSION_COOKIE_NAME)
-            .and_then(|c| crate::api::auth::validate_jwt(c.value(), &state.config.jwt_secret).ok())
+            .and_then(|c| {
+                crate::api::auth::validate_jwt(c.value(), &state.config.jwt_secret, ver).ok()
+            })
             .is_some();
 
         let has_bearer_auth = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|h| h.to_str().ok())
             .and_then(|h| h.strip_prefix("Bearer "))
-            .and_then(|t| crate::api::auth::validate_jwt(t, &state.config.jwt_secret).ok())
+            .and_then(|t| crate::api::auth::validate_jwt(t, &state.config.jwt_secret, ver).ok())
             .is_some();
 
         if !has_cookie_auth && !has_bearer_auth {
@@ -425,13 +428,14 @@ pub struct ChangePasswordPayload {
 
 /// `POST /api/admin/change-password`
 ///
-/// Changes the administrator password after validating the current password.
-/// Persists the new salted SHA-256 hash into SQLite `app_config`.
+/// Changes the administrator password after validating the current password,
+/// persists an Argon2id hash into `app_config`, increments `session_version`
+/// to revoke existing JWTs (`SEC-06`), and rotates the session cookie.
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
+    jar: CookieJar,
     Json(payload): Json<ChangePasswordPayload>,
-) -> Result<Json<Value>, AppError> {
-    // 1. Verify current_password matches active admin credentials.
+) -> Result<(CookieJar, Json<Value>), AppError> {
     let active_password =
         crate::api::auth::get_active_admin_password(&state.db, &state.config.admin_password).await;
 
@@ -441,14 +445,18 @@ pub async fn change_password(
         ));
     }
 
-    // 2. Enforce minimum length on new_password (>= 8 characters).
-    if payload.new_password.chars().count() < 8 {
+    let pw_len = payload.new_password.chars().count();
+    if pw_len < 8 {
         return Err(AppError::BadRequest(
             "New password must be at least 8 characters long".to_string(),
         ));
     }
+    if pw_len > 256 {
+        return Err(AppError::BadRequest(
+            "New password must not exceed 256 characters".to_string(),
+        ));
+    }
 
-    // 3. Persist new password hash into SQLite app_config table.
     let hashed = crate::api::auth::hash_password(&payload.new_password);
     sqlx::query(
         "INSERT INTO app_config (key, value) VALUES ('admin_password', $1) \
@@ -459,10 +467,23 @@ pub async fn change_password(
     .await
     .map_err(AppError::Database)?;
 
-    info!("Administrator password updated successfully");
-    Ok(Json(json!({
-        "message": "Password updated successfully"
-    })))
+    let new_ver = crate::api::auth::bump_session_version(&state).await?;
+    let fresh_jwt = crate::api::auth::create_jwt(
+        &state.config.admin_user,
+        &state.config.jwt_secret,
+        new_ver,
+    )
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("JWT creation failed: {e}")))?;
+
+    let jar = jar.add(crate::api::auth::build_session_cookie(fresh_jwt));
+
+    info!("Administrator password updated and active sessions rotated");
+    Ok((
+        jar,
+        Json(json!({
+            "message": "Password updated successfully"
+        })),
+    ))
 }
 
 // ── Notification Channel Admin Handlers ─────────────────────────────────────
@@ -739,15 +760,7 @@ mod tests {
             .expect("Failed to run migrations");
 
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool,
-            config,
-            http_client,
-            reload_tx,
-        });
+        let state = AppState::new_for_test(pool, config);
 
         let app = crate::api::router(state.clone()).with_state(state.clone());
         (app, state)
@@ -760,6 +773,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -832,9 +846,46 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+        let rotated_cookie = res
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .expect("change-password must issue a fresh session cookie")
+            .to_str()
+            .unwrap()
+            .to_string();
         let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["message"], "Password updated successfully");
+
+        // 4b. Previously minted JWT must now be rejected (401), while rotated cookie succeeds
+        let old_jwt_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/monitors")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(old_jwt_res.status(), StatusCode::UNAUTHORIZED);
+
+        let new_cookie_kv = rotated_cookie.split(';').next().unwrap();
+        let new_jwt_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/monitors")
+                    .header(axum::http::header::COOKIE, new_cookie_kv)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(new_jwt_res.status(), StatusCode::OK);
 
         // 5. Verify old password no longer works for login
         let req = Request::builder()
@@ -878,6 +929,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -982,6 +1034,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1091,6 +1144,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1284,6 +1338,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
