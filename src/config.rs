@@ -40,6 +40,26 @@ pub struct Config {
     pub metrics_bearer_token: Option<String>,
 }
 
+impl Default for Config {
+    fn default() -> Self {
+        Self {
+            port: 8080,
+            database_url: ":memory:".to_string(),
+            admin_user: "admin".to_string(),
+            admin_password: "admin".to_string(),
+            admin_password_from_env: false,
+            jwt_secret: "test-secret-at-least-32-bytes-long-for-security".to_string(),
+            jwt_secret_from_env: false,
+            allow_private_targets: false,
+            trust_proxy_headers: false,
+            cors_allowed_origins: vec![],
+            retention_days: 90,
+            custom_logo_url: None,
+            metrics_bearer_token: None,
+        }
+    }
+}
+
 impl Config {
     /// Build a `Config` from environment variables, falling back to safe defaults.
     pub fn from_env() -> Self {

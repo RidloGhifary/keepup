@@ -36,30 +36,51 @@ impl UpdateMonitorDto {
         }
         if let Some(ref url) = self.url {
             let u = url.trim();
-            if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
+            if u.is_empty()
+                || (!u.starts_with("http://")
+                    && !u.starts_with("https://")
+                    && !u.starts_with("tcp://")
+                    && !u.starts_with("dns://")
+                    && !u.starts_with("push://"))
+            {
                 return Err(AppError::BadRequest(
-                    "Monitor URL must be a valid http or https URL".to_string(),
+                    "Monitor URL must start with http://, https://, tcp://, dns://, or push://"
+                        .to_string(),
                 ));
             }
         }
         if let Some(interval) = self.check_interval_secs {
-            if interval < 1 {
+            if !(5..=86400).contains(&interval) {
                 return Err(AppError::BadRequest(
-                    "check_interval_secs must be at least 1 second".to_string(),
+                    "check_interval_secs must be between 5 and 86400".to_string(),
                 ));
             }
         }
         if let Some(timeout) = self.timeout_secs {
-            if timeout < 1 {
+            if !(1..=60).contains(&timeout) {
                 return Err(AppError::BadRequest(
-                    "timeout_secs must be at least 1 second".to_string(),
+                    "timeout_secs must be between 1 and 60".to_string(),
                 ));
             }
         }
         if let Some(retries) = self.max_retries {
-            if retries < 1 {
+            if !(1..=10).contains(&retries) {
                 return Err(AppError::BadRequest(
-                    "max_retries must be at least 1".to_string(),
+                    "max_retries must be between 1 and 10".to_string(),
+                ));
+            }
+        }
+        if let Some(domain_days) = self.domain_warning_days {
+            if !(1..=365).contains(&domain_days) {
+                return Err(AppError::BadRequest(
+                    "domain_warning_days must be between 1 and 365".to_string(),
+                ));
+            }
+        }
+        if let Some(ssl_days) = self.ssl_warning_days {
+            if !(1..=365).contains(&ssl_days) {
+                return Err(AppError::BadRequest(
+                    "ssl_warning_days must be between 1 and 365".to_string(),
                 ));
             }
         }

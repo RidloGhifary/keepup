@@ -173,11 +173,12 @@ pub async fn update_domain_expiry(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE monitors \
-         SET domain_expires_at = ?, domain_days_remaining = ?, domain_last_checked_at = datetime('now') \
+         SET domain_expires_at = ?, domain_days_remaining = ?, domain_last_checked_at = ? \
          WHERE id = ?",
     )
     .bind(expires_at)
     .bind(days_remaining)
+    .bind(chrono::Utc::now().to_rfc3339())
     .bind(id)
     .execute(pool)
     .await?;
@@ -194,11 +195,12 @@ pub async fn update_ssl_expiry(
 ) -> Result<(), sqlx::Error> {
     sqlx::query(
         "UPDATE monitors \
-         SET ssl_expires_at = ?, ssl_days_remaining = ?, ssl_last_checked_at = datetime('now') \
+         SET ssl_expires_at = ?, ssl_days_remaining = ?, ssl_last_checked_at = ? \
          WHERE id = ?",
     )
     .bind(expires_at)
     .bind(days_remaining)
+    .bind(chrono::Utc::now().to_rfc3339())
     .bind(id)
     .execute(pool)
     .await?;
@@ -232,6 +234,25 @@ pub async fn update_domain_alert_milestone(
     sqlx::query(
         "UPDATE monitors \
          SET last_domain_alert_days = ? \
+         WHERE id = ?",
+    )
+    .bind(milestone_days)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Update milestone alert suppression tracker for SSL expiration.
+pub async fn update_ssl_alert_milestone(
+    pool: &SqlitePool,
+    id: &str,
+    milestone_days: Option<i32>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE monitors \
+         SET last_ssl_alert_days = ? \
          WHERE id = ?",
     )
     .bind(milestone_days)

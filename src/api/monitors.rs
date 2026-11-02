@@ -54,6 +54,56 @@ fn default_warning_days() -> i32 {
     30
 }
 
+impl CreateMonitor {
+    pub fn validate(&self) -> Result<(), AppError> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(AppError::BadRequest("Monitor name cannot be empty".to_string()));
+        }
+        let url = self.url.trim();
+        if url.is_empty() {
+            return Err(AppError::BadRequest("Monitor URL cannot be empty".to_string()));
+        }
+        if !url.starts_with("http://")
+            && !url.starts_with("https://")
+            && !url.starts_with("tcp://")
+            && !url.starts_with("dns://")
+            && !url.starts_with("push://")
+        {
+            return Err(AppError::BadRequest(
+                "Unsupported URL scheme: must start with http://, https://, tcp://, dns://, or push://"
+                    .to_string(),
+            ));
+        }
+        if !(5..=86400).contains(&self.check_interval_secs) {
+            return Err(AppError::BadRequest(
+                "check_interval_secs must be between 5 and 86400".to_string(),
+            ));
+        }
+        if !(1..=60).contains(&self.timeout_secs) {
+            return Err(AppError::BadRequest(
+                "timeout_secs must be between 1 and 60".to_string(),
+            ));
+        }
+        if !(1..=10).contains(&self.max_retries) {
+            return Err(AppError::BadRequest(
+                "max_retries must be between 1 and 10".to_string(),
+            ));
+        }
+        if !(1..=365).contains(&self.domain_warning_days) {
+            return Err(AppError::BadRequest(
+                "domain_warning_days must be between 1 and 365".to_string(),
+            ));
+        }
+        if !(1..=365).contains(&self.ssl_warning_days) {
+            return Err(AppError::BadRequest(
+                "ssl_warning_days must be between 1 and 365".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
+
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/monitors` — list all monitors.
@@ -100,6 +150,8 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateMonitor>,
 ) -> Result<(StatusCode, Json<MonitorRow>), AppError> {
+    body.validate()?;
+
     let id = uuid::Uuid::new_v4().to_string();
 
     let mut tx = state.db.begin().await?;
@@ -198,4 +250,65 @@ pub async fn delete(
     state.invalidate_status_cache().await;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn test_create_monitor_rejects_invalid_bounds() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let config = crate::config::Config::default();
+        let token = crate::api::auth::create_jwt(
+            &config.admin_user,
+            &config.jwt_secret,
+            1,
+        )
+        .unwrap();
+
+        let state = crate::AppState::new_for_test(pool, config);
+        let app = crate::build_http_app(state);
+
+        // 1. check_interval_secs < 5 must return 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/monitors")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test","url":"https://example.com","check_interval_secs":0}"#))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // 2. timeout_secs < 1 or > 60 must return 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/monitors")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test","url":"https://example.com","timeout_secs":-1}"#))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // 3. invalid scheme must return 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/monitors")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test","url":"ftp://example.com"}"#))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
 }

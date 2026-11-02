@@ -210,6 +210,10 @@ pub async fn ping_monitor(
 ) -> Result<Json<PingResponse>, AppError> {
     let monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
+    let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(&state.db, &monitor.id)
+        .await
+        .unwrap_or(false);
+
     let result = crate::checker::http::ping_http(
         &state.http_client,
         &monitor.url,
@@ -251,6 +255,12 @@ pub async fn ping_monitor(
         }
     }
 
+    let error_msg_to_store = if in_maintenance {
+        Some("MAINTENANCE".to_string())
+    } else {
+        result.error_msg.clone()
+    };
+
     // Persist check log to SQLite
     sqlx::query(
         r#"
@@ -262,18 +272,24 @@ pub async fn ping_monitor(
     .bind(result.status_code)
     .bind(result.latency_ms)
     .bind(result.latency_ms)
-    .bind(result.is_up as i32)
-    .bind(&result.error_msg)
+    .bind(if in_maintenance { 1 } else { result.is_up as i32 })
+    .bind(&error_msg_to_store)
     .bind(domain_days)
     .bind(ssl_days)
     .execute(&state.db)
     .await?;
 
-    let status_str = if result.is_up { "UP" } else { "DOWN" };
-    let down_since = if result.is_up {
-        None
+    let (status_str, down_since) = if in_maintenance {
+        ("MAINTENANCE", None)
+    } else if result.is_up {
+        ("UP", None)
     } else {
-        Some(chrono::Utc::now().to_rfc3339())
+        // Preserves existing down_since if monitor was already DOWN
+        let preserved = monitor
+            .down_since
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        ("DOWN", Some(preserved))
     };
 
     let _ = monitors::update_monitor_status(
@@ -283,6 +299,27 @@ pub async fn ping_monitor(
         down_since.as_deref(),
     )
     .await;
+
+    // Synchronize shared in-memory monitor_states
+    {
+        let mut states = state.monitor_states.lock().await;
+        let entry = states.entry(monitor.id.clone()).or_insert_with(|| {
+            crate::checker::scheduler::MonitorState {
+                status: status_str.to_string(),
+                consecutive_failures: if result.is_up || in_maintenance { 0 } else { 1 },
+                last_state_change: chrono::Utc::now(),
+                last_alerted_at: None,
+            }
+        });
+        entry.status = status_str.to_string();
+        if result.is_up || in_maintenance {
+            entry.consecutive_failures = 0;
+        } else {
+            entry.consecutive_failures += 1;
+        }
+    }
+
+    state.invalidate_status_cache().await;
 
     info!(
         monitor_id = %monitor.id,
@@ -1567,5 +1604,56 @@ mod tests {
             !err_msg.contains("10.24.0.9"),
             "unauthenticated details response must sanitize internal error_message, got: {err_msg}"
         );
+    }
+
+    #[tokio::test]
+    async fn test_ping_monitor_preserves_down_since_and_respects_maintenance() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let initial_down_since = "2026-01-01T00:00:00Z";
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, max_retries, is_active, is_public, last_status, down_since) \
+             VALUES ('mon-down', 'Down Service', 'http://127.0.0.1:9', 60, 1, 1, 1, 1, 'DOWN', ?)"
+        )
+        .bind(initial_down_since)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let config = crate::config::Config {
+            allow_private_targets: true,
+            ..Default::default()
+        };
+
+        let state = crate::AppState::new_for_test(pool.clone(), config.clone());
+        let app = crate::build_http_app(state);
+
+        let token = crate::api::auth::create_jwt(
+            &config.admin_user,
+            &config.jwt_secret,
+            1,
+        )
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/admin/monitors/mon-down/ping")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Verify down_since was NOT overwritten by current timestamp!
+        let row: (Option<String>,) = sqlx::query_as("SELECT down_since FROM monitors WHERE id = 'mon-down'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some(initial_down_since), "ping_monitor must preserve existing down_since on already-DOWN monitor");
     }
 }

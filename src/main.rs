@@ -38,6 +38,11 @@ pub struct AppState {
             std::collections::HashMap<String, (std::time::Instant, crate::api::public::PublicStatus)>,
         >,
     >,
+    pub monitor_states: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, crate::checker::scheduler::MonitorState>,
+        >,
+    >,
 }
 
 impl AppState {
@@ -65,6 +70,7 @@ impl AppState {
             reload_tx,
             session_version: Arc::new(AtomicU64::new(1)),
             status_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+            monitor_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
         })
     }
 }
@@ -177,14 +183,13 @@ async fn main() -> anyhow::Result<()> {
         reload_tx,
         session_version: Arc::new(AtomicU64::new(initial_session_ver)),
         status_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
+        monitor_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
     });
 
     // Spawn the background health-check scheduler with reload receiver.
     tokio::spawn(checker::scheduler::run_scheduler(
-        pool,
-        http_client,
+        state.clone(),
         reload_rx,
-        config.allow_private_targets,
     ));
 
     let app = build_http_app(state);
