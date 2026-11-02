@@ -8,7 +8,7 @@ use sqlx::SqlitePool;
 use tokio::time;
 use tracing::{error, info, warn};
 
-use super::http::{ping_http, CheckResult};
+use super::http::CheckResult;
 use crate::alerting::AlertPayload;
 use crate::AppState;
 
@@ -44,7 +44,26 @@ pub struct Monitor {
     pub last_ssl_alert_days: Option<i32>,
     pub ssl_last_checked_at: Option<String>,
     #[sqlx(default)]
+    pub http_method: String,
+    #[sqlx(default)]
+    pub expected_status: String,
+    #[sqlx(default)]
+    pub request_headers: Option<String>,
+    #[sqlx(default)]
+    pub body_keyword: Option<String>,
+    #[sqlx(default)]
+    pub json_pointer: Option<String>,
+    #[sqlx(default)]
+    pub json_expected: Option<String>,
+    #[sqlx(default)]
+    pub degraded_latency_ms: Option<i64>,
+    #[sqlx(default)]
+    pub dns_record_type: String,
+    #[sqlx(default)]
+    pub dns_expected: Option<String>,
+    #[sqlx(default)]
     pub resend_interval_mins: i32,
+    #[sqlx(default)]
     pub last_alerted_at: Option<String>,
 }
 
@@ -338,7 +357,38 @@ pub async fn run_scheduler(
 
 // ── Core check + state-machine logic ─────────────────────────────────────────
 
-/// Run a single HTTP check, insert the log, evaluate the state machine,
+pub async fn execute_probe(
+    client: &Client,
+    monitor: &Monitor,
+    allow_private: bool,
+) -> CheckResult {
+    if monitor.url.starts_with("tcp://") {
+        crate::checker::tcp::ping_tcp(&monitor.url, monitor.timeout_secs as u64, allow_private).await
+    } else if monitor.url.starts_with("dns://") {
+        crate::checker::dns::ping_dns(
+            &monitor.url,
+            Some(&monitor.dns_record_type),
+            monitor.dns_expected.as_deref(),
+            monitor.timeout_secs as u64,
+        )
+        .await
+    } else {
+        let probe_cfg = crate::checker::http::HttpProbeConfig {
+            url: &monitor.url,
+            method: if monitor.http_method.is_empty() { "GET" } else { &monitor.http_method },
+            expected_status: if monitor.expected_status.is_empty() { "200-299" } else { &monitor.expected_status },
+            headers_json: monitor.request_headers.as_deref(),
+            body_keyword: monitor.body_keyword.as_deref(),
+            json_pointer: monitor.json_pointer.as_deref(),
+            json_expected: monitor.json_expected.as_deref(),
+            degraded_latency_ms: monitor.degraded_latency_ms,
+            timeout_secs: monitor.timeout_secs as u64,
+        };
+        crate::checker::http::ping_http_with_config(client, &probe_cfg).await
+    }
+}
+
+/// Run a single HTTP/TCP/DNS check, insert the log, evaluate the state machine,
 /// and return the updated `MonitorState` plus an optional `AlertPayload`
 /// when a transition has occurred.
 pub async fn run_check_and_evaluate(
@@ -525,14 +575,15 @@ pub async fn run_check_and_evaluate(
         }
     }
 
-    if in_maintenance {
-        let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
+    let result = execute_probe(client, monitor, allow_private).await;
 
+    if in_maintenance {
         // Persist check log with is_up = true (no SLA penalty) and error_msg = "MAINTENANCE"
         let maint_result = CheckResult {
             status_code: result.status_code,
             latency_ms: result.latency_ms,
             is_up: true,
+            is_degraded: false,
             error_msg: Some("MAINTENANCE".to_string()),
         };
         if let Err(e) = insert_check_log(pool, &monitor.id, &maint_result, domain_days, ssl_days).await {
@@ -555,8 +606,6 @@ pub async fn run_check_and_evaluate(
         return (next, None);
     }
 
-    let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
-
     // Persist raw check result.
     // NOTE: If check log insertion fails (e.g. disk full), do NOT abort state transition or alerts!
     if let Err(e) = insert_check_log(pool, &monitor.id, &result, domain_days, ssl_days).await {
@@ -570,9 +619,10 @@ pub async fn run_check_and_evaluate(
     if result.is_up {
         // Success → reset failure counter.
         next.consecutive_failures = 0;
+        let target_status = if result.is_degraded { "DEGRADED" } else { "UP" };
 
         if prev.status == "DOWN" {
-            // ▸ Transition: DOWN → UP (resolved)
+            // ▸ Transition: DOWN → UP / DEGRADED (resolved)
             let now = Utc::now();
             let down_since_dt = monitor
                 .down_since
@@ -583,17 +633,17 @@ pub async fn run_check_and_evaluate(
 
             let downtime_seconds = (now - down_since_dt).num_seconds().max(0) as u64;
             let downtime = format_downtime_duration(downtime_seconds);
-            next.status = "UP".to_string();
+            next.status = target_status.to_string();
             next.last_state_change = now;
             next.last_alerted_at = None;
 
             info!(
                 monitor = %monitor.name,
-                "State transition: DOWN → UP (resolved after {downtime})"
+                "State transition: DOWN → {target_status} (resolved after {downtime})"
             );
 
-            // Reset down_since to NULL and set last_status to UP in SQLite
-            if let Err(e) = crate::db::monitors::update_monitor_status(pool, &monitor.id, "UP", None).await {
+            // Reset down_since to NULL and set last_status in SQLite
+            if let Err(e) = crate::db::monitors::update_monitor_status(pool, &monitor.id, target_status, None).await {
                 error!(monitor_id = %monitor.id, "Failed to update monitor status in DB: {e}");
             }
             let _ = sqlx::query("UPDATE monitors SET last_alerted_at = NULL WHERE id = ?")
@@ -605,7 +655,7 @@ pub async fn run_check_and_evaluate(
                 monitor_id: Some(monitor.id.clone()),
                 monitor_name: monitor.name.clone(),
                 monitor_url: monitor.url.clone(),
-                new_status: "UP".to_string(),
+                new_status: target_status.to_string(),
                 old_status: "DOWN".to_string(),
                 http_status: result.status_code.map(|c| c as u16),
                 response_time_ms: Some(result.latency_ms as u64),
@@ -618,21 +668,43 @@ pub async fn run_check_and_evaluate(
             };
 
             return (next, Some(payload));
-        } else if prev.status == "MAINTENANCE" {
+        } else if prev.status != target_status {
+            // E.g. UP -> DEGRADED, DEGRADED -> UP, MAINTENANCE -> UP/DEGRADED
             let now = Utc::now();
-            next.status = "UP".to_string();
+            let old_status = prev.status.clone();
+            next.status = target_status.to_string();
             next.last_state_change = now;
 
             info!(
                 monitor = %monitor.name,
-                "Exiting planned maintenance window -> UP"
+                "State transition: {old_status} → {target_status}"
             );
 
-            if let Err(e) = crate::db::monitors::update_monitor_status(pool, &monitor.id, "UP", None).await {
+            if let Err(e) = crate::db::monitors::update_monitor_status(pool, &monitor.id, target_status, None).await {
                 error!(monitor_id = %monitor.id, "Failed to update monitor status in DB: {e}");
             }
 
-            return (next, None);
+            let payload = if old_status == "MAINTENANCE" {
+                None
+            } else {
+                Some(AlertPayload {
+                    monitor_id: Some(monitor.id.clone()),
+                    monitor_name: monitor.name.clone(),
+                    monitor_url: monitor.url.clone(),
+                    new_status: target_status.to_string(),
+                    old_status,
+                    http_status: result.status_code.map(|c| c as u16),
+                    response_time_ms: Some(result.latency_ms as u64),
+                    error_msg: result.error_msg.clone(),
+                    downtime_duration: None,
+                    downtime_duration_secs: None,
+                    timestamp: now.to_rfc3339(),
+                    domain_days_remaining: domain_days.map(|d| d as i64),
+                    domain_expires_at: domain_expires.clone(),
+                })
+            };
+
+            return (next, payload);
         }
 
         info!(
@@ -764,6 +836,8 @@ pub async fn fetch_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Option<M
                m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
                m.last_domain_alert_days, m.domain_last_checked_at,
                m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.last_ssl_alert_days, m.ssl_last_checked_at,
+               m.http_method, m.expected_status, m.request_headers, m.body_keyword, m.json_pointer, m.json_expected,
+               m.degraded_latency_ms, m.dns_record_type, m.dns_expected,
                m.resend_interval_mins, m.last_alerted_at
         FROM   monitors m
         WHERE  m.id = ? AND m.is_active = 1
@@ -783,6 +857,8 @@ pub async fn fetch_due_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, sqlx:
                m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
                m.last_domain_alert_days, m.domain_last_checked_at,
                m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.last_ssl_alert_days, m.ssl_last_checked_at,
+               m.http_method, m.expected_status, m.request_headers, m.body_keyword, m.json_pointer, m.json_expected,
+               m.degraded_latency_ms, m.dns_record_type, m.dns_expected,
                m.resend_interval_mins, m.last_alerted_at
         FROM   monitors m
         WHERE  m.is_active = 1
@@ -921,6 +997,15 @@ mod tests {
             ssl_days_remaining: None,
             last_ssl_alert_days: None,
             ssl_last_checked_at: None,
+            http_method: "GET".to_string(),
+            expected_status: "200-299".to_string(),
+            request_headers: None,
+            body_keyword: None,
+            json_pointer: None,
+            json_expected: None,
+            degraded_latency_ms: None,
+            dns_record_type: "A".to_string(),
+            dns_expected: None,
             resend_interval_mins: 0,
             last_alerted_at: None,
         };

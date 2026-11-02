@@ -36,6 +36,28 @@ pub struct CreateMonitor {
     pub ssl_warning_days: i32,
     #[serde(default)]
     pub channel_ids: Option<Vec<String>>,
+    #[serde(default = "default_http_method")]
+    pub http_method: String,
+    #[serde(default = "default_expected_status")]
+    pub expected_status: String,
+    #[serde(default)]
+    pub request_headers: Option<String>,
+    #[serde(default)]
+    pub body_keyword: Option<String>,
+    #[serde(default)]
+    pub json_pointer: Option<String>,
+    #[serde(default)]
+    pub json_expected: Option<String>,
+    #[serde(default)]
+    pub degraded_latency_ms: Option<i64>,
+    #[serde(default = "default_dns_record_type")]
+    pub dns_record_type: String,
+    #[serde(default)]
+    pub dns_expected: Option<String>,
+    #[serde(default)]
+    pub resend_interval_mins: i32,
+    #[serde(default = "default_grace_secs")]
+    pub grace_secs: i32,
 }
 
 fn default_interval() -> i32 {
@@ -52,6 +74,18 @@ fn default_true() -> bool {
 }
 fn default_warning_days() -> i32 {
     30
+}
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+fn default_expected_status() -> String {
+    "200-299".to_string()
+}
+fn default_dns_record_type() -> String {
+    "A".to_string()
+}
+fn default_grace_secs() -> i32 {
+    60
 }
 
 impl CreateMonitor {
@@ -111,12 +145,7 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<MonitorRow>>, AppError> {
     let rows = sqlx::query_as::<_, MonitorRow>(
-        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at, \
-               check_domain_expiry, domain_warning_days, domain_expires_at, \
-               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
-         FROM monitors ORDER BY created_at DESC",
+        "SELECT * FROM monitors ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
     .await?;
@@ -130,12 +159,7 @@ pub async fn get_one(
     Path(id): Path<String>,
 ) -> Result<Json<MonitorRow>, AppError> {
     let row = sqlx::query_as::<_, MonitorRow>(
-        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at, \
-               check_domain_expiry, domain_warning_days, domain_expires_at, \
-               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
-         FROM monitors WHERE id = ?",
+        "SELECT * FROM monitors WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
@@ -153,14 +177,22 @@ pub async fn create(
     body.validate()?;
 
     let id = uuid::Uuid::new_v4().to_string();
+    let push_token = if body.url.starts_with("push://") {
+        Some(uuid::Uuid::new_v4().simple().to_string())
+    } else {
+        None
+    };
 
     let mut tx = state.db.begin().await?;
 
     sqlx::query(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
-                               check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?)",
+                               check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
+                               http_method, expected_status, request_headers, body_keyword, \
+                               json_pointer, json_expected, degraded_latency_ms, push_token, \
+                               grace_secs, dns_record_type, dns_expected, resend_interval_mins) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&body.name)
@@ -174,6 +206,18 @@ pub async fn create(
     .bind(body.domain_warning_days)
     .bind(body.check_ssl as i32)
     .bind(body.ssl_warning_days)
+    .bind(&body.http_method)
+    .bind(&body.expected_status)
+    .bind(&body.request_headers)
+    .bind(&body.body_keyword)
+    .bind(&body.json_pointer)
+    .bind(&body.json_expected)
+    .bind(body.degraded_latency_ms)
+    .bind(&push_token)
+    .bind(body.grace_secs)
+    .bind(&body.dns_record_type)
+    .bind(&body.dns_expected)
+    .bind(body.resend_interval_mins)
     .execute(&mut *tx)
     .await?;
 
@@ -206,12 +250,7 @@ pub async fn create(
     }
 
     let row = sqlx::query_as::<_, MonitorRow>(
-        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at, \
-               check_domain_expiry, domain_warning_days, domain_expires_at, \
-               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
-         FROM monitors WHERE id = ?",
+        "SELECT * FROM monitors WHERE id = ?",
     )
     .bind(&id)
     .fetch_one(&mut *tx)

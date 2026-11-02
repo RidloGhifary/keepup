@@ -214,12 +214,35 @@ pub async fn ping_monitor(
         .await
         .unwrap_or(false);
 
-    let result = crate::checker::http::ping_http(
-        &state.http_client,
-        &monitor.url,
-        monitor.timeout_secs as u64,
-    )
-    .await;
+    let result = if monitor.url.starts_with("tcp://") {
+        crate::checker::tcp::ping_tcp(
+            &monitor.url,
+            monitor.timeout_secs as u64,
+            state.config.allow_private_targets,
+        )
+        .await
+    } else if monitor.url.starts_with("dns://") {
+        crate::checker::dns::ping_dns(
+            &monitor.url,
+            Some(&monitor.dns_record_type),
+            monitor.dns_expected.as_deref(),
+            monitor.timeout_secs as u64,
+        )
+        .await
+    } else {
+        let probe_cfg = crate::checker::http::HttpProbeConfig {
+            url: &monitor.url,
+            method: if monitor.http_method.is_empty() { "GET" } else { &monitor.http_method },
+            expected_status: if monitor.expected_status.is_empty() { "200-299" } else { &monitor.expected_status },
+            headers_json: monitor.request_headers.as_deref(),
+            body_keyword: monitor.body_keyword.as_deref(),
+            json_pointer: monitor.json_pointer.as_deref(),
+            json_expected: monitor.json_expected.as_deref(),
+            degraded_latency_ms: monitor.degraded_latency_ms,
+            timeout_secs: monitor.timeout_secs as u64,
+        };
+        crate::checker::http::ping_http_with_config(&state.http_client, &probe_cfg).await
+    };
 
     let mut domain_days = monitor.domain_days_remaining;
     if monitor.check_domain_expiry == 1 {
@@ -282,7 +305,11 @@ pub async fn ping_monitor(
     let (status_str, down_since) = if in_maintenance {
         ("MAINTENANCE", None)
     } else if result.is_up {
-        ("UP", None)
+        if result.is_degraded {
+            ("DEGRADED", None)
+        } else {
+            ("UP", None)
+        }
     } else {
         // Preserves existing down_since if monitor was already DOWN
         let preserved = monitor

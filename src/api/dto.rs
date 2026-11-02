@@ -23,6 +23,17 @@ pub struct UpdateMonitorDto {
     pub check_ssl: Option<bool>,
     pub ssl_warning_days: Option<i32>,
     pub channel_ids: Option<Vec<String>>,
+    pub http_method: Option<String>,
+    pub expected_status: Option<String>,
+    pub request_headers: Option<String>,
+    pub body_keyword: Option<String>,
+    pub json_pointer: Option<String>,
+    pub json_expected: Option<String>,
+    pub degraded_latency_ms: Option<i64>,
+    pub dns_record_type: Option<String>,
+    pub dns_expected: Option<String>,
+    pub resend_interval_mins: Option<i32>,
+    pub grace_secs: Option<i32>,
 }
 
 impl UpdateMonitorDto {
