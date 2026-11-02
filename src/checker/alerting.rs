@@ -330,8 +330,25 @@ pub fn format_generic_recovery(payload: &AlertPayload) -> Value {
     })
 }
 
+fn escape_for_template(val: &str, is_json_template: bool) -> String {
+    if !is_json_template {
+        return val.to_string();
+    }
+    match serde_json::to_string(val) {
+        Ok(quoted) if quoted.len() >= 2 => quoted[1..quoted.len() - 1].to_string(),
+        _ => val.to_string(),
+    }
+}
+
 /// Interpolates standard placeholder tokens in a custom user-defined template.
+/// When the template is a JSON object or array, string values are RFC 8259 JSON-escaped
+/// so quotes, backslashes, or newlines inside `{{error}}` or `{{monitor_name}}` cannot break
+/// or inject keys into the JSON payload.
 pub fn render_custom_template(template: &str, payload: &AlertPayload) -> String {
+    let trimmed = template.trim();
+    let is_json_tpl = (trimmed.starts_with('{') && trimmed.ends_with('}'))
+        || (trimmed.starts_with('[') && trimmed.ends_with(']'));
+
     let latency_str = payload
         .response_time_ms
         .map(|ms| ms.to_string())
@@ -340,37 +357,47 @@ pub fn render_custom_template(template: &str, payload: &AlertPayload) -> String 
         .http_status
         .map(|st| st.to_string())
         .unwrap_or_else(|| "0".to_string());
-    let monitor_id = payload.monitor_id.as_deref().unwrap_or("");
+    let monitor_id = escape_for_template(payload.monitor_id.as_deref().unwrap_or(""), is_json_tpl);
+    let monitor_name = escape_for_template(&payload.monitor_name, is_json_tpl);
+    let monitor_url = escape_for_template(&payload.monitor_url, is_json_tpl);
+    let new_status = escape_for_template(&payload.new_status, is_json_tpl);
+    let old_status = escape_for_template(&payload.old_status, is_json_tpl);
+    let error_str = escape_for_template(payload.error_msg.as_deref().unwrap_or(""), is_json_tpl);
+    let downtime_str = escape_for_template(
+        payload.downtime_duration.as_deref().unwrap_or(""),
+        is_json_tpl,
+    );
     let duration_secs_str = payload
         .downtime_duration_secs
         .map(|s| s.to_string())
         .unwrap_or_else(|| "0".to_string());
+    let timestamp = escape_for_template(&payload.timestamp, is_json_tpl);
     let domain_days_str = payload
         .domain_days_remaining
         .map(|d| d.to_string())
         .unwrap_or_else(|| "N/A".to_string());
-    let domain_exp_str = payload
-        .domain_expires_at
-        .as_deref()
-        .unwrap_or("N/A");
+    let domain_exp_str = escape_for_template(
+        payload.domain_expires_at.as_deref().unwrap_or("N/A"),
+        is_json_tpl,
+    );
 
     template
-        .replace("{{monitor_id}}", monitor_id)
-        .replace("{{monitor_name}}", &payload.monitor_name)
-        .replace("{{target_url}}", &payload.monitor_url)
-        .replace("{{monitor_url}}", &payload.monitor_url)
-        .replace("{{status}}", &payload.new_status)
-        .replace("{{new_status}}", &payload.new_status)
-        .replace("{{old_status}}", &payload.old_status)
-        .replace("{{previous_status}}", &payload.old_status)
+        .replace("{{monitor_id}}", &monitor_id)
+        .replace("{{monitor_name}}", &monitor_name)
+        .replace("{{target_url}}", &monitor_url)
+        .replace("{{monitor_url}}", &monitor_url)
+        .replace("{{status}}", &new_status)
+        .replace("{{new_status}}", &new_status)
+        .replace("{{old_status}}", &old_status)
+        .replace("{{previous_status}}", &old_status)
         .replace("{{response_time_ms}}", &latency_str)
         .replace("{{http_status}}", &http_status_str)
-        .replace("{{error}}", payload.error_msg.as_deref().unwrap_or(""))
-        .replace("{{downtime_duration}}", payload.downtime_duration.as_deref().unwrap_or(""))
+        .replace("{{error}}", &error_str)
+        .replace("{{downtime_duration}}", &downtime_str)
         .replace("{{downtime_duration_secs}}", &duration_secs_str)
-        .replace("{{timestamp}}", &payload.timestamp)
+        .replace("{{timestamp}}", &timestamp)
         .replace("{{domain_days_remaining}}", &domain_days_str)
-        .replace("{{domain_expires_at}}", domain_exp_str)
+        .replace("{{domain_expires_at}}", &domain_exp_str)
 }
 
 #[cfg(test)]
@@ -497,5 +524,19 @@ mod tests {
         let template = "Alert: {{monitor_name}} is {{status}} (HTTP {{http_status}} in {{response_time_ms}}ms, down for {{downtime_duration}} / {{downtime_duration_secs}}s)";
         let rendered = render_custom_template(template, &up);
         assert_eq!(rendered, "Alert: API Service is UP (HTTP 200 in 45ms, down for 4m 12s / 252s)");
+    }
+
+    #[test]
+    fn test_render_custom_template_json_escapes_special_chars() {
+        let mut down = sample_payload(false);
+        down.monitor_name = "Core \"Gateway\" \\ v2".to_string();
+        down.error_msg = Some("bad \"quote\",\n\"injected\":true".to_string());
+        let tpl = "{\"service\":\"{{monitor_name}}\",\"error\":\"{{error}}\"}";
+        let rendered = render_custom_template(tpl, &down);
+        let parsed: Value = serde_json::from_str(&rendered)
+            .expect("custom JSON template with quotes/newlines in error_msg must remain valid JSON");
+        assert_eq!(parsed["service"], "Core \"Gateway\" \\ v2");
+        assert_eq!(parsed["error"], "bad \"quote\",\n\"injected\":true");
+        assert!(parsed.get("injected").is_none());
     }
 }

@@ -6,6 +6,7 @@ mod config;
 mod db;
 mod error;
 mod middleware;
+mod net_guard;
 mod ui;
 
 use std::sync::atomic::{AtomicU64, Ordering};
@@ -42,10 +43,15 @@ impl AppState {
     #[cfg(test)]
     pub fn new_for_test(db: SqlitePool, config: Config) -> Arc<Self> {
         let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+        let http_client = net_guard::build_http_client(
+            config.allow_private_targets,
+            std::time::Duration::from_secs(5),
+        )
+        .expect("valid test http client");
         Arc::new(Self {
             db,
             config,
-            http_client: Client::new(),
+            http_client,
             reload_tx,
             session_version: Arc::new(AtomicU64::new(1)),
         })
@@ -146,10 +152,11 @@ async fn main() -> anyhow::Result<()> {
     // Create broadcast channel for monitor reload notifications.
     let (reload_tx, reload_rx) = tokio::sync::broadcast::channel::<String>(100);
 
-    // Build shared HTTP client for health checks.
-    let http_client = Client::builder()
-        .user_agent("KeepUp-Monitor/1.0")
-        .build()?;
+    // Build shared HTTP client with outbound SSRF guard for health checks & webhooks.
+    let http_client = net_guard::build_http_client(
+        config.allow_private_targets,
+        std::time::Duration::from_secs(10),
+    )?;
 
     // Build shared state.
     let state = Arc::new(AppState {
@@ -161,7 +168,12 @@ async fn main() -> anyhow::Result<()> {
     });
 
     // Spawn the background health-check scheduler with reload receiver.
-    tokio::spawn(checker::scheduler::run_scheduler(pool, http_client, reload_rx));
+    tokio::spawn(checker::scheduler::run_scheduler(
+        pool,
+        http_client,
+        reload_rx,
+        config.allow_private_targets,
+    ));
 
     let app = build_http_app(state);
 

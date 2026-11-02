@@ -82,6 +82,7 @@ pub async fn run_scheduler(
     pool: SqlitePool,
     client: Client,
     mut reload_rx: tokio::sync::broadcast::Receiver<String>,
+    allow_private: bool,
 ) {
     info!("Health-check scheduler started");
 
@@ -123,7 +124,7 @@ pub async fn run_scheduler(
                         .clone();
 
                     let (new_state, alert) =
-                        run_check_and_evaluate(&pool, &client, &monitor, &state).await;
+                        run_check_and_evaluate(&pool, &client, &monitor, &state, allow_private).await;
 
                     states.insert(monitor.id.clone(), new_state);
 
@@ -162,7 +163,7 @@ pub async fn run_scheduler(
                                 .clone();
 
                             let (new_state, alert) =
-                                run_check_and_evaluate(&pool, &client, &monitor, &state).await;
+                                run_check_and_evaluate(&pool, &client, &monitor, &state, allow_private).await;
 
                             states.insert(monitor.id.clone(), new_state);
 
@@ -198,6 +199,7 @@ async fn run_check_and_evaluate(
     client: &Client,
     monitor: &Monitor,
     prev: &MonitorState,
+    allow_private: bool,
 ) -> (MonitorState, Option<AlertPayload>) {
     // ── Check if monitor is in active maintenance window ────────────
     let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(pool, &monitor.id)
@@ -314,7 +316,7 @@ async fn run_check_and_evaluate(
         } || monitor.ssl_expires_at.is_none();
 
         if needs_ssl_lookup {
-            match crate::checker::tls::check_ssl_expiration(&monitor.url, 10).await {
+            match crate::checker::tls::check_ssl_expiration(&monitor.url, 10, allow_private).await {
                 Ok(info) => {
                     ssl_days = Some(info.days_remaining as i32);
                     if let Err(e) = crate::db::monitors::update_ssl_expiry(
@@ -670,7 +672,8 @@ mod tests {
             last_state_change: now,
         };
 
-        let (new_state, alert) = run_check_and_evaluate(&pool, &client, &monitor, &prev).await;
+        let (new_state, alert) =
+            run_check_and_evaluate(&pool, &client, &monitor, &prev, true).await;
 
         // Alerts must be suppressed (None)
         assert!(alert.is_none(), "Alert must be suppressed during maintenance");
@@ -726,7 +729,8 @@ mod tests {
         };
 
         // First evaluation: 14 days remaining <= 30 warning threshold. Milestone 14 has not been alerted.
-        let (_new_state, _alert) = run_check_and_evaluate(&pool, &client, &monitor, &prev).await;
+        let (_new_state, _alert) =
+            run_check_and_evaluate(&pool, &client, &monitor, &prev, true).await;
 
         // DB should record last_domain_alert_days = 14
         let updated = fetch_monitor_by_id(&pool, monitor_id).await.unwrap().unwrap();
@@ -734,7 +738,8 @@ mod tests {
 
         // Second evaluation with same monitor (milestone 14 already alerted):
         // Re-run evaluation: should NOT re-alert milestone 14 (suppressed)
-        let (_new_state2, _alert2) = run_check_and_evaluate(&pool, &client, &updated, &prev).await;
+        let (_new_state2, _alert2) =
+            run_check_and_evaluate(&pool, &client, &updated, &prev, true).await;
         let updated2 = fetch_monitor_by_id(&pool, monitor_id).await.unwrap().unwrap();
         assert_eq!(updated2.last_domain_alert_days, Some(14));
     }

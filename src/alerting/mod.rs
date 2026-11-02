@@ -38,23 +38,33 @@ pub struct AlertPayload {
     pub domain_expires_at: Option<String>,
 }
 
-/// Formats a telegram message text from an alert payload.
+fn escape_telegram_html(s: &str) -> String {
+    s.replace('&', "&amp;")
+        .replace('<', "&lt;")
+        .replace('>', "&gt;")
+}
+
+/// Formats a Telegram HTML message text from an alert payload.
 pub fn format_telegram_message(payload: &AlertPayload) -> String {
     let is_recovery = payload.new_status == "UP"
         && (payload.old_status == "DOWN" || payload.old_status == "DEGRADED");
     let is_domain_alert = payload.new_status == "DOMAIN_EXPIRING_SOON";
     let is_ssl_alert = payload.new_status == "SSL_EXPIRING_SOON";
 
+    let safe_name = escape_telegram_html(&payload.monitor_name);
+    let safe_url = escape_telegram_html(&payload.monitor_url);
+    let safe_status = escape_telegram_html(&payload.new_status);
+
     if is_recovery {
         let latency_str = payload
             .response_time_ms
             .map(|ms| format!("{ms} ms"))
             .unwrap_or_else(|| "N/A".to_string());
-        let duration_str = payload.downtime_duration.as_deref().unwrap_or("N/A");
+        let duration_str =
+            escape_telegram_html(payload.downtime_duration.as_deref().unwrap_or("N/A"));
 
         format!(
-            "🟢 *[RESOLVED]* *{}* is back online\n*Target:* {}\n*Latency:* {}\n*Downtime Duration:* {}",
-            payload.monitor_name, payload.monitor_url, latency_str, duration_str
+            "🟢 <b>[RESOLVED]</b> <b>{safe_name}</b> is back online\n<b>Target:</b> {safe_url}\n<b>Latency:</b> {latency_str}\n<b>Downtime Duration:</b> {duration_str}"
         )
     } else if is_domain_alert || is_ssl_alert {
         let label = if is_ssl_alert {
@@ -66,17 +76,19 @@ pub fn format_telegram_message(payload: &AlertPayload) -> String {
             .domain_days_remaining
             .map(|d| format!("{d} days"))
             .unwrap_or_else(|| "N/A".to_string());
-        let expires_str = payload.domain_expires_at.as_deref().unwrap_or("N/A");
+        let expires_str =
+            escape_telegram_html(payload.domain_expires_at.as_deref().unwrap_or("N/A"));
 
         format!(
-            "⚠️ *[{label}]* *{}*\n*Target:* {}\n*Days Remaining:* {}\n*Expiration Date:* {}",
-            payload.monitor_name, payload.monitor_url, days_str, expires_str
+            "⚠️ <b>[{label}]</b> <b>{safe_name}</b>\n<b>Target:</b> {safe_url}\n<b>Days Remaining:</b> {days_str}\n<b>Expiration Date:</b> {expires_str}"
         )
     } else if payload.new_status == "DOWN" || payload.new_status == "DEGRADED" {
-        let error_str = payload
-            .error_msg
-            .as_deref()
-            .unwrap_or("Check failed or timed out");
+        let error_str = escape_telegram_html(
+            payload
+                .error_msg
+                .as_deref()
+                .unwrap_or("Check failed or timed out"),
+        );
         let http_status_str = payload
             .http_status
             .map(|st| st.to_string())
@@ -88,14 +100,10 @@ pub fn format_telegram_message(payload: &AlertPayload) -> String {
         };
 
         format!(
-            "{icon} *[{}]* *{}* alert!\n*Target:* {}\n*HTTP Status:* {}\n*Details:* {}",
-            payload.new_status, payload.monitor_name, payload.monitor_url, http_status_str, error_str
+            "{icon} <b>[{safe_status}]</b> <b>{safe_name}</b> alert!\n<b>Target:</b> {safe_url}\n<b>HTTP Status:</b> {http_status_str}\n<b>Details:</b> {error_str}"
         )
     } else {
-        format!(
-            "ℹ️ *[{}]* *{}*\n*Target:* {}",
-            payload.new_status, payload.monitor_name, payload.monitor_url
-        )
+        format!("ℹ️ <b>[{safe_status}]</b> <b>{safe_name}</b>\n<b>Target:</b> {safe_url}")
     }
 }
 
@@ -138,8 +146,7 @@ pub async fn dispatch_single_channel(
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("Discord returned {status}: {text}");
+                anyhow::bail!("Discord returned HTTP {status}");
             }
         }
         "slack" => {
@@ -161,19 +168,20 @@ pub async fn dispatch_single_channel(
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("Slack returned {status}: {text}");
+                anyhow::bail!("Slack returned HTTP {status}");
             }
         }
         "telegram" => {
             let text = if let Some(tpl) = custom_tpl {
-                crate::checker::alerting::render_custom_template(tpl, payload)
+                escape_telegram_html(&crate::checker::alerting::render_custom_template(
+                    tpl, payload,
+                ))
             } else {
                 format_telegram_message(payload)
             };
             let body = json!({
                 "text": text,
-                "parse_mode": "Markdown"
+                "parse_mode": "HTML"
             });
             let resp = client
                 .post(&channel.url)
@@ -184,8 +192,7 @@ pub async fn dispatch_single_channel(
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("Telegram returned {status}: {text}");
+                anyhow::bail!("Telegram returned HTTP {status}");
             }
         }
         "webhook" | "generic" | _ => {
@@ -219,8 +226,7 @@ pub async fn dispatch_single_channel(
 
             if !resp.status().is_success() {
                 let status = resp.status();
-                let text = resp.text().await.unwrap_or_default();
-                anyhow::bail!("Webhook returned {status}: {text}");
+                anyhow::bail!("Webhook returned HTTP {status}");
             }
         }
     }
@@ -321,5 +327,73 @@ pub async fn dispatch_alerts(pool: &SqlitePool, client: &Client, payload: &Alert
                 }
             });
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use tokio::io::{AsyncReadExt, AsyncWriteExt};
+    use tokio::net::TcpListener;
+
+    #[test]
+    fn test_telegram_message_uses_safe_html_escaping() {
+        let payload = AlertPayload {
+            monitor_id: Some("m1".to_string()),
+            monitor_name: "api_v2 <prod> & co".to_string(),
+            monitor_url: "https://example.com/health_check?a=1&b=2".to_string(),
+            new_status: "DOWN".to_string(),
+            old_status: "UP".to_string(),
+            http_status: Some(502),
+            response_time_ms: Some(120),
+            error_msg: Some("upstream <bad_gateway> & timeout".to_string()),
+            downtime_duration: None,
+            downtime_duration_secs: None,
+            timestamp: "2026-11-02T00:00:00Z".to_string(),
+            domain_days_remaining: None,
+            domain_expires_at: None,
+        };
+
+        let msg = format_telegram_message(&payload);
+        assert!(msg.contains("<b>[DOWN]</b>"), "Telegram message must use HTML bold tags: {msg}");
+        assert!(msg.contains("api_v2 &lt;prod&gt; &amp; co"));
+        assert!(msg.contains("upstream &lt;bad_gateway&gt; &amp; timeout"));
+    }
+
+    #[tokio::test]
+    async fn test_dispatch_single_channel_redacts_upstream_error_body() {
+        let listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let addr = listener.local_addr().unwrap();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = listener.accept().await {
+                let mut buf = [0u8; 1024];
+                let _ = sock.read(&mut buf).await;
+                let resp = "HTTP/1.1 500 Internal Server Error\r\nContent-Length: 25\r\n\r\nSECRET_INTERNAL_BODY_LEAK";
+                let _ = sock.write_all(resp.as_bytes()).await;
+            }
+        });
+
+        let channel = NotificationChannel {
+            id: "c1".to_string(),
+            name: "Test Hook".to_string(),
+            channel_type: "webhook".to_string(),
+            url: format!("http://{addr}/hook"),
+            is_default: false,
+            is_enabled: true,
+            use_default_template: true,
+            notify_on_resolve: true,
+            custom_template: None,
+            created_at: "2026-11-02T00:00:00Z".to_string(),
+        };
+
+        let err = test_channel(&reqwest::Client::new(), &channel)
+            .await
+            .expect_err("500 response must fail");
+        let err_msg = err.to_string();
+        assert!(err_msg.contains("500"));
+        assert!(
+            !err_msg.contains("SECRET_INTERNAL_BODY_LEAK"),
+            "upstream response body must not be echoed in channel error: {err_msg}"
+        );
     }
 }

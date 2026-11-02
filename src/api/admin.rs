@@ -211,7 +211,13 @@ pub async fn ping_monitor(
 
     let mut ssl_days = monitor.ssl_days_remaining;
     if monitor.check_ssl == 1 {
-        if let Ok(info) = crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64).await {
+        if let Ok(info) = crate::checker::tls::check_ssl_expiration(
+            &monitor.url,
+            monitor.timeout_secs as u64,
+            state.config.allow_private_targets,
+        )
+        .await
+        {
             ssl_days = Some(info.days_remaining as i32);
             let _ = monitors::update_ssl_expiry(
                 &state.db,
@@ -365,7 +371,13 @@ pub async fn refresh_monitor_assets(
     let mut monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
     if monitor.check_ssl == 1 {
-        if let Ok(info) = crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64).await {
+        if let Ok(info) = crate::checker::tls::check_ssl_expiration(
+            &monitor.url,
+            monitor.timeout_secs as u64,
+            state.config.allow_private_targets,
+        )
+        .await
+        {
             let _ = monitors::update_ssl_expiry(
                 &state.db,
                 &monitor.id,
@@ -690,9 +702,10 @@ pub async fn test_channel(
             ));
         }
         Err(err) => {
+            tracing::error!("Failed loading notification channel {id} for test: {err}");
             return Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": err.to_string() })),
+                Json(json!({ "error": "Internal server error" })),
             ));
         }
     };
@@ -1333,7 +1346,12 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let (app, state) = setup_test_app().await;
+        let (strict_app, strict_state) = setup_test_app().await;
+
+        let mut allow_priv_cfg = crate::config::Config::from_env();
+        allow_priv_cfg.allow_private_targets = true;
+        let state = AppState::new_for_test(strict_state.db.clone(), allow_priv_cfg);
+        let app = crate::api::router(state.clone()).with_state(state.clone());
 
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
@@ -1382,6 +1400,23 @@ mod tests {
         let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
         let chan: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
+
+        // Default strict app (ALLOW_PRIVATE_TARGETS=false) MUST block 127.0.0.1 webhook SSRF
+        let strict_token = crate::api::auth::create_jwt(
+            &strict_state.config.admin_user,
+            &strict_state.config.jwt_secret,
+            strict_state.current_session_version(),
+        )
+        .unwrap();
+        let strict_req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/admin/channels/{}/test", chan.id))
+            .header("Authorization", format!("Bearer {strict_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let strict_res = strict_app.oneshot(strict_req).await.unwrap();
+        assert_eq!(strict_res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(hit_counter.load(Ordering::SeqCst), 0);
 
         // Test POST /api/admin/channels/:id/test
         let req = Request::builder()
