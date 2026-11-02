@@ -102,6 +102,8 @@ pub async fn create(
 ) -> Result<(StatusCode, Json<MonitorRow>), AppError> {
     let id = uuid::Uuid::new_v4().to_string();
 
+    let mut tx = state.db.begin().await?;
+
     sqlx::query(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
@@ -120,24 +122,35 @@ pub async fn create(
     .bind(body.domain_warning_days)
     .bind(body.check_ssl as i32)
     .bind(body.ssl_warning_days)
-    .execute(&state.db)
+    .execute(&mut *tx)
     .await?;
 
     // Bind notification channels: explicitly selected or defaults if omitted
     let channel_ids_to_assign = match body.channel_ids {
         Some(ref ids) => ids.clone(),
         None => {
-            crate::db::notifications::list_channels(&state.db)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| c.is_default)
-                .map(|c| c.id)
-                .collect()
+            sqlx::query_as::<_, (String,)>(
+                "SELECT id FROM notification_channels WHERE is_default = 1",
+            )
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| r.0)
+            .collect()
         }
     };
-    if !channel_ids_to_assign.is_empty() {
-        let _ = crate::db::notifications::set_monitor_channels(&state.db, &id, &channel_ids_to_assign).await;
+
+    let mut seen = std::collections::HashSet::new();
+    for chan_id in channel_ids_to_assign {
+        if seen.insert(chan_id.clone()) {
+            sqlx::query(
+                "INSERT INTO monitor_notification_channels (monitor_id, channel_id) VALUES (?, ?)",
+            )
+            .bind(&id)
+            .bind(&chan_id)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
     let row = sqlx::query_as::<_, MonitorRow>(
@@ -149,8 +162,12 @@ pub async fn create(
          FROM monitors WHERE id = ?",
     )
     .bind(&id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
+
+    tx.commit().await?;
+
+    state.invalidate_status_cache().await;
 
     Ok((StatusCode::CREATED, Json(row)))
 }
@@ -160,9 +177,11 @@ pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    let mut tx = state.db.begin().await?;
+
     let result = sqlx::query("DELETE FROM monitors WHERE id = ?")
         .bind(&id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
 
     if result.rows_affected() == 0 {
@@ -171,8 +190,12 @@ pub async fn delete(
 
     sqlx::query("DELETE FROM check_logs WHERE monitor_id = ?")
         .bind(&id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
+
+    tx.commit().await?;
+
+    state.invalidate_status_cache().await;
 
     Ok(StatusCode::NO_CONTENT)
 }

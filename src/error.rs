@@ -7,7 +7,7 @@ use tracing::error;
 #[derive(Debug, thiserror::Error)]
 pub enum AppError {
     #[error("Database error: {0}")]
-    Database(#[from] sqlx::Error),
+    Database(sqlx::Error),
 
     #[error("Migration error: {0}")]
     Migration(#[from] sqlx::migrate::MigrateError),
@@ -26,6 +26,17 @@ pub enum AppError {
 
     #[error("Forbidden: {0}")]
     Forbidden(String),
+}
+
+impl From<sqlx::Error> for AppError {
+    fn from(err: sqlx::Error) -> Self {
+        if let sqlx::Error::Database(ref db_err) = err {
+            if db_err.code().as_deref() == Some("787") || db_err.message().contains("FOREIGN KEY") {
+                return AppError::BadRequest(format!("Foreign key constraint failed: {}", db_err.message()));
+            }
+        }
+        AppError::Database(err)
+    }
 }
 
 /// Convert `AppError` into an Axum HTTP response with a sanitized JSON error payload.

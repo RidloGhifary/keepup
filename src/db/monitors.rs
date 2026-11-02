@@ -58,7 +58,20 @@ pub async fn update_monitor(
     id: &str,
     payload: UpdateMonitorDto,
 ) -> Result<Monitor, AppError> {
-    let existing = get_monitor_by_id(pool, id).await?;
+    let mut tx = pool.begin().await?;
+
+    let existing = sqlx::query_as::<_, Monitor>(
+        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
+                is_active, is_public, last_status, down_since, created_at, \
+                check_domain_expiry, domain_warning_days, domain_expires_at, \
+                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
+         FROM monitors WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_optional(&mut *tx)
+    .await?
+    .ok_or_else(|| AppError::NotFound(format!("Monitor {id} not found")))?;
 
     let name = payload.name.unwrap_or(existing.name);
     let url = payload.url.unwrap_or(existing.url);
@@ -110,10 +123,45 @@ pub async fn update_monitor(
     .bind(check_ssl)
     .bind(ssl_warning_days)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
-    get_monitor_by_id(pool, id).await
+    if let Some(ref channel_ids) = payload.channel_ids {
+        sqlx::query("DELETE FROM monitor_notification_channels WHERE monitor_id = ?")
+            .bind(id)
+            .execute(&mut *tx)
+            .await?;
+
+        let mut seen = std::collections::HashSet::new();
+        for cid in channel_ids {
+            if seen.insert(cid.as_str()) {
+                sqlx::query(
+                    "INSERT INTO monitor_notification_channels (monitor_id, channel_id) \
+                     VALUES (?, ?)",
+                )
+                .bind(id)
+                .bind(cid)
+                .execute(&mut *tx)
+                .await?;
+            }
+        }
+    }
+
+    let updated = sqlx::query_as::<_, Monitor>(
+        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
+                is_active, is_public, last_status, down_since, created_at, \
+                check_domain_expiry, domain_warning_days, domain_expires_at, \
+                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
+         FROM monitors WHERE id = ?",
+    )
+    .bind(id)
+    .fetch_one(&mut *tx)
+    .await?;
+
+    tx.commit().await?;
+
+    Ok(updated)
 }
 
 /// Update domain expiration telemetry for a monitor.

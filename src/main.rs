@@ -33,11 +33,21 @@ pub struct AppState {
     pub http_client: Client,
     pub reload_tx: tokio::sync::broadcast::Sender<String>,
     pub session_version: Arc<AtomicU64>,
+    pub status_cache: Arc<
+        tokio::sync::RwLock<
+            std::collections::HashMap<String, (std::time::Instant, crate::api::public::PublicStatus)>,
+        >,
+    >,
 }
 
 impl AppState {
     pub fn current_session_version(&self) -> u64 {
         self.session_version.load(Ordering::SeqCst)
+    }
+
+    pub async fn invalidate_status_cache(&self) {
+        let mut cache = self.status_cache.write().await;
+        cache.clear();
     }
 
     #[cfg(test)]
@@ -54,6 +64,7 @@ impl AppState {
             http_client,
             reload_tx,
             session_version: Arc::new(AtomicU64::new(1)),
+            status_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         })
     }
 }
@@ -165,6 +176,7 @@ async fn main() -> anyhow::Result<()> {
         http_client: http_client.clone(),
         reload_tx,
         session_version: Arc::new(AtomicU64::new(initial_session_ver)),
+        status_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
     });
 
     // Spawn the background health-check scheduler with reload receiver.

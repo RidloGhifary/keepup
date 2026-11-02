@@ -6,9 +6,7 @@ use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
 
-use crate::db::monitors::{
-    get_24h_latency_history, get_7day_uptime_history, DailyUptime, HourlyLatency,
-};
+use crate::db::monitors::{DailyUptime, HourlyLatency};
 use crate::error::AppError;
 use crate::AppState;
 
@@ -19,6 +17,30 @@ use crate::AppState;
 pub struct MonitorGroup {
     pub name: String,
     pub monitors: Vec<PublicMonitor>,
+}
+
+/// Public representation of an incident in public status pages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicIncident {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub severity: String,
+    pub monitor_id: Option<String>,
+    pub started_at: String,
+    pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub updates: Vec<PublicIncidentUpdate>,
+}
+
+/// Public timeline entry for an ongoing or past incident.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicIncidentUpdate {
+    pub id: String,
+    pub incident_id: String,
+    pub status: String,
+    pub message: String,
+    pub created_at: String,
 }
 
 /// Top-level public status response.
@@ -34,8 +56,14 @@ pub struct PublicStatus {
     /// Optional status page theme configuration ("default", "oled", "midnight", "light").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_page_theme: Option<String>,
+    /// Optional custom brand logo URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_logo_url: Option<String>,
     /// Active and scheduled maintenance windows.
     pub maintenance_windows: Vec<crate::db::maintenance::PublicMaintenanceWindow>,
+    /// Public incident timeline.
+    #[serde(default)]
+    pub incidents: Vec<PublicIncident>,
     /// Monitored components grouped by category.
     pub groups: Vec<MonitorGroup>,
     /// Per-monitor summaries (flat list for backward compatibility).
@@ -100,24 +128,29 @@ pub async fn get_public_status_impl(
     state: &AppState,
     slug: &str,
 ) -> Result<PublicStatus, AppError> {
-    let (title, description) = if slug == "default" {
-        if let Some(page) = crate::db::status_pages::get_status_page(&state.db, "default").await? {
-            (page.title, page.description)
-        } else {
-            (
-                "System Status".to_string(),
-                Some("Current status and real-time performance of public services".to_string()),
-            )
-        }
-    } else {
-        let page = crate::db::status_pages::get_status_page(&state.db, slug)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("Status page '{slug}' not found")))?;
-        if page.is_public == 0 {
+    let is_default = slug.eq_ignore_ascii_case("default");
+    let page = crate::db::status_pages::get_status_page(&state.db, slug).await?;
+
+    let (title, description) = match (is_default, page) {
+        (_, Some(p)) if p.is_public == 0 => {
             return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
         }
-        (page.title, page.description)
+        (_, Some(p)) => (p.title, p.description),
+        (true, None) => (
+            "System Status".to_string(),
+            Some("Current status and real-time performance of public services".to_string()),
+        ),
+        (false, None) => {
+            return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
+        }
     };
+
+    let total_assigned_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM status_page_monitors WHERE LOWER(status_page_slug) = LOWER(?)",
+    )
+    .bind(slug)
+    .fetch_one(&state.db)
+    .await?;
 
     let mut assigned = sqlx::query_as::<_, AssignedMonitorRow>(
         r#"
@@ -127,6 +160,7 @@ pub async fn get_public_status_impl(
         FROM status_page_monitors spm
         INNER JOIN monitors m ON m.id = spm.monitor_id
         WHERE LOWER(spm.status_page_slug) = LOWER(?)
+          AND m.is_public = 1 AND m.is_active = 1
         ORDER BY spm.display_order ASC, m.name ASC
         "#,
     )
@@ -134,7 +168,7 @@ pub async fn get_public_status_impl(
     .fetch_all(&state.db)
     .await?;
 
-    if assigned.is_empty() && slug == "default" {
+    if total_assigned_count == 0 && is_default {
         let all_monitors = sqlx::query_as::<_, MonitorIdName>(
             "SELECT id, name, url FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
         )
@@ -154,7 +188,18 @@ pub async fn get_public_status_impl(
             .collect();
     }
 
-    let maintenance_windows = crate::db::maintenance::get_public_maintenance_windows(&state.db).await?;
+    let monitor_ids: Vec<String> = assigned.iter().map(|m| m.id.clone()).collect();
+    let batch_metrics =
+        crate::db::checks::get_batch_public_metrics(&state.db, &monitor_ids).await?;
+
+    let visible_id_set: std::collections::HashSet<&str> =
+        assigned.iter().map(|m| m.id.as_str()).collect();
+    let mut maintenance_windows =
+        crate::db::maintenance::get_public_maintenance_windows(&state.db).await?;
+    for mw in &mut maintenance_windows {
+        mw.monitor_ids
+            .retain(|mid| mid == "*" || visible_id_set.contains(mid.as_str()));
+    }
 
     let mut public_monitors: Vec<PublicMonitor> = Vec::with_capacity(assigned.len());
     let mut groups_map: Vec<(String, Vec<PublicMonitor>)> = Vec::new();
@@ -162,61 +207,41 @@ pub async fn get_public_status_impl(
     let mut any_degraded = false;
 
     for m in assigned {
-        // Latest check result.
-        let latest = sqlx::query_as::<_, LatestCheck>(
-            "SELECT is_up, latency_ms FROM check_logs \
-             WHERE monitor_id = ? ORDER BY checked_at DESC, id DESC LIMIT 1",
-        )
-        .bind(&m.id)
-        .fetch_optional(&state.db)
-        .await?;
-
+        let metrics = batch_metrics.get(&m.id);
         let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id)
             .await
             .unwrap_or(false);
 
         let (current_status, last_latency_ms) = if in_maintenance {
-            ("MAINTENANCE".to_string(), latest.and_then(|c| c.latency_ms))
+            ("MAINTENANCE".to_string(), metrics.and_then(|b| b.last_latency_ms))
         } else {
-            match &latest {
-                Some(c) if c.is_up == 1 => ("UP".to_string(), c.latency_ms),
-                Some(c) => {
+            match metrics.and_then(|b| b.latest_is_up) {
+                Some(true) => ("UP".to_string(), metrics.and_then(|b| b.last_latency_ms)),
+                Some(false) => {
                     any_down = true;
-                    ("DOWN".to_string(), c.latency_ms)
+                    ("DOWN".to_string(), metrics.and_then(|b| b.last_latency_ms))
                 }
                 None => ("UNKNOWN".to_string(), None),
             }
         };
 
-        // 24-hour uptime percentage.
-        let agg = sqlx::query_as::<_, UptimeAgg>(
-            "SELECT COUNT(*) AS total, \
-                    COALESCE(SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END), 0) AS up_count \
-             FROM check_logs \
-             WHERE monitor_id = ? AND checked_at > datetime('now', '-24 hours')",
-        )
-        .bind(&m.id)
-        .fetch_one(&state.db)
-        .await?;
-
-        let uptime_24h = if agg.total > 0 {
-            (agg.up_count as f64 / agg.total as f64) * 100.0
-        } else {
-            100.0
-        };
-
-        if uptime_24h < 100.0 && uptime_24h >= 90.0 {
-            any_degraded = true;
+        let uptime_24h = metrics.map(|b| b.uptime_24h).unwrap_or(100.0);
+        if !in_maintenance {
+            if current_status == "DEGRADED" || uptime_24h < 99.0 {
+                any_degraded = true;
+            }
         }
 
-        // Fetch 7-day daily uptime history.
-        let uptime_history = get_7day_uptime_history(&state.db, &m.id).await?;
-
-        // Fetch 24-hour hourly latency breakdown.
-        let latency_24h = get_24h_latency_history(&state.db, &m.id).await?;
-
-        // Fetch 24-hour response time percentiles (P50, P95, P99) and average.
-        let latency = crate::db::checks::get_latency_percentiles(&state.db, &m.id, 24).await?;
+        let uptime_history = metrics.map(|b| b.uptime_history.clone()).unwrap_or_default();
+        let latency_24h = metrics.map(|b| b.latency_24h.clone()).unwrap_or_default();
+        let latency = metrics
+            .map(|b| b.latency.clone())
+            .unwrap_or(crate::db::checks::LatencyPercentiles {
+                p50: 0,
+                p95: 0,
+                p99: 0,
+                avg: 0,
+            });
 
         let pub_m = PublicMonitor {
             id: m.id.clone(),
@@ -268,26 +293,56 @@ pub async fn get_public_status_impl(
         description,
         status,
         status_page_theme,
+        custom_logo_url: state.config.custom_logo_url.clone(),
         maintenance_windows,
+        incidents: Vec::new(),
         groups,
         monitors: public_monitors,
     })
 }
 
-/// `GET /api/public/status` — aggregated health for the default status page.
+/// `GET /api/public/status` — aggregated health for the default status page with 5s cache.
 pub async fn public_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<PublicStatus>, AppError> {
+    let cache_key = "default".to_string();
+    {
+        let cache = state.status_cache.read().await;
+        if let Some((inst, ref cached)) = cache.get(&cache_key) {
+            if inst.elapsed() < std::time::Duration::from_secs(5) {
+                return Ok(Json(cached.clone()));
+            }
+        }
+    }
+
     let status = get_public_status_impl(&state, "default").await?;
+    {
+        let mut cache = state.status_cache.write().await;
+        cache.insert(cache_key, (std::time::Instant::now(), status.clone()));
+    }
     Ok(Json(status))
 }
 
-/// `GET /api/public/status/:slug` — aggregated health for a custom status page.
+/// `GET /api/public/status/:slug` — aggregated health for a custom status page with 5s cache.
 pub async fn public_status_by_slug(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
 ) -> Result<Json<PublicStatus>, AppError> {
+    let cache_key = slug.to_lowercase();
+    {
+        let cache = state.status_cache.read().await;
+        if let Some((inst, ref cached)) = cache.get(&cache_key) {
+            if inst.elapsed() < std::time::Duration::from_secs(5) {
+                return Ok(Json(cached.clone()));
+            }
+        }
+    }
+
     let status = get_public_status_impl(&state, &slug).await?;
+    {
+        let mut cache = state.status_cache.write().await;
+        cache.insert(cache_key, (std::time::Instant::now(), status.clone()));
+    }
     Ok(Json(status))
 }
 
@@ -1481,5 +1536,236 @@ mod tests {
         let js_bytes = axum::body::to_bytes(js_res.into_body(), 1024 * 64).await.unwrap();
         let js_str = String::from_utf8_lossy(&js_bytes);
         assert!(js_str.contains("loadStatusData"));
+    }
+
+    #[tokio::test]
+    async fn test_default_status_page_respects_is_public_and_case_insensitivity() {
+        use tower::ServiceExt;
+
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let state = AppState::new_for_test(pool.clone(), config);
+
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "default",
+            "Private Default Page",
+            Some("Internal only"),
+            false,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let app = crate::api::router(state.clone()).with_state(state.clone());
+
+        for uri in ["/api/public/status", "/api/public/status/default", "/api/public/status/DEFAULT"] {
+            let req = axum::http::Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "expected 404 when default status page is_public=0 on {uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_default_status_page_hides_assigned_private_and_paused_without_fallback_leak() {
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let state = AppState::new_for_test(pool.clone(), config);
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES \
+             ('m-pub-unassigned', 'Public Unassigned', 'https://pub.example.com', 1, 1), \
+             ('m-priv-assigned', 'Private Assigned', 'https://priv.example.com', 0, 1), \
+             ('m-paused-assigned', 'Paused Assigned', 'https://paused.example.com', 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Assign ONLY private and paused monitors to "default"
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "default",
+            "System Status",
+            None,
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-priv-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 1,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-paused-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 2,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+
+        let status_empty = get_public_status_impl(&state, "default").await.unwrap();
+        assert!(
+            status_empty.monitors.is_empty(),
+            "when all explicitly assigned monitors on default are private/paused, must return [] instead of leaking them or falling back to unassigned monitors: got {:?}",
+            status_empty.monitors.iter().map(|m| &m.id).collect::<Vec<_>>()
+        );
+
+        // Now assign m-pub-unassigned alongside private & paused -> only m-pub-unassigned should be visible
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "default",
+            "System Status",
+            None,
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-pub-unassigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 1,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-priv-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 2,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-paused-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 3,
+                },
+            ]),
+        )
+        .await
+        .unwrap();
+
+        let status_filtered = get_public_status_impl(&state, "default").await.unwrap();
+        assert_eq!(status_filtered.monitors.len(), 1);
+        assert_eq!(status_filtered.monitors[0].id, "m-pub-unassigned");
+    }
+
+    #[tokio::test]
+    async fn test_public_status_banner_thresholds_and_scoped_maintenance() {
+        use chrono::Duration;
+
+        // Case A: Currently UP with 99.95% 24h uptime (1999 UP + 1 old DOWN) -> "All Systems Operational"
+        let pool_a = setup_test_pool().await;
+        let mut cfg_a = crate::config::Config::from_env();
+        cfg_a.custom_logo_url = Some("https://cdn.example.com/logo.svg".to_string());
+        let state_a = AppState::new_for_test(pool_a.clone(), cfg_a);
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES \
+             ('m-pub', 'Core API', 'https://api.example.com', 1, 1), \
+             ('m-priv', 'Secret DB', 'https://db.internal', 0, 1)",
+        )
+        .execute(&pool_a)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-pub', 0, 100, datetime('now', '-2 hours'))",
+        )
+        .execute(&pool_a)
+        .await
+        .unwrap();
+        for _ in 0..1999 {
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-pub', 1, 15, datetime('now', '-1 minute'))",
+            )
+            .execute(&pool_a)
+            .await
+            .unwrap();
+        }
+        // Latest check is UP
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-pub', 1, 12, datetime('now'))",
+        )
+        .execute(&pool_a)
+        .await
+        .unwrap();
+
+        // Schedule 1 upcoming window (+2 days, targeting m-pub + m-priv) and 1 far-future window (+20 days)
+        let now = chrono::Utc::now();
+        crate::db::maintenance::create_maintenance_window(
+            &pool_a,
+            crate::db::maintenance::CreateMaintenanceDto {
+                title: "Near Window".to_string(),
+                description: None,
+                start_time: (now + Duration::days(2)).to_rfc3339(),
+                end_time: (now + Duration::days(2) + Duration::hours(1)).to_rfc3339(),
+                monitor_ids: vec!["m-pub".to_string(), "m-priv".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+        crate::db::maintenance::create_maintenance_window(
+            &pool_a,
+            crate::db::maintenance::CreateMaintenanceDto {
+                title: "Far Future Window".to_string(),
+                description: None,
+                start_time: (now + Duration::days(20)).to_rfc3339(),
+                end_time: (now + Duration::days(20) + Duration::hours(2)).to_rfc3339(),
+                monitor_ids: vec!["m-pub".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+        let status_a = get_public_status_impl(&state_a, "default").await.unwrap();
+        assert_eq!(
+            status_a.status, "All Systems Operational",
+            "99.95% 24h uptime while currently UP must be All Systems Operational"
+        );
+        assert_eq!(
+            status_a.maintenance_windows.len(),
+            1,
+            "windows starting >7 days in the future must be excluded"
+        );
+        assert_eq!(
+            status_a.maintenance_windows[0].monitor_ids,
+            vec!["m-pub".to_string()],
+            "private monitor IDs must be filtered out of public maintenance_windows"
+        );
+
+        // Case B: Currently UP with 83.33% 24h uptime (5 UP + 1 old DOWN) -> Degraded / Partial Outage
+        let pool_b = setup_test_pool().await;
+        let state_b = AppState::new_for_test(pool_b.clone(), crate::config::Config::from_env());
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-deg', 'Flaky API', 'https://flaky.example.com', 1, 1)",
+        )
+        .execute(&pool_b)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-deg', 0, 500, datetime('now', '-1 hour'))",
+        )
+        .execute(&pool_b)
+        .await
+        .unwrap();
+        for _ in 0..5 {
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-deg', 1, 40, datetime('now'))",
+            )
+            .execute(&pool_b)
+            .await
+            .unwrap();
+        }
+
+        let status_b = get_public_status_impl(&state_b, "default").await.unwrap();
+        assert!(
+            status_b.status == "Degraded Performance" || status_b.status == "Partial System Outage",
+            "83.33% 24h uptime must render Degraded Performance or Partial System Outage, got {}",
+            status_b.status
+        );
     }
 }

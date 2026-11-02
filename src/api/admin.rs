@@ -27,10 +27,6 @@ pub async fn update_monitor(
 ) -> Result<Json<Monitor>, AppError> {
     payload.validate()?;
 
-    if let Some(ref channel_ids) = payload.channel_ids {
-        let _ = crate::db::notifications::set_monitor_channels(&state.db, &id, channel_ids).await;
-    }
-
     let updated = monitors::update_monitor(&state.db, &id, payload).await?;
 
     // Signal the background scheduler to re-arm the monitor interval immediately.
@@ -45,6 +41,8 @@ pub async fn update_monitor(
             "Dispatched reload signal for updated monitor"
         );
     }
+
+    state.invalidate_status_cache().await;
 
     Ok(Json(updated))
 }
@@ -97,6 +95,19 @@ pub struct MonitorDetailResponse {
     pub logs: Vec<DetailCheckLog>,
 }
 
+pub(crate) fn sanitize_public_error(err: &str) -> String {
+    if err == "MAINTENANCE" {
+        return "MAINTENANCE".to_string();
+    }
+    if let Some(pos) = err.find("status code: ") {
+        return format!("HTTP error: {}", &err[pos..]);
+    }
+    if err.contains("timed out") || err.contains("timeout") {
+        return "Request timed out".to_string();
+    }
+    "Check failed".to_string()
+}
+
 /// `GET /api/admin/monitors/:id/details`
 ///
 /// Fetches deep-dive diagnostic telemetry, SLA percentages, latency stats, and 50 recent check logs.
@@ -109,9 +120,8 @@ pub async fn get_monitor_details(
 ) -> Result<Json<MonitorDetailResponse>, AppError> {
     let monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
-    // If monitor is private (is_public == 0), require valid admin authentication
-    if monitor.is_public == 0 {
-        let ver = state.current_session_version();
+    let ver = state.current_session_version();
+    let is_authenticated = {
         let has_cookie_auth = jar
             .get(crate::api::auth::SESSION_COOKIE_NAME)
             .and_then(|c| {
@@ -126,21 +136,33 @@ pub async fn get_monitor_details(
             .and_then(|t| crate::api::auth::validate_jwt(t, &state.config.jwt_secret, ver).ok())
             .is_some();
 
-        if !has_cookie_auth && !has_bearer_auth {
-            return Err(AppError::Unauthorized(
-                "Authentication required to view private monitor details".to_string(),
-            ));
-        }
+        has_cookie_auth || has_bearer_auth
+    };
+
+    if !is_authenticated && (monitor.is_public == 0 || monitor.is_active == 0) {
+        return Err(AppError::NotFound(format!("Monitor {id} not found")));
     }
 
     let slas = checks::get_uptime_slas(&state.db, &id).await?;
     let latency = checks::get_latency_percentiles(&state.db, &id, 24).await?;
     let hourly_latency = monitors::get_24h_latency_history(&state.db, &id).await?;
-    let logs = checks::get_recent_check_logs(&state.db, &id, 50).await?;
+    let mut logs = checks::get_recent_check_logs(&state.db, &id, 50).await?;
 
-    let channel_ids = crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id)
-        .await
-        .unwrap_or_default();
+    if !is_authenticated {
+        for log in &mut logs {
+            if let Some(ref err) = log.error_message {
+                log.error_message = Some(sanitize_public_error(err));
+            }
+        }
+    }
+
+    let channel_ids = if is_authenticated {
+        crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let info = MonitorDetailInfo {
         id: monitor.id.clone(),
@@ -973,14 +995,14 @@ mod tests {
             .unwrap();
         }
 
-        // 1. Unauthenticated request to private monitor details should return 401
+        // 1. Unauthenticated request to private monitor details should return 404 (prevents oracle)
         let req = Request::builder()
             .method("GET")
             .uri("/api/admin/monitors/mon-priv/details")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
         // 2. Unauthenticated request to public monitor details should succeed (200 OK)
         let req = Request::builder()
@@ -1452,5 +1474,98 @@ mod tests {
         // Allow parallel Tokio worker task to execute
         tokio::time::sleep(tokio::time::Duration::from_millis(100)).await;
         assert!(hit_counter.load(Ordering::SeqCst) > initial_hits);
+    }
+
+    #[tokio::test]
+    async fn test_unauthenticated_monitor_details_prevents_oracle_hides_channels_sanitizes_errors_and_includes_tls_days() {
+        let (app, state) = setup_test_app().await;
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES \
+             ('mon-priv', 'Private DB', 'https://db.internal', 0, 1), \
+             ('mon-paused', 'Paused API', 'https://paused.example.com', 1, 0), \
+             ('mon-pub', 'Public API', 'https://pub.example.com', 1, 1)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let chan = crate::db::notifications::create_channel(
+            &state.db,
+            crate::db::notifications::NotificationChannel {
+                id: "chan-sec-1".to_string(),
+                name: "Sec Hook".to_string(),
+                channel_type: "webhook".to_string(),
+                url: "https://hooks.example.com/secret".to_string(),
+                is_default: false,
+                is_enabled: true,
+                use_default_template: true,
+                notify_on_resolve: true,
+                custom_template: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+            },
+        )
+        .await
+        .unwrap();
+        crate::db::notifications::set_monitor_channels(
+            &state.db,
+            "mon-pub",
+            &[chan.id.clone()],
+        )
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, error_msg, ssl_days_remaining, domain_days_remaining, checked_at) \
+             VALUES ('mon-pub', 502, 85, 0, 'dial tcp 10.24.0.9:8080: connection refused', 62, 180, datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // 1. Private monitor returns 404 (not 401) to unauthenticated callers
+        let req_priv = Request::builder()
+            .method("GET")
+            .uri("/api/admin/monitors/mon-priv/details")
+            .body(Body::empty())
+            .unwrap();
+        let res_priv = app.clone().oneshot(req_priv).await.unwrap();
+        assert_eq!(res_priv.status(), StatusCode::NOT_FOUND);
+
+        // 2. Paused monitor returns 404 to unauthenticated callers
+        let req_paused = Request::builder()
+            .method("GET")
+            .uri("/api/admin/monitors/mon-paused/details")
+            .body(Body::empty())
+            .unwrap();
+        let res_paused = app.clone().oneshot(req_paused).await.unwrap();
+        assert_eq!(res_paused.status(), StatusCode::NOT_FOUND);
+
+        // 3. Public active monitor returns 200 with empty channel_ids, sanitized error_message, and populated tls_days_remaining
+        let req_pub = Request::builder()
+            .method("GET")
+            .uri("/api/admin/monitors/mon-pub/details")
+            .body(Body::empty())
+            .unwrap();
+        let res_pub = app.clone().oneshot(req_pub).await.unwrap();
+        assert_eq!(res_pub.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res_pub.into_body(), 1024 * 32).await.unwrap();
+        let details: MonitorDetailResponse = serde_json::from_slice(&body).unwrap();
+
+        assert!(
+            details.monitor.channel_ids.is_empty(),
+            "unauthenticated details response must not leak channel_ids"
+        );
+        assert_eq!(details.logs.len(), 1);
+        assert_eq!(
+            details.logs[0].tls_days_remaining,
+            Some(62),
+            "tls_days_remaining must be populated from ssl_days_remaining"
+        );
+        let err_msg = details.logs[0].error_message.as_deref().unwrap_or("");
+        assert!(
+            !err_msg.contains("10.24.0.9"),
+            "unauthenticated details response must sanitize internal error_message, got: {err_msg}"
+        );
     }
 }
