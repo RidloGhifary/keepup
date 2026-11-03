@@ -2689,10 +2689,12 @@ function toggleNavDropdown(e) {
   const isHidden = menu.classList.contains('hidden');
   if (isHidden) {
     menu.classList.remove('hidden');
+    menu.classList.add('is-open');
     if (btn) btn.setAttribute('aria-expanded', 'true');
     if (caret) caret.classList.add('rotate-180');
   } else {
     menu.classList.add('hidden');
+    menu.classList.remove('is-open');
     if (btn) btn.setAttribute('aria-expanded', 'false');
     if (caret) caret.classList.remove('rotate-180');
   }
@@ -2704,6 +2706,7 @@ function closeNavDropdown() {
   const caret = document.getElementById('nav-dropdown-caret');
   if (menu && !menu.classList.contains('hidden')) {
     menu.classList.add('hidden');
+    menu.classList.remove('is-open');
     if (btn) btn.setAttribute('aria-expanded', 'false');
     if (caret) caret.classList.remove('rotate-180');
   }
@@ -2731,6 +2734,55 @@ document.addEventListener('DOMContentLoaded', () => {
       closeNavDropdown();
     }
   });
+
+  const navContainer = document.getElementById('nav-dropdown-container');
+  if (navContainer) {
+    navContainer.addEventListener('keydown', (e) => {
+      const menu = document.getElementById('nav-dropdown-menu');
+      const btn = document.getElementById('nav-dropdown-btn');
+      if (!menu) return;
+      const isOpen = !menu.classList.contains('hidden');
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+
+      if (e.key === 'Escape') {
+        if (isOpen) {
+          e.preventDefault();
+          closeNavDropdown();
+          if (btn) btn.focus();
+        }
+        return;
+      }
+
+      if (!isOpen && (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        toggleNavDropdown(e);
+        items[0]?.focus();
+        return;
+      }
+
+      if (isOpen) {
+        const currentIndex = items.indexOf(document.activeElement);
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          const nextIndex = (currentIndex + 1) % items.length;
+          items[nextIndex]?.focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          const prevIndex = (currentIndex - 1 + items.length) % items.length;
+          items[prevIndex]?.focus();
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          items[0]?.focus();
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          items[items.length - 1]?.focus();
+        } else if (e.key === 'Tab') {
+          closeNavDropdown();
+        }
+      }
+    });
+  }
   const badgeBackdrop = document.getElementById('badge-modal');
   if (badgeBackdrop) {
     badgeBackdrop.addEventListener('click', (e) => {
@@ -2787,7 +2839,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      const menu = document.getElementById('nav-dropdown-menu');
+      const btn = document.getElementById('nav-dropdown-btn');
+      const wasMenuOpen = menu && !menu.classList.contains('hidden');
       closeNavDropdown();
+      if (wasMenuOpen && btn) {
+        btn.focus();
+      }
       const channelModal = document.getElementById('channel-modal');
       if (channelModal && !channelModal.classList.contains('hidden')) {
         closeChannelModal();

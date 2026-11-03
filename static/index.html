@@ -824,6 +824,169 @@
     @media (max-width: 759px) {
       #modal-card .body { grid-template-columns: 1fr; }
     }
+
+    /* ── Admin Dropdown (Mockup Precise Styles) ───────────────────────── */
+    .nav-dropdown-container {
+      position: relative;
+      display: inline-block;
+    }
+
+    .admin-btn {
+      height: 34px !important;
+      padding: 0 12px !important;
+      border-radius: 10px !important;
+      background: #18181a !important;
+      border: 1px solid #2a2a2d !important;
+      color: #f2f2f3 !important;
+      font-size: 13px !important;
+      font-weight: 500 !important;
+      display: inline-flex !important;
+      align-items: center !important;
+      gap: 8px !important;
+      cursor: pointer !important;
+      user-select: none !important;
+      transition: background 0.15s, border-color 0.15s, color 0.15s !important;
+    }
+    .admin-btn:hover {
+      background: #222225 !important;
+      border-color: #38383c !important;
+    }
+    .admin-btn:focus-visible {
+      outline: 2px solid rgba(132, 204, 110, 0.5) !important;
+      outline-offset: 2px !important;
+    }
+
+    .status-dot {
+      width: 7px;
+      height: 7px;
+      border-radius: 50%;
+      background: #84cc6e;
+      box-shadow: 0 0 8px rgba(132, 204, 110, 0.6);
+      flex-shrink: 0;
+    }
+
+    .admin-caret {
+      width: 14px !important;
+      height: 14px !important;
+      color: #8b8b90 !important;
+      transition: transform 0.2s cubic-bezier(0.16, 1, 0.3, 1) !important;
+      flex-shrink: 0;
+    }
+    .admin-btn[aria-expanded="true"] .admin-caret,
+    .admin-caret.rotate-180 {
+      transform: rotate(180deg) !important;
+    }
+
+    .dropdown-menu {
+      position: absolute !important;
+      right: 0 !important;
+      top: calc(100% + 8px) !important;
+      width: max-content !important;
+      min-width: 230px !important;
+      max-width: calc(100vw - 32px) !important;
+      background: #161617 !important;
+      border: 1px solid #2a2a2d !important;
+      border-radius: 14px !important;
+      padding: 6px !important;
+      box-shadow: 0 12px 32px rgba(0, 0, 0, 0.5) !important;
+      z-index: 9999 !important;
+      display: flex !important;
+      flex-direction: column !important;
+      opacity: 0;
+      transform: translateY(-6px) scale(0.98);
+      pointer-events: none;
+      transition: opacity 0.15s ease, transform 0.15s cubic-bezier(0.16, 1, 0.3, 1) !important;
+    }
+
+    .dropdown-menu.is-open:not(.hidden),
+    .dropdown-menu:not(.hidden) {
+      opacity: 1 !important;
+      transform: translateY(0) scale(1) !important;
+      pointer-events: auto !important;
+    }
+
+    .dropdown-item {
+      display: flex !important;
+      align-items: center !important;
+      gap: 12px !important;
+      padding: 10px 12px !important;
+      border-radius: 9px !important;
+      color: #f2f2f3 !important;
+      font-size: 13px !important;
+      font-weight: 500 !important;
+      text-decoration: none !important;
+      white-space: nowrap !important;
+      background: transparent !important;
+      border: none !important;
+      width: 100% !important;
+      text-align: left !important;
+      cursor: pointer !important;
+      font-family: inherit !important;
+      outline: none !important;
+      transition: background 0.12s ease, color 0.12s ease !important;
+      box-sizing: border-box !important;
+      margin: 0 !important;
+    }
+
+    .dropdown-item svg {
+      width: 16px !important;
+      height: 16px !important;
+      flex: none !important;
+      stroke: currentColor !important;
+      color: #8b8b90 !important;
+      transition: color 0.12s ease !important;
+    }
+
+    .dropdown-item:hover,
+    .dropdown-item:focus-visible {
+      background: #222225 !important;
+      color: #ffffff !important;
+    }
+    .dropdown-item:hover svg,
+    .dropdown-item:focus-visible svg {
+      color: #f2f2f3 !important;
+    }
+    .dropdown-item:focus-visible {
+      box-shadow: inset 0 0 0 1.5px rgba(132, 204, 110, 0.45) !important;
+    }
+
+    label.dropdown-item {
+      margin-bottom: 0 !important;
+    }
+
+    .dropdown-divider {
+      height: 1px !important;
+      background: #2a2a2d !important;
+      margin: 6px 0 !important;
+      border: none !important;
+      padding: 0 !important;
+    }
+
+    .dropdown-item.is-danger {
+      color: #f0707a !important;
+    }
+    .dropdown-item.is-danger svg {
+      color: #f0707a !important;
+    }
+    .dropdown-item.is-danger:hover,
+    .dropdown-item.is-danger:focus-visible {
+      background: rgba(240, 112, 122, 0.12) !important;
+      color: #ff8e96 !important;
+    }
+    .dropdown-item.is-danger:hover svg,
+    .dropdown-item.is-danger:focus-visible svg {
+      color: #ff8e96 !important;
+    }
+    .dropdown-item.is-danger:focus-visible {
+      box-shadow: inset 0 0 0 1.5px rgba(240, 112, 122, 0.5) !important;
+    }
+
+    @media (prefers-reduced-motion: reduce) {
+      .dropdown-menu,
+      .admin-caret {
+        transition: none !important;
+      }
+    }
   </style>
 </head>
 <body class="min-h-screen antialiased flex flex-col font-sans selection:bg-[#0a84ff]/30 selection:text-white">
@@ -934,59 +1097,80 @@
         </button>
 
         <!-- Consolidated Dropdown Menu: Public Page, Export, Import, Change Password, Logout -->
-        <div class="relative" id="nav-dropdown-container">
-          <button id="nav-dropdown-btn" type="button" onclick="toggleNavDropdown(event)" class="h-8 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 hover:text-white border border-white/10 transition flex items-center gap-1.5 text-xs font-medium cursor-pointer" aria-expanded="false" aria-haspopup="true" title="Settings & Account">
-            <span class="w-2 h-2 rounded-full bg-[#30d158] shrink-0"></span>
-            <span id="nav-user-label" class="hidden sm:inline">Admin</span>
-            <svg class="w-3 h-3 text-white/40 transition-transform duration-200 shrink-0" id="nav-dropdown-caret" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+        <div class="nav-dropdown-container" id="nav-dropdown-container">
+          <button 
+            id="nav-dropdown-btn" 
+            type="button" 
+            onclick="toggleNavDropdown(event)" 
+            class="admin-btn"
+            aria-haspopup="menu" 
+            aria-expanded="false" 
+            aria-controls="nav-dropdown-menu" 
+            aria-label="User Account and Settings Menu"
+            title="Settings & Account"
+          >
+            <span class="status-dot" aria-hidden="true"></span>
+            <span id="nav-user-label" class="admin-name">Admin</span>
+            <svg class="admin-caret" id="nav-dropdown-caret" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2.5" stroke-linecap="round" stroke-linejoin="round">
+              <path d="M6 9l6 6 6-6"/>
             </svg>
           </button>
 
-          <div id="nav-dropdown-menu" class="hidden absolute right-0 mt-2 w-56 rounded-xl bg-zinc-950/95 backdrop-blur-xl border border-white/10 shadow-2xl py-1 z-50 text-xs">
-            <!-- Open Public Status Page -->
-            <a href="/status" target="_blank" rel="noopener noreferrer" onclick="closeNavDropdown()" class="flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition">
-              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+          <div 
+            id="nav-dropdown-menu" 
+            class="dropdown-menu hidden" 
+            role="menu"
+            aria-labelledby="nav-dropdown-btn"
+          >
+            <!-- 1. Public Status Page -->
+            <a href="/status" target="_blank" rel="noopener noreferrer" onclick="closeNavDropdown()" class="dropdown-item" role="menuitem" tabindex="0">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M18 13v6a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2V8a2 2 0 0 1 2-2h6"></path>
+                <polyline points="15 3 21 3 21 9"></polyline>
+                <line x1="10" y1="14" x2="21" y2="3"></line>
               </svg>
               <span>Public Status Page</span>
             </a>
 
-            <div class="h-px bg-white/10 my-1"></div>
-
-            <!-- Export Config (JSON) -->
-            <button type="button" id="btn-export-json" onclick="closeNavDropdown(); exportConfigJson()" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer">
-              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+            <!-- 2. Export Config (JSON) -->
+            <button type="button" id="btn-export-json" onclick="closeNavDropdown(); exportConfigJson()" class="dropdown-item" role="menuitem" tabindex="0">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="7 10 12 15 17 10"></polyline>
+                <line x1="12" y1="15" x2="12" y2="3"></line>
               </svg>
               <span>Export Config (JSON)</span>
             </button>
 
-            <!-- Import Config (JSON) -->
-            <label for="import-file-input" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer">
-              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12"/>
+            <!-- 3. Import Config (JSON) -->
+            <label for="import-file-input" class="dropdown-item" role="menuitem" tabindex="0">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M21 15v4a2 2 0 0 1-2 2H5a2 2 0 0 1-2-2v-4"></path>
+                <polyline points="17 8 12 3 7 8"></polyline>
+                <line x1="12" y1="3" x2="12" y2="15"></line>
               </svg>
               <span>Import Config (JSON)</span>
-              <input type="file" id="import-file-input" accept=".json,application/json" class="hidden" onchange="closeNavDropdown(); importConfigJson(this)" />
+              <input type="file" id="import-file-input" accept=".json,application/json" class="hidden" style="display:none;" onchange="closeNavDropdown(); importConfigJson(this)" />
             </label>
 
-            <div class="h-px bg-white/10 my-1"></div>
-
-            <!-- Change Password -->
-            <button type="button" data-action="open-password-modal" onclick="closeNavDropdown(); openPasswordModal()" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer">
-              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+            <!-- 4. Change Password -->
+            <button type="button" data-action="open-password-modal" onclick="closeNavDropdown(); openPasswordModal()" class="dropdown-item" role="menuitem" tabindex="0">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <rect x="3" y="11" width="18" height="11" rx="2" ry="2"></rect>
+                <path d="M7 11V7a5 5 0 0 1 10 0v4"></path>
               </svg>
               <span>Change Password</span>
             </button>
 
-            <div class="h-px bg-white/10 my-1"></div>
+            <!-- Divider -->
+            <div class="dropdown-divider" role="separator" aria-hidden="true"></div>
 
-            <!-- Log Out -->
-            <button type="button" onclick="closeNavDropdown(); handleLogout()" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition cursor-pointer">
-              <svg class="w-4 h-4 text-rose-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+            <!-- 5. Log Out -->
+            <button type="button" onclick="closeNavDropdown(); handleLogout()" class="dropdown-item is-danger" role="menuitem" tabindex="0">
+              <svg viewBox="0 0 24 24" fill="none" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+                <path d="M9 21H5a2 2 0 0 1-2-2V5a2 2 0 0 1 2-2h4"></path>
+                <polyline points="16 17 21 12 16 7"></polyline>
+                <line x1="21" y1="12" x2="9" y2="12"></line>
               </svg>
               <span>Log Out</span>
             </button>
