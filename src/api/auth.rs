@@ -110,22 +110,20 @@ pub async fn bootstrap_security_state(
         }
     }
 
-    // 2. Bootstrap a strong random admin password on first startup if ADMIN_PASSWORD was unset or 'admin'
-    if !config.admin_password_from_env {
-        let existing_pw: Option<(String,)> =
-            sqlx::query_as("SELECT value FROM app_config WHERE key = 'admin_password'")
-                .fetch_optional(pool)
-                .await?;
-        if existing_pw.is_none() {
-            const ALPHABET: &[u8] =
-                b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
-            let mut raw = [0u8; 20];
-            OsRng.fill_bytes(&mut raw);
-            let generated: String = raw
-                .iter()
-                .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
-                .collect();
-            let hashed = hash_password(&generated);
+    // 2. Bootstrap or synchronize admin password
+    let existing_pw: Option<(String,)> =
+        sqlx::query_as("SELECT value FROM app_config WHERE key = 'admin_password'")
+            .fetch_optional(pool)
+            .await?;
+
+    if config.admin_password_from_env {
+        // When ADMIN_PASSWORD is explicitly set via environment, ensure app_config stays in sync
+        let needs_sync = match &existing_pw {
+            Some((stored,)) => !verify_password(&config.admin_password, stored),
+            None => true,
+        };
+        if needs_sync {
+            let hashed = hash_password(&config.admin_password);
             sqlx::query(
                 "INSERT INTO app_config (key, value) VALUES ('admin_password', $1) \
                  ON CONFLICT(key) DO UPDATE SET value = excluded.value",
@@ -133,13 +131,30 @@ pub async fn bootstrap_security_state(
             .bind(&hashed)
             .execute(pool)
             .await?;
-            config.admin_password = generated.clone();
-            warn!(
-                user = %config.admin_user,
-                bootstrap_password = %generated,
-                "ADMIN_PASSWORD was not configured; generated one-time random admin password (change it in Settings or set ADMIN_PASSWORD)"
-            );
         }
+    } else if existing_pw.is_none() {
+        const ALPHABET: &[u8] =
+            b"ABCDEFGHJKLMNPQRSTUVWXYZabcdefghijkmnopqrstuvwxyz23456789";
+        let mut raw = [0u8; 20];
+        OsRng.fill_bytes(&mut raw);
+        let generated: String = raw
+            .iter()
+            .map(|b| ALPHABET[(*b as usize) % ALPHABET.len()] as char)
+            .collect();
+        let hashed = hash_password(&generated);
+        sqlx::query(
+            "INSERT INTO app_config (key, value) VALUES ('admin_password', $1) \
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        )
+        .bind(&hashed)
+        .execute(pool)
+        .await?;
+        config.admin_password = generated.clone();
+        warn!(
+            user = %config.admin_user,
+            bootstrap_password = %generated,
+            "ADMIN_PASSWORD was not configured; generated one-time random admin password (change it in Settings or set ADMIN_PASSWORD)"
+        );
     }
 
     // 3. Load or initialize monotonic session_version
@@ -543,6 +558,16 @@ mod tests {
         assert_eq!(cfg2.jwt_secret, persisted_secret);
         let stored_hash_after = get_active_admin_password(&pool, "admin").await;
         assert_eq!(stored_hash_after, stored_hash);
+
+        // Third boot with explicit ADMIN_PASSWORD from env updates stored hash
+        let mut cfg3 = Config::from_env();
+        cfg3.jwt_secret_from_env = false;
+        cfg3.admin_password = "env_specified_password_123".to_string();
+        cfg3.admin_password_from_env = true;
+        let ver3 = bootstrap_security_state(&pool, &mut cfg3).await.unwrap();
+        assert_eq!(ver3, 1);
+        let stored_hash_env = get_active_admin_password(&pool, "admin").await;
+        assert!(verify_password("env_specified_password_123", &stored_hash_env));
     }
 
     #[tokio::test]
