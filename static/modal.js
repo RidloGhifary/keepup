@@ -514,7 +514,7 @@ async function handleMonitorSubmit(e) {
   }
   const id = document.getElementById('edit-monitor-id')?.value || '';
   const submitBtn = document.getElementById('save-monitor-btn');
-  const originalText = id ? 'Save Changes' : 'Create Target';
+  const originalText = id ? 'Save Changes' : 'Create Monitor';
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.innerText = id ? 'Saving...' : 'Creating...';
