@@ -168,7 +168,11 @@ pub async fn get_monitor_details(
         id: monitor.id.clone(),
         name: monitor.name.clone(),
         url: monitor.url.clone(),
-        method: "GET".to_string(),
+        method: if monitor.http_method.is_empty() {
+            "GET".to_string()
+        } else {
+            monitor.http_method.clone()
+        },
         status: monitor.last_status.clone(),
         is_active: monitor.is_active == 1,
         is_public: monitor.is_public == 1,
@@ -213,6 +217,12 @@ pub async fn ping_monitor(
     let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(&state.db, &monitor.id)
         .await
         .unwrap_or(false);
+
+    if monitor.url.starts_with("push://") {
+        return Err(AppError::BadRequest(
+            "Push heartbeat monitors cannot be probed outbound via manual ping".to_string(),
+        ));
+    }
 
     let result = if monitor.url.starts_with("tcp://") {
         crate::checker::tcp::ping_tcp(

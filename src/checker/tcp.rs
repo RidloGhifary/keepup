@@ -5,19 +5,35 @@ use crate::checker::http::CheckResult;
 /// Probe a TCP target (`tcp://host:port`) by checking whether a TCP connection can be established.
 pub async fn ping_tcp(url: &str, timeout_secs: u64, allow_private: bool) -> CheckResult {
     let raw = url.strip_prefix("tcp://").unwrap_or(url);
-    let parts: Vec<&str> = raw.split(':').collect();
-    if parts.len() != 2 {
-        return CheckResult {
-            status_code: None,
-            latency_ms: 0,
-            is_up: false,
-            is_degraded: false,
-            error_msg: Some("Invalid TCP target: format must be tcp://host:port".to_string()),
-        };
-    }
+    let (host, port_str) = if let Some(rest) = raw.strip_prefix('[') {
+        match rest.split_once(']') {
+            Some((h, p)) => (h, p.strip_prefix(':').unwrap_or("")),
+            None => {
+                return CheckResult {
+                    status_code: None,
+                    latency_ms: 0,
+                    is_up: false,
+                    is_degraded: false,
+                    error_msg: Some("Invalid bracketed IPv6 TCP target".to_string()),
+                };
+            }
+        }
+    } else {
+        match raw.rsplit_once(':') {
+            Some((h, p)) => (h, p),
+            None => {
+                return CheckResult {
+                    status_code: None,
+                    latency_ms: 0,
+                    is_up: false,
+                    is_degraded: false,
+                    error_msg: Some("Invalid TCP target: format must be tcp://host:port".to_string()),
+                };
+            }
+        }
+    };
 
-    let host = parts[0];
-    let port: u16 = match parts[1].parse() {
+    let port: u16 = match port_str.parse() {
         Ok(p) => p,
         Err(_) => {
             return CheckResult {
@@ -107,5 +123,14 @@ mod tests {
         // Test closed port
         let closed_res = ping_tcp("tcp://127.0.0.1:1", 1, true).await;
         assert!(!closed_res.is_up, "Closed TCP port must fail");
+
+        // Test bracketed IPv6 parsing
+        let res_v6 = ping_tcp("tcp://[::1]:9999", 1, false).await;
+        assert!(!res_v6.is_up);
+        let err_v6 = res_v6.error_msg.unwrap().to_lowercase();
+        assert!(
+            err_v6.contains("blocked") || err_v6.contains("private"),
+            "Loopback IPv6 without allow_private must be blocked by net_guard, not fail format"
+        );
     }
 }

@@ -74,7 +74,12 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
     }
 
     if let Some(ref err) = payload.error_msg {
-        fields.push(json!({ "name": "Error Details", "value": err, "inline": false }));
+        let safe_err = if err.len() > 1000 {
+            &err[..1000]
+        } else {
+            err.as_str()
+        };
+        fields.push(json!({ "name": "Error Details", "value": safe_err, "inline": false }));
     }
 
     json!({

@@ -146,8 +146,16 @@ fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/dashboard", get(observability::dashboard_batch_handler))
         .route("/admin/export", get(observability::export_handler))
         .route("/export", get(observability::export_handler))
-        .route("/admin/import", post(observability::import_handler))
-        .route("/import", post(observability::import_handler))
+        .route(
+            "/admin/import",
+            post(observability::import_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
+        .route(
+            "/import",
+            post(observability::import_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
         .route("/admin/events", get(observability::events_sse_handler))
         .route("/events", get(observability::events_sse_handler))
         .route(

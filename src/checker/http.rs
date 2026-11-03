@@ -143,7 +143,7 @@ pub async fn ping_http_with_config(client: &Client, config: &HttpProbeConfig<'_>
                 }
 
                 if let Some(pointer) = config.json_pointer {
-                    let parsed: serde_json::Value = match serde_json::from_str(&body_str) {
+                    let parsed: serde_json::Value = match serde_json::from_slice(&bytes) {
                         Ok(v) => v,
                         Err(e) => {
                             return CheckResult {

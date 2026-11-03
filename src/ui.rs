@@ -36,6 +36,11 @@ pub async fn status_page_handler(
     }
 
     if !sub.is_empty() {
+        // Disallow serving administrative HTML templates through public /status/* path
+        if sub.ends_with(".html") && sub != "status.html" {
+            return StatusCode::NOT_FOUND.into_response();
+        }
+
         if let Some(file) = Assets::get(sub) {
             let mime_type = guess_mime(sub);
             return Response::builder()
@@ -276,6 +281,28 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
+    }
+
+    #[tokio::test]
+    async fn test_status_path_does_not_leak_admin_html() {
+        let (app, _state) = build_ui_app().await;
+        for path in ["/status/index.html", "/status/modal.html", "/status/login.html"] {
+            let res = app
+                .clone()
+                .oneshot(
+                    Request::builder()
+                        .uri(path)
+                        .body(Body::empty())
+                        .unwrap(),
+                )
+                .await
+                .unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "{path} must return 404 through public status route"
+            );
+        }
     }
 
     #[test]

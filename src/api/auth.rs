@@ -297,7 +297,16 @@ pub fn verify_same_origin_for_cookie(
         .map(str::trim)
         .unwrap_or("");
 
-    if !host.is_empty() && origin_host.eq_ignore_ascii_case(host) {
+    let forwarded_host = headers
+        .get("x-forwarded-host")
+        .and_then(|h| h.to_str().ok())
+        .map(str::trim)
+        .unwrap_or("");
+
+    let matches_host = !host.is_empty() && origin_host.eq_ignore_ascii_case(host);
+    let matches_forwarded = !forwarded_host.is_empty() && origin_host.eq_ignore_ascii_case(forwarded_host);
+
+    if matches_host || matches_forwarded {
         Ok(())
     } else {
         Err(AppError::Forbidden(
@@ -391,10 +400,18 @@ pub async fn logout(
 pub async fn me(
     State(state): State<Arc<AppState>>,
     jar: CookieJar,
+    headers: HeaderMap,
 ) -> Result<Json<Value>, AppError> {
     let token = jar
         .get(SESSION_COOKIE_NAME)
         .map(|c| c.value().to_string())
+        .or_else(|| {
+            headers
+                .get(header::AUTHORIZATION)
+                .and_then(|v| v.to_str().ok())
+                .and_then(|h| h.strip_prefix("Bearer ").or_else(|| h.strip_prefix("bearer ")))
+                .map(|s| s.trim().to_string())
+        })
         .ok_or_else(|| AppError::Unauthorized("Not authenticated".to_string()))?;
 
     let claims = validate_jwt(

@@ -143,6 +143,28 @@ pub async fn push_handler(
             })
             .to_string(),
         );
+
+        // Dispatch alert notifications to configured channels
+        let alert_payload = crate::alerting::AlertPayload {
+            monitor_id: Some(monitor.id.clone()),
+            monitor_name: monitor.name.clone(),
+            monitor_url: monitor.url.clone(),
+            new_status: new_status.clone(),
+            old_status: old_status.clone(),
+            http_status: Some(status_code as u16),
+            response_time_ms: Some(latency_ms as u64),
+            error_msg: error_msg.clone(),
+            downtime_duration: None,
+            downtime_duration_secs: None,
+            timestamp: now_str.clone(),
+            domain_days_remaining: None,
+            domain_expires_at: None,
+        };
+        let pool = state.db.clone();
+        let client = state.http_client.clone();
+        tokio::spawn(async move {
+            crate::alerting::dispatch_alerts(&pool, &client, &alert_payload).await;
+        });
     }
 
     // Broadcast check completed
