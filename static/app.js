@@ -2731,6 +2731,16 @@ document.addEventListener('DOMContentLoaded', () => {
       closeNavDropdown();
     }
   });
+
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const menu = document.getElementById('nav-dropdown-menu');
+      if (menu && !menu.classList.contains('hidden')) {
+        closeNavDropdown();
+        document.getElementById('nav-dropdown-btn')?.focus();
+      }
+    }
+  });
   const badgeBackdrop = document.getElementById('badge-modal');
   if (badgeBackdrop) {
     badgeBackdrop.addEventListener('click', (e) => {

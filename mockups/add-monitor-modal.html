@@ -1,0 +1,567 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Add New Monitor</title>
+<style>
+  :root {
+    --bg: #0c0c0d;
+    --panel: #161617;
+    --field: #101011;
+    --border: #2a2a2d;
+    --sep: #232326;
+    --text: #f2f2f3;
+    --dim: #8b8b90;
+    --ph: #5f5f65;
+    --green: #84cc6e;
+    --blue: #5b7cf0;
+    --off: #3a3a3e;
+    --sans: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+    --mono: "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body { background: var(--bg); }
+
+  body {
+    min-height: 100vh;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    padding: 16px;
+    font-family: var(--sans);
+    color: var(--text);
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* ── Modal shell ─────────────────────────────── */
+  .modal {
+    position: relative;
+    width: 100%;
+    max-width: 896px;
+    background: var(--panel);
+    border: 1px solid var(--border);
+    border-radius: 22px;
+    overflow: hidden;
+  }
+
+  .header {
+    padding: 24px 80px 20px 24px;
+    border-bottom: 1px solid var(--sep);
+  }
+  .title {
+    font-size: 17px;
+    font-weight: 600;
+    line-height: 1.3;
+    letter-spacing: -0.01em;
+  }
+  .subtitle {
+    font-size: 12px;
+    color: var(--dim);
+    margin-top: 6px;
+  }
+  .close {
+    position: absolute;
+    top: 22px;
+    right: 22px;
+    width: 34px;
+    height: 34px;
+    border-radius: 10px;
+    border: 1px solid var(--border);
+    background: var(--field);
+    color: var(--text);
+    display: grid;
+    place-items: center;
+    cursor: pointer;
+    transition: background .15s;
+  }
+  .close:hover { background: #1d1d1f; }
+
+  .body {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 26px;
+    padding: 28px 24px 24px;
+    align-items: start;
+  }
+
+  /* ── Section titles ──────────────────────────── */
+  .section-title {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    padding-bottom: 10px;
+    margin-bottom: 22px;
+    border-bottom: 1px solid var(--sep);
+    font-family: var(--mono);
+    font-size: 11px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+  }
+  .section-title::before {
+    content: "";
+    width: 4px;
+    height: 12px;
+    border-radius: 2px;
+    background: var(--green);
+  }
+  .section-title.blue::before { background: var(--blue); }
+
+  /* ── Fields ──────────────────────────────────── */
+  .field { margin-bottom: 20px; }
+  .label {
+    display: block;
+    font-size: 13px;
+    font-weight: 600;
+    margin-bottom: 9px;
+  }
+  .label-row {
+    display: flex;
+    justify-content: space-between;
+    align-items: baseline;
+    margin-bottom: 9px;
+  }
+  .label-row .label { margin-bottom: 0; }
+  .tag {
+    font-family: var(--mono);
+    font-size: 10px;
+    color: var(--dim);
+    letter-spacing: 0.06em;
+  }
+
+  .input {
+    width: 100%;
+    height: 40px;
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: 0 14px;
+    color: var(--text);
+    font-family: var(--sans);
+    font-size: 14px;
+    outline: none;
+    transition: border-color .15s, box-shadow .15s;
+  }
+  .input::placeholder { color: var(--ph); }
+  .input:focus {
+    border-color: rgba(132, 204, 110, .6);
+    box-shadow: 0 0 0 3px rgba(132, 204, 110, .15);
+  }
+  .mono { font-family: var(--mono); font-size: 13px; }
+
+  textarea.input {
+    display: block;
+    height: auto;
+    min-height: 50px;
+    padding: 9px 14px;
+    line-height: 1.45;
+    resize: vertical;
+  }
+
+  select.input {
+    appearance: none;
+    -webkit-appearance: none;
+    padding-right: 36px;
+    cursor: pointer;
+    background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23f2f2f3' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E");
+    background-repeat: no-repeat;
+    background-position: right 14px center;
+  }
+
+  .hint {
+    font-size: 11px;
+    color: var(--dim);
+    margin-top: 9px;
+    line-height: 1.4;
+  }
+
+  .grid-3 {
+    display: grid;
+    grid-template-columns: repeat(3, 1fr);
+    gap: 14px;
+    margin-bottom: 16px;
+  }
+  .grid-2 {
+    display: grid;
+    grid-template-columns: 1fr 1fr;
+    gap: 12px;
+  }
+  .grid-3 .field, .grid-2 .field { margin-bottom: 0; }
+
+  /* ── Number stepper ──────────────────────────── */
+  input[type=number] { -moz-appearance: textfield; }
+  input[type=number]::-webkit-inner-spin-button,
+  input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+  .num { position: relative; }
+  .num .input { padding-right: 34px; }
+  .stepper {
+    position: absolute;
+    right: 9px;
+    top: 50%;
+    transform: translateY(-50%);
+    width: 15px;
+    height: 18px;
+    border-radius: 4px;
+    background: var(--border);
+    display: flex;
+    flex-direction: column;
+    overflow: hidden;
+  }
+  .stepper button {
+    flex: 1;
+    border: 0;
+    padding: 0;
+    background: transparent;
+    color: #c9c9cd;
+    cursor: pointer;
+    display: grid;
+    place-items: center;
+  }
+  .stepper button:hover { background: #38383c; color: var(--text); }
+  .stepper svg { width: 7px; height: 4px; display: block; }
+
+  /* ── HTTP assertions box ─────────────────────── */
+  .box {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 16px 16px 18px;
+  }
+  .box-title {
+    font-family: var(--mono);
+    font-size: 10.5px;
+    font-weight: 700;
+    letter-spacing: 0.14em;
+    text-transform: uppercase;
+    margin-bottom: 14px;
+  }
+  .box .field { margin-bottom: 16px; }
+  .box .field:last-child { margin-bottom: 0; }
+  .box .grid-2 { margin-bottom: 16px; }
+  .box .label { margin-bottom: 8px; }
+
+  /* ── Right column cards ──────────────────────── */
+  .card {
+    border: 1px solid var(--border);
+    border-radius: 14px;
+    padding: 2px 16px 16px;
+  }
+  .card + .card { margin-top: 16px; }
+
+  .toggle-row {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 16px;
+    padding: 12px 0;
+    border-bottom: 1px solid var(--sep);
+  }
+  .toggle-title { font-size: 14px; font-weight: 600; }
+  .toggle-desc { font-size: 11px; color: var(--dim); margin-top: 4px; }
+
+  .switch {
+    position: relative;
+    flex: none;
+    width: 44px;
+    height: 26px;
+    cursor: pointer;
+  }
+  .switch input { position: absolute; opacity: 0; width: 0; height: 0; }
+  .track {
+    position: absolute;
+    inset: 0;
+    border-radius: 999px;
+    background: var(--off);
+    transition: background .2s ease;
+  }
+  .track::after {
+    content: "";
+    position: absolute;
+    top: 3px;
+    left: 3px;
+    width: 20px;
+    height: 20px;
+    border-radius: 50%;
+    background: #fff;
+    box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+    transition: transform .2s cubic-bezier(.4, 0, .2, 1);
+  }
+  .switch input:checked + .track { background: var(--green); }
+  .switch input:checked + .track::after { transform: translateX(18px); }
+  .switch input:focus-visible + .track { box-shadow: 0 0 0 3px rgba(132, 204, 110, .25); }
+
+  .repeat { padding-top: 16px; }
+  .repeat .input { height: 42px; }
+
+  .channels-head {
+    display: flex;
+    justify-content: space-between;
+    align-items: center;
+    padding: 14px 0 12px;
+  }
+  .link {
+    background: none;
+    border: 0;
+    padding: 0;
+    font-family: var(--sans);
+    font-size: 13px;
+    color: var(--green);
+    cursor: pointer;
+  }
+  .link:hover { text-decoration: underline; }
+  .empty {
+    min-height: 64px;
+    padding: 12px 14px;
+    background: var(--field);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    font-size: 13px;
+    line-height: 1.5;
+    color: var(--dim);
+  }
+  .card .hint { margin-top: 12px; }
+
+  /* ── Footer ──────────────────────────────────── */
+  .footer {
+    display: flex;
+    justify-content: flex-end;
+    gap: 12px;
+    padding: 16px 24px 18px;
+    border-top: 1px solid var(--sep);
+  }
+  .btn {
+    height: 40px;
+    padding: 0 18px;
+    border-radius: 12px;
+    font-family: var(--sans);
+    font-size: 14px;
+    font-weight: 600;
+    cursor: pointer;
+    transition: background .15s, filter .15s;
+  }
+  .btn-ghost { background: var(--field); border: 1px solid var(--border); color: var(--text); }
+  .btn-ghost:hover { background: #1c1c1e; }
+  .btn-primary { background: var(--green); border: 1px solid var(--green); color: var(--bg); }
+  .btn-primary:hover { filter: brightness(1.06); }
+
+  @media (max-width: 759px) {
+    .body { grid-template-columns: 1fr; }
+  }
+</style>
+</head>
+<body>
+
+<div class="modal" role="dialog" aria-labelledby="modal-title">
+  <!-- Header -->
+  <div class="header">
+    <h3 id="modal-title" class="title">Add New Monitor</h3>
+    <p class="subtitle">Configure synthetic HTTP/TCP probes, SLA thresholds, and alert routing</p>
+  </div>
+  <button type="button" class="close" aria-label="Close">
+    <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+  </button>
+
+  <form onsubmit="event.preventDefault()">
+    <div class="body">
+
+      <!-- Left column -->
+      <div>
+        <div class="section-title">1. Endpoint Parameters</div>
+
+        <div class="field">
+          <label class="label" for="m-name">Friendly Name</label>
+          <input id="m-name" class="input" type="text" placeholder="e.g. Production API Gateway">
+        </div>
+
+        <div class="field">
+          <label class="label" for="m-protocol">Probe Protocol</label>
+          <select id="m-protocol" class="input">
+            <option>HTTP / HTTPS Probe</option>
+            <option>TCP Port Socket Probe</option>
+            <option>DNS Record Resolution</option>
+            <option>Push Heartbeat (Cron / Background Daemon)</option>
+          </select>
+        </div>
+
+        <div class="field">
+          <div class="label-row">
+            <label class="label" for="m-url">Target URL</label>
+            <span class="tag">HTTP / HTTPS</span>
+          </div>
+          <input id="m-url" class="input mono" type="text" placeholder="https://api.example.com/health">
+          <p class="hint">Accepts standard HTTPS or HTTP endpoints with custom ports</p>
+        </div>
+
+        <div class="grid-3">
+          <div class="field">
+            <label class="label" for="m-interval">Interval (s)</label>
+            <div class="num">
+              <input id="m-interval" class="input" type="number" min="5" value="60">
+              <div class="stepper">
+                <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label" for="m-timeout">Timeout (s)</label>
+            <div class="num">
+              <input id="m-timeout" class="input" type="number" min="1" value="5">
+              <div class="stepper">
+                <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+              </div>
+            </div>
+          </div>
+          <div class="field">
+            <label class="label" for="m-retries">Max Retries</label>
+            <div class="num">
+              <input id="m-retries" class="input" type="number" min="1" value="3">
+              <div class="stepper">
+                <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+
+        <div class="box">
+          <div class="box-title">HTTP Assertions</div>
+
+          <div class="grid-2">
+            <div class="field">
+              <label class="label" for="m-method">HTTP Method</label>
+              <select id="m-method" class="input">
+                <option>GET</option>
+                <option>POST</option>
+                <option>HEAD</option>
+                <option>PUT</option>
+                <option>PATCH</option>
+                <option>DELETE</option>
+                <option>OPTIONS</option>
+              </select>
+            </div>
+            <div class="field">
+              <label class="label" for="m-status">Expected Status</label>
+              <input id="m-status" class="input" type="text" value="200-299">
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="label" for="m-headers">Request Headers (JSON or Key: Value)</label>
+            <textarea id="m-headers" class="input mono" rows="2" placeholder='{"Authorization": "Bearer ...", "X-Custom": "val"}'></textarea>
+          </div>
+
+          <div class="field">
+            <label class="label" for="m-keyword">Response Body Keyword Search</label>
+            <input id="m-keyword" class="input" type="text" placeholder="e.g. status: ok">
+          </div>
+
+          <div class="grid-2">
+            <div class="field">
+              <label class="label" for="m-pointer">JSON Pointer Path</label>
+              <input id="m-pointer" class="input mono" type="text" placeholder="/data/status">
+            </div>
+            <div class="field">
+              <label class="label" for="m-expected">JSON Expected Value</label>
+              <input id="m-expected" class="input" type="text" placeholder="healthy">
+            </div>
+          </div>
+
+          <div class="field">
+            <label class="label" for="m-latency">Degraded Latency Threshold (ms)</label>
+            <div class="num">
+              <input id="m-latency" class="input" type="number" min="1" placeholder="e.g. 1500 (warn if slower)">
+              <div class="stepper">
+                <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </div>
+
+      <!-- Right column -->
+      <div>
+        <div class="section-title blue">2. Probing &amp; Alert Routing</div>
+
+        <div class="card">
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-title">Active Monitoring</div>
+              <div class="toggle-desc">Execute synthetic probes on configured interval</div>
+            </div>
+            <label class="switch"><input type="checkbox" checked aria-label="Active Monitoring"><span class="track"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-title">Public Status Page</div>
+              <div class="toggle-desc">Surface component uptime &amp; SLAs on public status pages</div>
+            </div>
+            <label class="switch"><input type="checkbox" checked aria-label="Public Status Page"><span class="track"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-title">Domain Expiration Check (RDAP)</div>
+              <div class="toggle-desc">Query HTTPS RDAP / TCP WHOIS registry renewal deadlines</div>
+            </div>
+            <label class="switch"><input type="checkbox" aria-label="Domain Expiration Check"><span class="track"></span></label>
+          </div>
+          <div class="toggle-row">
+            <div>
+              <div class="toggle-title">TLS / SSL Expiration Check</div>
+              <div class="toggle-desc">Inspect remote X.509 certificate validity and expiry dates</div>
+            </div>
+            <label class="switch"><input type="checkbox" aria-label="TLS / SSL Expiration Check"><span class="track"></span></label>
+          </div>
+
+          <div class="repeat">
+            <label class="label" for="m-repeat">Repeat Down Alerts Every (Minutes)</label>
+            <div class="num">
+              <input id="m-repeat" class="input" type="number" min="0" value="0">
+              <div class="stepper">
+                <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+              </div>
+            </div>
+            <p class="hint">If &gt; 0, re-dispatches alerts every N minutes while DOWN.</p>
+          </div>
+        </div>
+
+        <div class="card">
+          <div class="channels-head">
+            <span class="toggle-title">Notification Channels</span>
+            <button type="button" class="link">+ Create Channel</button>
+          </div>
+          <div class="empty">No channels configured yet. Click "+ Create New Channel" above.</div>
+          <p class="hint">Channels selected above receive instant state transition alerts.</p>
+        </div>
+      </div>
+
+    </div>
+
+    <!-- Footer -->
+    <div class="footer">
+      <button type="button" class="btn btn-ghost">Cancel</button>
+      <button type="submit" class="btn btn-primary">Create Monitor</button>
+    </div>
+  </form>
+</div>
+
+<script>
+  document.querySelectorAll('.num').forEach(function (wrap) {
+    var input = wrap.querySelector('input');
+    wrap.querySelectorAll('.stepper button').forEach(function (btn) {
+      btn.addEventListener('click', function () {
+        if (btn.dataset.dir === 'up') input.stepUp(); else input.stepDown();
+        input.dispatchEvent(new Event('input', { bubbles: true }));
+        input.focus();
+      });
+    });
+  });
+</script>
+</body>
+</html>
