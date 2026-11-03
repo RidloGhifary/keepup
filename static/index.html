@@ -26,29 +26,7 @@
       }
     })();
   </script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            status: {
-              bg: '#0b0b0c',
-              green: '#30d158',
-              red: '#ff453a',
-              yellow: '#ffd60a',
-              blue: '#0a84ff',
-            }
-          },
-          fontFamily: {
-            sans: ['system-ui', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'sans-serif'],
-            mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
-          }
-        }
-      }
-    }
-  </script>
+  <link rel="stylesheet" href="/output.css">
   <style>
     /* Baseline CSS Variables Architecture */
     :root {
@@ -553,11 +531,34 @@
             </svg>
             <span>Maintenance</span>
           </button>
+
+          <!-- 6. Incidents Tab -->
+          <button id="nav-btn-incidents" onclick="switchAdminView('incidents')" class="h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer" title="Incident Management">
+            <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+            </svg>
+            <span>Incidents</span>
+          </button>
         </div>
       </nav>
 
       <!-- Zone 3: Right Zone (Actions & Security Utilities) -->
       <div class="flex items-center gap-2 sm:gap-2.5 shrink-0">
+        <!-- Export & Import JSON Config -->
+        <button id="btn-export-json" onclick="exportConfigJson()" class="h-8 px-2.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/5 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer" title="Export Configuration as JSON">
+          <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+          </svg>
+          <span class="hidden lg:inline">Export</span>
+        </button>
+        <label for="import-file-input" class="h-8 px-2.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/5 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer" title="Import Configuration from JSON">
+          <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12"/>
+          </svg>
+          <span class="hidden lg:inline">Import</span>
+          <input type="file" id="import-file-input" accept=".json,application/json" class="hidden" onchange="importConfigJson(this)" />
+        </label>
+
         <!-- Public Page Link: Ghost action link with external indicator -->
         <a href="/status" target="_blank" rel="noopener noreferrer" class="h-8 px-2.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/5 transition flex items-center gap-1.5 whitespace-nowrap" title="Open Public Status Page">
           <span class="hidden md:inline">Public Page</span>
@@ -826,6 +827,35 @@
       </div>
     </div>
 
+    <!-- ── 4b. Incidents Management Panel ─────────────────────────────────── -->
+    <div id="incidents-panel" class="space-y-6 hidden">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+        <div>
+          <h2 class="text-xl font-bold tracking-tight text-white">Incidents &amp; Timeline Management</h2>
+          <p class="text-xs text-white/50 mt-0.5">Track service disruptions, auto-detected outages, and post-mortems</p>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button onclick="loadAdminIncidents(true)" class="text-xs text-white/80 hover:text-white px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition flex items-center gap-1.5 cursor-pointer" title="Refresh Incidents">
+            <svg id="incidents-refresh-icon" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            <span>Refresh</span>
+          </button>
+          <button onclick="openCreateIncidentModal()" class="text-xs text-white px-3.5 py-1.5 rounded-xl bg-[#30d158] hover:bg-[#28b84d] text-[#0b0b0c] transition flex items-center gap-1.5 font-semibold shadow-md shadow-[#30d158]/20 cursor-pointer">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+            </svg>
+            <span>+ Create Incident</span>
+          </button>
+        </div>
+      </div>
+
+      <div id="incidents-list-container" class="space-y-4">
+        <div class="p-8 text-center text-white/40 text-xs italic">Loading incidents...</div>
+      </div>
+    </div>
+
   </main>
 
   <!-- ── 5. Footer ─────────────────────────────────────────────────────────── -->
@@ -881,24 +911,35 @@
                 <input required id="m-name" type="text" placeholder="e.g. Production API Gateway" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm" />
               </div>
 
+              <!-- Probe Protocol Selector -->
+              <div>
+                <label for="m-probe-type" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Probe Protocol</label>
+                <select id="m-probe-type" onchange="onProbeTypeChange()" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm font-sans">
+                  <option value="http">HTTP / HTTPS Probe</option>
+                  <option value="tcp">TCP Port Socket Probe</option>
+                  <option value="dns">DNS Record Resolution</option>
+                  <option value="push">Push Heartbeat (Cron / Background Daemon)</option>
+                </select>
+              </div>
+
               <!-- Target URL with HTTP/HTTPS validation indicator -->
               <div>
                 <div class="flex items-center justify-between mb-1.5">
-                  <label for="m-url" class="block font-medium text-white/80 text-xs sm:text-sm">Target URL</label>
+                  <label for="m-url" id="m-url-label" class="block font-medium text-white/80 text-xs sm:text-sm">Target URL</label>
                   <span id="url-validation-indicator" class="text-[10px] font-mono flex items-center gap-1.5">
                     <span class="w-1.5 h-1.5 rounded-full bg-white/30"></span>
                     <span class="text-white/40">HTTP / HTTPS</span>
                   </span>
                 </div>
-                <input required id="m-url" type="url" placeholder="https://api.example.com/health" oninput="validateUrlInput(this)" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
-                <p class="text-[11px] text-white/40 mt-1">Accepts standard HTTPS or HTTP endpoints with custom ports</p>
+                <input required id="m-url" type="text" placeholder="https://api.example.com/health" oninput="validateUrlInput(this)" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                <p id="m-url-hint" class="text-[11px] text-white/40 mt-1">Accepts standard HTTPS or HTTP endpoints with custom ports</p>
               </div>
 
               <!-- Interval, Timeout, Max Retries Grid -->
               <div class="grid grid-cols-3 gap-3">
                 <div>
                   <label for="m-interval" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Interval (s)</label>
-                  <input required id="m-interval" type="number" min="1" value="60" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                  <input required id="m-interval" type="number" min="5" max="86400" value="60" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
                 </div>
                 <div>
                   <label for="m-timeout" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Timeout (s)</label>
@@ -907,6 +948,90 @@
                 <div>
                   <label for="m-retries" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Max Retries</label>
                   <input required id="m-retries" type="number" min="1" max="10" value="3" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                </div>
+              </div>
+
+              <!-- HTTP Probing Assertions & Options -->
+              <div id="m-http-options" class="space-y-4 pt-3 border-t border-white/5">
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label for="m-http-method" class="block font-medium text-white/80 text-xs mb-1">HTTP Method</label>
+                    <select id="m-http-method" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono">
+                      <option value="GET">GET</option>
+                      <option value="POST">POST</option>
+                      <option value="HEAD">HEAD</option>
+                      <option value="PUT">PUT</option>
+                      <option value="PATCH">PATCH</option>
+                      <option value="DELETE">DELETE</option>
+                      <option value="OPTIONS">OPTIONS</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="m-expected-status" class="block font-medium text-white/80 text-xs mb-1">Expected Status</label>
+                    <input id="m-expected-status" type="text" value="200-299" placeholder="200-299 or 200,204" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  </div>
+                </div>
+
+                <div>
+                  <label for="m-request-headers" class="block font-medium text-white/80 text-xs mb-1">Request Headers (JSON or Key: Value)</label>
+                  <textarea id="m-request-headers" rows="2" placeholder='{"Authorization": "Bearer token", "X-Custom": "val"}' class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono"></textarea>
+                </div>
+
+                <div>
+                  <label for="m-body-keyword" class="block font-medium text-white/80 text-xs mb-1">Response Body Keyword Search</label>
+                  <input id="m-body-keyword" type="text" placeholder="e.g. status: ok" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                </div>
+
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label for="m-json-pointer" class="block font-medium text-white/80 text-xs mb-1">JSON Pointer Path</label>
+                    <input id="m-json-pointer" type="text" placeholder="/data/status" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  </div>
+                  <div>
+                    <label for="m-json-expected" class="block font-medium text-white/80 text-xs mb-1">JSON Expected Value</label>
+                    <input id="m-json-expected" type="text" placeholder="healthy" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  </div>
+                </div>
+
+                <div>
+                  <label for="m-degraded-latency" class="block font-medium text-white/80 text-xs mb-1">Degraded Latency Threshold (ms)</label>
+                  <input id="m-degraded-latency" type="number" min="1" placeholder="e.g. 1500 (warn if slower)" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                </div>
+              </div>
+
+              <!-- DNS Probing Options -->
+              <div id="m-dns-options" class="space-y-4 pt-3 border-t border-white/5 hidden">
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label for="m-dns-record-type" class="block font-medium text-white/80 text-xs mb-1">DNS Record Type</label>
+                    <select id="m-dns-record-type" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono">
+                      <option value="A">A (IPv4)</option>
+                      <option value="AAAA">AAAA (IPv6)</option>
+                      <option value="CNAME">CNAME</option>
+                      <option value="MX">MX</option>
+                      <option value="TXT">TXT</option>
+                    </select>
+                  </div>
+                  <div>
+                    <label for="m-dns-expected" class="block font-medium text-white/80 text-xs mb-1">Expected Resolved Value</label>
+                    <input id="m-dns-expected" type="text" placeholder="93.184.216.34" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  </div>
+                </div>
+              </div>
+
+              <!-- Push Heartbeat Options -->
+              <div id="m-push-options" class="space-y-4 pt-3 border-t border-white/5 hidden">
+                <div class="bg-black/60 rounded-xl p-3 border border-white/10 space-y-2">
+                  <div class="flex items-center justify-between">
+                    <span class="text-xs font-semibold text-[#30d158] uppercase font-mono">Push Ingestion Endpoint</span>
+                    <button type="button" onclick="copyPushUrl()" class="text-[11px] text-[#0a84ff] hover:underline cursor-pointer">Copy URL</button>
+                  </div>
+                  <input id="m-push-url-display" readonly type="text" value="Generated upon creation" class="w-full rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white/70 text-[11px] font-mono select-all" />
+                  <p class="text-[11px] text-white/40">Ping this URL from cron, systemd, or CI/CD: <code>curl -fsS https://.../api/push/{token}</code></p>
+                </div>
+                <div>
+                  <label for="m-grace-secs" class="block font-medium text-white/80 text-xs mb-1">Heartbeat Grace Period (seconds)</label>
+                  <input id="m-grace-secs" type="number" min="1" value="60" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
                 </div>
               </div>
             </div>
@@ -978,6 +1103,13 @@
                     <label for="m-ssl-warning-days" class="block font-medium text-white/70 text-xs mb-1">Warning Threshold (Days Remaining)</label>
                     <input id="m-ssl-warning-days" type="number" min="1" max="365" value="30" class="w-full rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
                   </div>
+                </div>
+
+                <!-- Repeat Alert Reminder Interval -->
+                <div class="border-t border-white/5 pt-3">
+                  <label for="m-resend-interval" class="block font-medium text-white/80 text-xs mb-1">Repeat Down Alerts Every (Minutes)</label>
+                  <input id="m-resend-interval" type="number" min="0" value="0" placeholder="0 = disabled (alert once)" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  <p class="text-[11px] text-white/40 mt-1">If > 0, re-dispatches alerts every N minutes while the monitor remains DOWN.</p>
                 </div>
               </div>
 
@@ -1604,7 +1736,7 @@
           <input required id="channel-form-url" type="url" placeholder="https://discord.com/api/webhooks/..." class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition bg-black/40 border border-white/10 text-white font-mono text-xs" />
         </div>
 
-        <div class="bg-black/30 rounded-2xl p-3.5 border border-white/5">
+        <div class="bg-black/30 rounded-2xl p-3.5 border border-white/5 space-y-3">
           <div class="flex items-center justify-between">
             <div>
               <div class="font-medium text-white text-xs sm:text-sm">Default Channel</div>
@@ -1615,11 +1747,129 @@
               <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
             </label>
           </div>
+
+          <div class="border-t border-white/5 pt-3 flex items-center justify-between">
+            <div>
+              <div class="font-medium text-white text-xs sm:text-sm">Notify on Recovery</div>
+              <div class="text-[11px] text-white/40">Dispatch notification when target recovers to UP</div>
+            </div>
+            <label class="relative inline-flex items-center cursor-pointer">
+              <input id="channel-form-notify-resolve" type="checkbox" checked class="sr-only peer">
+              <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
+            </label>
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-medium text-white/70 mb-1.5">Custom Payload Template (Optional JSON / Text)</label>
+          <textarea id="channel-form-template" rows="3" placeholder='Optional template override, e.g. {"text": "{{service_name}} is {{status}}"}' class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition bg-black/40 border border-white/10 text-white font-mono text-xs"></textarea>
         </div>
 
         <div class="flex justify-end gap-2.5 pt-2">
           <button type="button" onclick="closeChannelModal()" class="px-4 py-2.5 rounded-xl border border-white/10 text-white/70 hover:bg-white/5 transition">Cancel</button>
           <button type="submit" id="save-channel-btn" class="px-5 py-2.5 rounded-xl bg-[#0a84ff] hover:bg-[#0071e3] font-medium text-white shadow-lg shadow-[#0a84ff]/25 transition">Save Channel</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── Incident Management Modal (Create / Edit Incident) ─────────────────── -->
+  <div id="incident-modal" class="fixed inset-0 z-[60] hidden backdrop-blur-md bg-black/70 flex items-center justify-center p-4 transition-all duration-300">
+    <div id="incident-modal-card" class="rounded-3xl max-w-lg w-full p-6 sm:p-7 shadow-2xl relative space-y-5 border border-white/10 ring-1 ring-white/10 bg-[#141416] text-white">
+      <div class="flex items-start justify-between">
+        <div>
+          <h3 id="incident-modal-title" class="text-lg font-semibold tracking-tight text-white">Declare Incident</h3>
+          <p id="incident-modal-subtitle" class="text-xs text-white/50 mt-0.5">Post an active incident to the status page and alert subscribers</p>
+        </div>
+        <button type="button" onclick="closeIncidentModal()" class="text-neutral-400 hover:text-white p-1.5 rounded-full bg-white/5 hover:bg-white/10 transition" title="Close Modal">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <form id="incident-form" onsubmit="submitIncidentForm(event)" class="space-y-4 text-xs sm:text-sm">
+        <input type="hidden" id="incident-form-id" value="">
+        <div>
+          <label class="block font-medium text-white/70 mb-1.5">Incident Title</label>
+          <input required id="incident-form-title" type="text" placeholder="e.g. Major Database Connectivity Outage" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#ff453a]/50 transition bg-black/40 border border-white/10 text-white font-sans text-xs" />
+        </div>
+
+        <div class="grid grid-cols-2 gap-3">
+          <div>
+            <label class="block font-medium text-white/70 mb-1.5">Initial Status</label>
+            <select id="incident-form-status" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-sans">
+              <option value="INVESTIGATING">INVESTIGATING</option>
+              <option value="IDENTIFIED">IDENTIFIED</option>
+              <option value="MONITORING">MONITORING</option>
+              <option value="RESOLVED">RESOLVED</option>
+            </select>
+          </div>
+          <div>
+            <label class="block font-medium text-white/70 mb-1.5">Severity</label>
+            <select id="incident-form-severity" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-sans">
+              <option value="CRITICAL">CRITICAL</option>
+              <option value="MAJOR">MAJOR</option>
+              <option value="MINOR">MINOR</option>
+            </select>
+          </div>
+        </div>
+
+        <div>
+          <label class="block font-medium text-white/70 mb-1.5">Affected Monitor (Optional)</label>
+          <select id="incident-form-monitor" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-sans">
+            <option value="">None / System-Wide</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block font-medium text-white/70 mb-1.5">Initial Message / Context</label>
+          <textarea required id="incident-form-message" rows="3" placeholder="Describe the current disruption, symptoms, and active remediation actions..." class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#ff453a]/50 transition bg-black/40 border border-white/10 text-white font-sans text-xs"></textarea>
+        </div>
+
+        <div class="flex justify-end gap-2.5 pt-2">
+          <button type="button" onclick="closeIncidentModal()" class="px-4 py-2.5 rounded-xl border border-white/10 text-white/70 hover:bg-white/5 transition">Cancel</button>
+          <button type="submit" id="save-incident-btn" class="px-5 py-2.5 rounded-xl bg-[#ff453a] hover:bg-[#d6342b] font-medium text-white shadow-lg shadow-[#ff453a]/25 transition">Post Incident</button>
+        </div>
+      </form>
+    </div>
+  </div>
+
+  <!-- ── Incident Timeline Update Modal ────────────────────────────────────── -->
+  <div id="incident-update-modal" class="fixed inset-0 z-[60] hidden backdrop-blur-md bg-black/70 flex items-center justify-center p-4 transition-all duration-300">
+    <div id="incident-update-card" class="rounded-3xl max-w-md w-full p-6 sm:p-7 shadow-2xl relative space-y-5 border border-white/10 ring-1 ring-white/10 bg-[#141416] text-white">
+      <div class="flex items-start justify-between">
+        <div>
+          <h3 class="text-lg font-semibold tracking-tight text-white">Post Timeline Update</h3>
+          <p class="text-xs text-white/50 mt-0.5">Append a status update to the incident timeline</p>
+        </div>
+        <button type="button" onclick="closeIncidentUpdateModal()" class="text-neutral-400 hover:text-white p-1.5 rounded-full bg-white/5 hover:bg-white/10 transition" title="Close Modal">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+        </button>
+      </div>
+
+      <form id="incident-update-form" onsubmit="submitIncidentUpdateForm(event)" class="space-y-4 text-xs sm:text-sm">
+        <input type="hidden" id="update-form-incident-id" value="">
+        <div>
+          <label class="block font-medium text-white/70 mb-1.5">New Incident Status</label>
+          <select id="update-form-status" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-sans">
+            <option value="INVESTIGATING">INVESTIGATING</option>
+            <option value="IDENTIFIED">IDENTIFIED</option>
+            <option value="MONITORING">MONITORING</option>
+            <option value="RESOLVED">RESOLVED</option>
+          </select>
+        </div>
+
+        <div>
+          <label class="block font-medium text-white/70 mb-1.5">Update Message</label>
+          <textarea required id="update-form-message" rows="3" placeholder="Provide progress details, root cause findings, or resolution confirmation..." class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition bg-black/40 border border-white/10 text-white font-sans text-xs"></textarea>
+        </div>
+
+        <div class="flex justify-end gap-2.5 pt-2">
+          <button type="button" onclick="closeIncidentUpdateModal()" class="px-4 py-2.5 rounded-xl border border-white/10 text-white/70 hover:bg-white/5 transition">Cancel</button>
+          <button type="submit" id="save-update-btn" class="px-5 py-2.5 rounded-xl bg-[#0a84ff] hover:bg-[#0071e3] font-medium text-white shadow-lg shadow-[#0a84ff]/25 transition">Post Update</button>
         </div>
       </form>
     </div>

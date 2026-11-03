@@ -178,7 +178,7 @@ pub async fn create(
 
     let id = uuid::Uuid::new_v4().to_string();
     let push_token = if body.url.starts_with("push://") {
-        Some(uuid::Uuid::new_v4().simple().to_string())
+        Some(crate::api::push::generate_push_token())
     } else {
         None
     };

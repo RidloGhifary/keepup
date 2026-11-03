@@ -323,6 +323,7 @@ pub struct DailyUptime {
 }
 
 #[derive(Debug, sqlx::FromRow)]
+#[allow(dead_code)]
 struct DailyLogAgg {
     day: String,
     total: i64,
@@ -330,6 +331,7 @@ struct DailyLogAgg {
 }
 
 /// Aggregates check logs for a monitor over the past 7 days into 7 distinct daily buckets (Day -6 to Today).
+#[allow(dead_code)]
 pub async fn get_7day_uptime_history(
     pool: &SqlitePool,
     monitor_id: &str,

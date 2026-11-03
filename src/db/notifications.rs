@@ -235,6 +235,7 @@ pub async fn get_channel_ids_for_monitor(
 }
 
 /// Overwrite channel associations for a monitor within a transaction, enforcing foreign keys.
+#[allow(dead_code)]
 pub async fn set_monitor_channels(
     pool: &SqlitePool,
     monitor_id: &str,

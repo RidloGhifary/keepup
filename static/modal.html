@@ -10,29 +10,7 @@
     document.documentElement.classList.add('dark');
     document.documentElement.setAttribute('data-theme', 'dark');
   </script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            status: {
-              bg: '#0b0b0c',
-              green: '#30d158',
-              red: '#ff453a',
-              yellow: '#ffd60a',
-              blue: '#0a84ff',
-            }
-          },
-          fontFamily: {
-            sans: ['system-ui', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'sans-serif'],
-            mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
-          }
-        }
-      }
-    }
-  </script>
+  <link rel="stylesheet" href="/output.css">
   <style>
     /* Baseline CSS Variables */
     :root {

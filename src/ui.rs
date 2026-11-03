@@ -277,4 +277,69 @@ mod tests {
             .unwrap();
         assert_eq!(res.status(), StatusCode::NOT_FOUND);
     }
+
+    #[test]
+    fn test_embedded_html_contains_no_cdn_scripts() {
+        let html_files = ["index.html", "login.html", "modal.html", "status.html"];
+        for name in html_files {
+            let asset = Assets::get(name).unwrap_or_else(|| panic!("missing {name}"));
+            let text = std::str::from_utf8(asset.data.as_ref()).unwrap();
+            assert!(
+                !text.contains("cdn.tailwindcss.com"),
+                "{name} must not load tailwind from CDN (use /output.css)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_frontend_scripts_have_no_dynamic_onclick_interpolation() {
+        let js_files = ["app.js", "modal.js", "status.js"];
+        for name in js_files {
+            let asset = Assets::get(name).unwrap_or_else(|| panic!("missing {name}"));
+            let text = std::str::from_utf8(asset.data.as_ref()).unwrap();
+            assert!(
+                !text.contains("onclick=\"${escapeHtml("),
+                "{name} must not interpolate dynamic values into inline onclick attributes (SEC-08)"
+            );
+            assert!(
+                !text.contains(".replace(/'/g"),
+                "{name} must not perform brittle single-quote escaping for inline onclick (SEC-08)"
+            );
+        }
+    }
+
+    #[test]
+    fn test_status_page_contract_rss_incidents_no_ping() {
+        let asset = Assets::get("status.html").expect("status.html must exist");
+        let text = std::str::from_utf8(asset.data.as_ref()).unwrap();
+
+        // Must NOT contain public Ping button (#4)
+        assert!(
+            !text.contains("triggerDetailPing") && !text.contains("detail-modal-ping-btn"),
+            "status.html must not contain unauthenticated Ping button"
+        );
+
+        // Must contain incident timeline container and RSS feed link (N2, N3)
+        assert!(text.contains("incidents"), "status.html must render incidents container");
+        assert!(text.contains("rss.xml"), "status.html must link to RSS feed");
+    }
+
+    #[test]
+    fn test_admin_app_js_uses_events_and_dashboard_batch() {
+        let asset = Assets::get("app.js").expect("app.js must exist");
+        let text = std::str::from_utf8(asset.data.as_ref()).unwrap();
+
+        assert!(
+            text.contains("/api/events"),
+            "app.js must connect to live SSE via /api/events (F5)"
+        );
+        assert!(
+            text.contains("/api/admin/dashboard"),
+            "app.js must use batched /api/admin/dashboard endpoint (#8)"
+        );
+        assert!(
+            !text.contains("/api/webhooks"),
+            "app.js must use /api/admin/channels instead of legacy /api/webhooks (#12)"
+        );
+    }
 }

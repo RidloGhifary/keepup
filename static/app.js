@@ -84,14 +84,10 @@ async function fetchDashboardData(showSpin = false) {
   }
 
   try {
-    const [monitorsRes, statusRes, webhooksRes] = await Promise.all([
-      apiFetch('/api/monitors', { signal }),
-      apiFetch('/api/v1/public/status', { signal }),
-      apiFetch('/api/webhooks', { signal }),
-    ]);
+    const dashRes = await apiFetch('/api/admin/dashboard', { signal });
 
     // If unauthorized, do not render dashboard contents (redirect is underway)
-    if (monitorsRes && monitorsRes.status === 401) {
+    if (dashRes && dashRes.status === 401) {
       const isLoginPage =
         window.location.pathname.endsWith('/login.html') ||
         window.location.pathname === '/login';
@@ -101,28 +97,34 @@ async function fetchDashboardData(showSpin = false) {
       return;
     }
 
-    if (monitorsRes && monitorsRes.ok) {
-      window.allMonitors = await monitorsRes.json();
-    }
-
-    if (statusRes.ok) {
-      const statusData = await statusRes.json();
+    if (dashRes && dashRes.ok) {
+      const dash = await dashRes.json();
+      const monitors = [];
       statusMap = {};
-      (statusData.monitors || []).forEach((m) => {
-        statusMap[m.id] = m;
+
+      (dash.monitors || []).forEach((item) => {
+        const m = { ...item };
+        monitors.push(m);
+        // logs attached directly from single query
+        logsCache[m.id] = (item.logs || []).slice().reverse();
+        statusMap[m.id] = {
+          id: m.id,
+          name: m.name,
+          url: m.url,
+          current_status: m.last_status,
+          last_latency_ms: (item.logs && item.logs.length > 0) ? item.logs[item.logs.length - 1].latency_ms : null,
+          uptime_24h: 100.0,
+        };
       });
-      updateOverviewHero(statusData);
+
+      window.allMonitors = monitors;
+      updateOverviewHero({
+        status: dash.summary.down_count > 0 ? 'Major Outage' : (dash.summary.degraded_count > 0 ? 'Partial Outage' : 'All Systems Operational'),
+        monitors: Object.values(statusMap),
+      });
+
+      renderMonitors();
     }
-
-    if (webhooksRes.ok) {
-      window.allWebhooks = await webhooksRes.json();
-      renderWebhooksSection(window.allWebhooks);
-    }
-
-    // Fetch recent check logs for historical bar charts (top 30 per monitor)
-    await fetchRecentLogsForMonitors(window.allMonitors, signal);
-
-    renderMonitors();
   } catch (err) {
     if (err.name === 'AbortError') return;
     console.error('Failed to fetch dashboard data:', err);
@@ -392,25 +394,25 @@ function renderMonitorCard(m) {
           ${m.is_public === 1 ? '🌐 Public' : '🔒 Private'}
         </span>
         <div class="flex items-center gap-1.5">
-          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? 'Pause Monitor' : 'Resume Monitor'}">
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? 'Pause Monitor' : 'Resume Monitor'}">
             ${
               m.is_active === 1
                 ? `<svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
                 : `<svg class="w-4 h-4 text-[#30d158] pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
             }
           </button>
-          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
             <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
           </button>
-          <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
+          <button data-action="edit-monitor" data-id="${m.id}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
             Edit
           </button>
-          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
+          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
             Logs
           </button>
-          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
+          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
             <svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
             </svg>
@@ -479,17 +481,17 @@ function renderMonitorListRow(m) {
         </div>
 
         <div class="flex items-center gap-1.5 shrink-0">
-          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
             ${m.is_active === 1 ? '⏸' : '▶'}
           </button>
-          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
             <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
           </button>
-          <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
-          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
-          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 rounded-lg transition">✕</button>
+          <button data-action="edit-monitor" data-id="${m.id}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
+          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
+          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 rounded-lg transition">✕</button>
         </div>
       </div>
     </div>
@@ -548,12 +550,12 @@ function renderWebhookItem(w) {
       </div>
 
       <div class="flex items-center gap-2 shrink-0">
-        <button data-action="test-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" onclick="testWebhookDirect('${w.id}', '${escapeHtml(w.name)}')" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
+        <button data-action="test-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
           Test
         </button>
         <!-- Smooth toggle -->
         <label class="relative inline-flex items-center cursor-pointer">
-          <input type="checkbox" ${isEnabled ? 'checked' : ''} data-action="toggle-webhook" data-id="${w.id}" data-enabled="${isEnabled}" onchange="toggleWebhookActive('${w.id}', ${isEnabled})" class="sr-only peer">
+          <input type="checkbox" ${isEnabled ? 'checked' : ''} data-action="toggle-webhook" data-id="${w.id}" data-enabled="${isEnabled}" class="sr-only peer">
           <div class="w-9 h-5 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#30d158]"></div>
         </label>
       </div>
@@ -613,7 +615,7 @@ async function toggleMonitorActive(id, currentActive) {
 async function toggleWebhookActive(id, currentEnabled) {
   const newEnabled = !currentEnabled;
   try {
-    const res = await apiFetch(`/api/webhooks/${id}`, {
+    const res = await apiFetch(`/api/admin/channels/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ is_enabled: newEnabled }),
@@ -645,7 +647,7 @@ async function testWebhookDirect(id, name) {
     type: 'info',
   });
   try {
-    const res = await apiFetch(`/api/webhooks/${id}/test`, { method: 'POST' });
+    const res = await apiFetch(`/api/admin/channels/${id}/test`, { method: 'POST' });
     if (res) {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -1543,6 +1545,47 @@ document.addEventListener('click', (e) => {
       testWebhookDirect(id, name);
       break;
     }
+    case 'edit-channel': {
+      const id = target.dataset.id;
+      if (id) openEditChannelModal(id);
+      break;
+    }
+    case 'delete-channel': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      if (id) deleteNotificationChannel(id, name);
+      break;
+    }
+    case 'test-channel': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      if (id) testNotificationChannel(id, name, target);
+      break;
+    }
+    case 'open-update-incident': {
+      const id = target.dataset.id;
+      if (id) openAddIncidentUpdateModal(id);
+      break;
+    }
+    case 'resolve-incident': {
+      const id = target.dataset.id;
+      if (id) resolveIncident(id);
+      break;
+    }
+    case 'delete-incident': {
+      const id = target.dataset.id;
+      if (id) deleteIncident(id);
+      break;
+    }
+    case 'refresh-asset': {
+      const id = target.dataset.id;
+      if (id) forceRefreshAssetRow(id, target);
+      break;
+    }
+    case 'open-create-channel': {
+      openCreateChannelModal();
+      break;
+    }
     case 'close-badge-modal': {
       closeBadgeModal();
       break;
@@ -1623,15 +1666,18 @@ function switchAdminView(view) {
   const monitorsPanel = document.getElementById('monitors-panel');
   const assetExpiryPanel = document.getElementById('asset-expiry-panel');
   const channelsPanel = document.getElementById('channels-panel');
+  const incidentsPanel = document.getElementById('incidents-panel');
   const navMonitorsBtn = document.getElementById('nav-btn-monitors');
   const navStatusPagesBtn = document.getElementById('nav-btn-status-pages');
   const navAssetsBtn = document.getElementById('nav-btn-assets');
   const navChannelsBtn = document.getElementById('nav-btn-channels');
   const navMaintenanceBtn = document.getElementById('nav-btn-maintenance');
+  const navIncidentsBtn = document.getElementById('nav-btn-incidents');
 
   if (monitorsPanel) monitorsPanel.classList.add('hidden');
   if (assetExpiryPanel) assetExpiryPanel.classList.add('hidden');
   if (channelsPanel) channelsPanel.classList.add('hidden');
+  if (incidentsPanel) incidentsPanel.classList.add('hidden');
 
   const inactiveBtnClass = 'h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
   const activeBtnClass = 'h-8 px-3 rounded-lg transition bg-white/15 text-white border border-white/20 shadow-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
@@ -1641,6 +1687,7 @@ function switchAdminView(view) {
   if (navAssetsBtn) navAssetsBtn.className = inactiveBtnClass;
   if (navChannelsBtn) navChannelsBtn.className = inactiveBtnClass;
   if (navMaintenanceBtn) navMaintenanceBtn.className = inactiveBtnClass;
+  if (navIncidentsBtn) navIncidentsBtn.className = inactiveBtnClass;
 
   if (view === 'assets') {
     if (assetExpiryPanel) assetExpiryPanel.classList.remove('hidden');
@@ -1650,6 +1697,10 @@ function switchAdminView(view) {
     if (channelsPanel) channelsPanel.classList.remove('hidden');
     if (navChannelsBtn) navChannelsBtn.className = activeBtnClass;
     loadNotificationChannels(true);
+  } else if (view === 'incidents') {
+    if (incidentsPanel) incidentsPanel.classList.remove('hidden');
+    if (navIncidentsBtn) navIncidentsBtn.className = activeBtnClass;
+    loadAdminIncidents(true);
   } else {
     if (monitorsPanel) monitorsPanel.classList.remove('hidden');
     if (navMonitorsBtn) navMonitorsBtn.className = activeBtnClass;
@@ -1764,7 +1815,7 @@ function renderAssetExpiryTable(items) {
         <td class="py-3 px-4">${domainCell}</td>
         <td class="py-3 px-4">${urgencyCell}</td>
         <td class="py-3 px-4 text-right">
-          <button type="button" onclick="forceRefreshAssetRow('${escapeHtml(item.monitor_id)}', this)" class="px-2.5 py-1 text-xs rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 transition inline-flex items-center gap-1 font-sans cursor-pointer active:scale-95" title="Force immediate TLS and domain check">
+          <button type="button" data-action="refresh-asset" data-id="${escapeHtml(item.monitor_id)}" class="px-2.5 py-1 text-xs rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 transition inline-flex items-center gap-1 font-sans cursor-pointer active:scale-95" title="Force immediate TLS and domain check">
             <span>⚡</span><span>Force Refresh</span>
           </button>
         </td>
@@ -1880,13 +1931,13 @@ function renderChannelCard(channel) {
           </div>
           <!-- Action Menu -->
           <div class="flex items-center gap-1 shrink-0">
-            <button onclick="openEditChannelModal('${channel.id}')" class="p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition cursor-pointer" title="Edit Channel">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button data-action="edit-channel" data-id="${channel.id}" class="p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition cursor-pointer" title="Edit Channel">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
               </svg>
             </button>
-            <button onclick="deleteNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}')" class="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer" title="Delete Channel">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button data-action="delete-channel" data-id="${channel.id}" data-name="${escapeHtml(channel.name)}" class="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer" title="Delete Channel">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
               </svg>
             </button>
@@ -1900,7 +1951,7 @@ function renderChannelCard(channel) {
 
       <div class="pt-2 border-t border-white/5 flex items-center justify-between">
         <span class="text-[10px] font-mono text-white/40">Created ${formatDate(channel.created_at)}</span>
-        <button id="test-chan-btn-${channel.id}" onclick="testNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}', this)" class="px-3 py-1 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
+        <button id="test-chan-btn-${channel.id}" data-action="test-channel" data-id="${channel.id}" data-name="${escapeHtml(channel.name)}" class="px-3 py-1 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
           <svg class="w-3 h-3 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
           </svg>
@@ -2054,6 +2105,11 @@ function openCreateChannelModal(isInline = false) {
   const typeEl = document.getElementById('channel-form-type');
   if (typeEl) typeEl.value = 'discord';
 
+  const notifyResolveEl = document.getElementById('channel-form-notify-resolve');
+  if (notifyResolveEl) notifyResolveEl.checked = true;
+  const tmplEl = document.getElementById('channel-form-template');
+  if (tmplEl) tmplEl.value = '';
+
   if (modal) modal.classList.remove('hidden');
 }
 window.openCreateChannelModal = openCreateChannelModal;
@@ -2078,6 +2134,11 @@ function openEditChannelModal(id) {
   if (urlEl) urlEl.value = channel.url;
   if (defaultEl) defaultEl.checked = channel.is_default;
 
+  const notifyResolveEl = document.getElementById('channel-form-notify-resolve');
+  if (notifyResolveEl) notifyResolveEl.checked = channel.notify_on_resolve !== false;
+  const tmplEl = document.getElementById('channel-form-template');
+  if (tmplEl) tmplEl.value = channel.custom_template || '';
+
   if (modal) modal.classList.remove('hidden');
 }
 window.openEditChannelModal = openEditChannelModal;
@@ -2099,6 +2160,8 @@ async function submitChannelForm(e) {
   const type = document.getElementById('channel-form-type')?.value?.trim();
   const url = document.getElementById('channel-form-url')?.value?.trim();
   const is_default = document.getElementById('channel-form-default')?.checked || false;
+  const notify_on_resolve = document.getElementById('channel-form-notify-resolve') ? document.getElementById('channel-form-notify-resolve').checked : true;
+  const custom_template = document.getElementById('channel-form-template')?.value?.trim() || null;
 
   const saveBtn = document.getElementById('save-channel-btn');
   const originalText = saveBtn ? saveBtn.innerText : 'Save Channel';
@@ -2124,7 +2187,7 @@ async function submitChannelForm(e) {
     const res = await apiFetch(endpoint, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, type, url, is_default }),
+      body: JSON.stringify({ name, type, url, is_default, notify_on_resolve, custom_template }),
     });
 
     if (res && res.ok) {
@@ -2172,6 +2235,329 @@ async function submitChannelForm(e) {
 }
 window.submitChannelForm = submitChannelForm;
 
+// ── Incidents Management ───────────────────────────────────────────────────
+
+let isAdminIncidentsLoading = false;
+async function loadAdminIncidents(showLoader = true) {
+  if (isAdminIncidentsLoading) return;
+  isAdminIncidentsLoading = true;
+
+  const refreshIcon = document.getElementById('incidents-refresh-icon');
+  if (refreshIcon && showLoader) refreshIcon.classList.add('animate-spin');
+
+  try {
+    const res = await apiFetch('/api/admin/incidents');
+    if (!res.ok) throw new Error('Failed to load incidents: ' + res.status);
+    const incidents = await res.json();
+    window.cachedIncidents = incidents;
+    renderAdminIncidents(incidents);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    isAdminIncidentsLoading = false;
+    if (refreshIcon) refreshIcon.classList.remove('animate-spin');
+  }
+}
+window.loadAdminIncidents = loadAdminIncidents;
+
+function renderAdminIncidents(incidents) {
+  const container = document.getElementById('incidents-list-container');
+  if (!container) return;
+
+  if (!incidents || incidents.length === 0) {
+    container.innerHTML = `
+      <div class="glass-card rounded-2xl p-8 text-center text-white/50 text-xs space-y-2 border border-white/5">
+        <p class="font-medium text-white/70">No incidents recorded</p>
+        <p class="text-white/40">Use "+ Create Incident" above to declare an active disruption or maintenance record.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const html = incidents.map((inc) => {
+    const isResolved = inc.status === 'RESOLVED';
+    const statusBadgeClass = isResolved
+      ? 'status-badge-operational'
+      : inc.status === 'INVESTIGATING'
+      ? 'status-badge-down'
+      : 'status-badge-degraded';
+
+    let updatesHtml = '';
+    if (Array.isArray(inc.updates) && inc.updates.length > 0) {
+      updatesHtml = `
+        <div class="mt-3 space-y-2 pl-3 border-l border-white/10 text-xs">
+          ${inc.updates.map((u) => `
+            <div class="space-y-0.5">
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-white/90 uppercase text-[10px]">${escapeHtml(u.status)}</span>
+                <span class="text-white/40 font-mono text-[10px]">${escapeHtml(formatDate(u.created_at))}</span>
+              </div>
+              <p class="text-white/70 text-xs">${escapeHtml(u.message)}</p>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="glass-card rounded-2xl p-5 border border-white/10 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <h3 class="font-semibold text-white text-sm">${escapeHtml(inc.title)}</h3>
+            <span class="px-2 py-0.5 rounded-full text-[10px] ${statusBadgeClass} font-medium">${escapeHtml(inc.status)}</span>
+            <span class="px-1.5 py-0.2 rounded text-[9px] bg-white/10 text-white/60 font-mono">${escapeHtml(inc.severity)}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button data-action="open-update-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white transition cursor-pointer">
+              + Update
+            </button>
+            ${!isResolved ? `
+              <button data-action="resolve-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-[#30d158]/20 hover:bg-[#30d158]/30 text-[#30d158] transition cursor-pointer">
+                Resolve
+              </button>
+            ` : ''}
+            <button data-action="delete-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition cursor-pointer">
+              Delete
+            </button>
+          </div>
+        </div>
+        <div class="text-[11px] text-white/40 font-mono">
+          <span>Started: ${escapeHtml(formatDate(inc.started_at))}</span>
+          ${inc.resolved_at ? `<span> • Resolved: ${escapeHtml(formatDate(inc.resolved_at))}</span>` : ''}
+        </div>
+        ${updatesHtml}
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = html;
+}
+
+function openCreateIncidentModal() {
+  const modal = document.getElementById('incident-modal');
+  const monitorSelect = document.getElementById('incident-form-monitor');
+  if (monitorSelect) {
+    monitorSelect.innerHTML = '<option value="">None / System-Wide</option>' +
+      (window.allMonitors || []).map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
+  }
+  const form = document.getElementById('incident-form');
+  if (form) form.reset();
+  if (modal) modal.classList.remove('hidden');
+}
+window.openCreateIncidentModal = openCreateIncidentModal;
+
+function closeIncidentModal() {
+  const modal = document.getElementById('incident-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeIncidentModal = closeIncidentModal;
+
+async function submitIncidentForm(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const title = document.getElementById('incident-form-title')?.value?.trim();
+  const status = document.getElementById('incident-form-status')?.value;
+  const severity = document.getElementById('incident-form-severity')?.value;
+  const monitor_id = document.getElementById('incident-form-monitor')?.value || null;
+  const message = document.getElementById('incident-form-message')?.value?.trim();
+
+  const saveBtn = document.getElementById('save-incident-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Posting...';
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/incidents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, status, severity, monitor_id, message }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to post incident');
+    }
+
+    closeIncidentModal();
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Incident Declared', message: `Incident "${title}" posted.`, type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Incident Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = 'Post Incident';
+    }
+  }
+}
+window.submitIncidentForm = submitIncidentForm;
+
+function openAddIncidentUpdateModal(id) {
+  const modal = document.getElementById('incident-update-modal');
+  const idEl = document.getElementById('update-form-incident-id');
+  if (idEl) idEl.value = id;
+  const msgEl = document.getElementById('update-form-message');
+  if (msgEl) msgEl.value = '';
+  if (modal) modal.classList.remove('hidden');
+}
+window.openAddIncidentUpdateModal = openAddIncidentUpdateModal;
+
+function closeIncidentUpdateModal() {
+  const modal = document.getElementById('incident-update-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeIncidentUpdateModal = closeIncidentUpdateModal;
+
+async function submitIncidentUpdateForm(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const id = document.getElementById('update-form-incident-id')?.value;
+  const status = document.getElementById('update-form-status')?.value;
+  const message = document.getElementById('update-form-message')?.value?.trim();
+
+  if (!id || !message) return;
+
+  const saveBtn = document.getElementById('save-update-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Posting...';
+  }
+
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}/updates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, message }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to post update');
+    }
+
+    closeIncidentUpdateModal();
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Update Posted', message: 'Incident update appended.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Update Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = 'Post Update';
+    }
+  }
+}
+window.submitIncidentUpdateForm = submitIncidentUpdateForm;
+
+async function resolveIncident(id) {
+  if (!id) return;
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Incident marked as resolved by administrator.' }),
+    });
+    if (!res.ok) throw new Error('Failed to resolve incident');
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Resolved', message: 'Incident marked as RESOLVED.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  }
+}
+window.resolveIncident = resolveIncident;
+
+async function deleteIncident(id) {
+  if (!id) return;
+  if (!confirm('Are you sure you want to delete this incident and all timeline updates?')) return;
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete incident');
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Deleted', message: 'Incident deleted.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  }
+}
+window.deleteIncident = deleteIncident;
+
+// ── JSON Configuration Export & Import ─────────────────────────────────────
+
+async function exportConfigJson() {
+  try {
+    const res = await apiFetch('/api/admin/export');
+    if (!res.ok) throw new Error('Export failed: ' + res.status);
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `keepup-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Export Complete', message: 'KeepUp configuration exported successfully.', type: 'success' });
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Export Failed', message: err.message, type: 'error' });
+    }
+  }
+}
+window.exportConfigJson = exportConfigJson;
+
+async function importConfigJson(inputEl) {
+  const file = inputEl?.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    const res = await apiFetch('/api/admin/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Import failed');
+    }
+    const result = await res.json();
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Import Successful',
+        message: `Imported ${result.imported_monitors} monitors, ${result.imported_channels} channels.`,
+        type: 'success',
+      });
+    }
+    inputEl.value = '';
+    fetchDashboardData(true);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Import Failed', message: err.message, type: 'error' });
+    }
+    inputEl.value = '';
+  }
+}
+window.importConfigJson = importConfigJson;
+
 // ── Initialization & Auto-Refresh Loop (Every 5 seconds) ─────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -2211,11 +2597,37 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const incidentBackdrop = document.getElementById('incident-modal');
+  if (incidentBackdrop) {
+    incidentBackdrop.addEventListener('click', (e) => {
+      if (e.target === incidentBackdrop) {
+        closeIncidentModal();
+      }
+    });
+  }
+
+  const updateBackdrop = document.getElementById('incident-update-modal');
+  if (updateBackdrop) {
+    updateBackdrop.addEventListener('click', (e) => {
+      if (e.target === updateBackdrop) {
+        closeIncidentUpdateModal();
+      }
+    });
+  }
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       const channelModal = document.getElementById('channel-modal');
       if (channelModal && !channelModal.classList.contains('hidden')) {
         closeChannelModal();
+      }
+      const incModal = document.getElementById('incident-modal');
+      if (incModal && !incModal.classList.contains('hidden')) {
+        closeIncidentModal();
+      }
+      const upModal = document.getElementById('incident-update-modal');
+      if (upModal && !upModal.classList.contains('hidden')) {
+        closeIncidentUpdateModal();
       }
     }
   });
@@ -2224,19 +2636,44 @@ document.addEventListener('DOMContentLoaded', () => {
     window.location.pathname.includes('login') ||
     window.location.pathname.includes('status');
 
+  function initLiveEventStream() {
+    if (window.EventSource) {
+      try {
+        const evtSource = new EventSource('/api/events');
+        evtSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.event === 'check_completed' || data.event === 'status_changed') {
+              if (!document.hidden && currentAdminView === 'monitors') {
+                fetchDashboardData(false);
+              }
+            }
+          } catch (_) {}
+        };
+        evtSource.onerror = () => {
+          // EventSource will auto-reconnect
+        };
+      } catch (_) {}
+    }
+  }
+
   if (!isAuthOrStatusPage) {
     setViewMode(window.currentViewMode);
     fetchDashboardData(true);
+    initLiveEventStream();
 
-    // Auto-refresh every 5 seconds per PRD requirements
+    // Auto-refresh fallback every 10 seconds (paused when tab hidden)
     setInterval(() => {
+      if (document.hidden) return;
       if (currentAdminView === 'assets') {
         loadAssetExpiryData(false);
       } else if (currentAdminView === 'channels') {
         loadNotificationChannels(false);
+      } else if (currentAdminView === 'incidents') {
+        loadAdminIncidents(false);
       } else {
         fetchDashboardData(false);
       }
-    }, 5000);
+    }, 10000);
   }
 });

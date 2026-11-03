@@ -460,6 +460,18 @@ async function loadStatusData() {
       if (descEl) descEl.textContent = data.description;
     }
 
+    // Update Custom Brand Logo if provided
+    const defaultLogo = document.getElementById('status-default-logo');
+    const customLogo = document.getElementById('status-custom-logo');
+    if (data.custom_logo_url && customLogo) {
+      customLogo.src = data.custom_logo_url;
+      customLogo.classList.remove('hidden');
+      if (defaultLogo) defaultLogo.classList.add('hidden');
+    } else if (customLogo && defaultLogo) {
+      customLogo.classList.add('hidden');
+      defaultLogo.classList.remove('hidden');
+    }
+
     // 2. Extract Monitors (handles data.monitors, data.groups, or raw array)
     let monitors = [];
     if (Array.isArray(data)) {
@@ -1002,7 +1014,7 @@ function renderIncidentTimeline(data) {
         (mw) => `
         <div class="relative pl-6 pb-6 border-l border-purple-500/30 space-y-1.5">
           <span class="absolute -left-1.5 top-1 h-3 w-3 rounded-full status-bar-maintenance timeline-ring"></span>
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
             <span class="font-semibold text-white text-xs uppercase tracking-wider">${escapeHtml(mw.title)}</span>
             <span class="px-2 py-0.5 rounded-full text-[10px] status-badge-maintenance font-medium">
               ${mw.is_active ? 'Active Maintenance' : 'Scheduled Maintenance'}
@@ -1016,27 +1028,89 @@ function renderIncidentTimeline(data) {
       .join('');
   }
 
+  const incidents = data.incidents || [];
+  let incidentTimelineHtml = '';
+  if (incidents.length > 0) {
+    incidentTimelineHtml = incidents
+      .map((inc) => {
+        const isResolved = inc.status === 'RESOLVED';
+        const statusColorClass = isResolved
+          ? 'status-badge-operational'
+          : inc.status === 'INVESTIGATING'
+          ? 'status-badge-down'
+          : 'status-badge-degraded';
+        const ringClass = isResolved
+          ? 'status-bar-operational'
+          : inc.status === 'INVESTIGATING'
+          ? 'status-bar-down'
+          : 'status-bar-degraded';
+
+        let updatesHtml = '';
+        if (Array.isArray(inc.updates) && inc.updates.length > 0) {
+          updatesHtml = `
+            <div class="mt-2.5 space-y-2 pl-3 border-l border-white/10 text-[11px]">
+              ${inc.updates
+                .map(
+                  (u) => `
+                <div class="space-y-0.5">
+                  <div class="flex items-center gap-2">
+                    <span class="font-semibold text-white/90 uppercase text-[10px]">${escapeHtml(u.status)}</span>
+                    <span class="text-white/40 font-mono text-[10px]">${escapeHtml(formatTimeUtc(u.created_at))}</span>
+                  </div>
+                  <p class="text-white/70 text-xs">${escapeHtml(u.message)}</p>
+                </div>
+              `
+                )
+                .join('')}
+            </div>
+          `;
+        }
+
+        return `
+          <div class="relative pl-6 pb-6 border-l border-white/15 space-y-1.5">
+            <span class="absolute -left-1.5 top-1 h-3 w-3 rounded-full ${ringClass} timeline-ring"></span>
+            <div class="flex items-center gap-2 flex-wrap">
+              <span class="font-semibold text-white text-xs uppercase tracking-wider">${escapeHtml(inc.title)}</span>
+              <span class="px-2 py-0.5 rounded-full text-[10px] ${statusColorClass} font-medium">
+                ${escapeHtml(inc.status)}
+              </span>
+              <span class="px-1.5 py-0.2 rounded text-[9px] bg-white/10 text-white/60 font-mono">
+                ${escapeHtml(inc.severity)}
+              </span>
+              <span class="text-[10px] text-white/40 font-mono ml-auto">
+                ${escapeHtml(formatTimeUtc(inc.started_at))}${inc.resolved_at ? ` — ${escapeHtml(formatTimeUtc(inc.resolved_at))}` : ''}
+              </span>
+            </div>
+            ${updatesHtml}
+          </div>
+        `;
+      })
+      .join('');
+  }
+
   let todayIncidentHtml = '';
-  if (anyDown) {
-    todayIncidentHtml = `
-      <div class="relative pl-6 pb-6 border-l border-[#ff453a]/30 space-y-1.5">
-        <span class="absolute -left-1.5 top-1 h-3 w-3 rounded-full status-bar-down timeline-ring"></span>
-        <div class="flex items-center gap-2">
-          <span class="font-semibold text-white text-xs uppercase tracking-wider">${todayStr}</span>
-          <span class="px-2 py-0.2 rounded-full text-[10px] status-badge-down font-medium">Active Outage</span>
+  if (incidents.length === 0) {
+    if (anyDown) {
+      todayIncidentHtml = `
+        <div class="relative pl-6 pb-6 border-l border-[#ff453a]/30 space-y-1.5">
+          <span class="absolute -left-1.5 top-1 h-3 w-3 rounded-full status-bar-down timeline-ring"></span>
+          <div class="flex items-center gap-2">
+            <span class="font-semibold text-white text-xs uppercase tracking-wider">${todayStr}</span>
+            <span class="px-2 py-0.2 rounded-full text-[10px] status-badge-down font-medium">Active Outage</span>
+          </div>
+          <p class="text-xs text-white/80 font-medium">Service Disruption Identified</p>
+          <p class="text-xs text-white/50">Our automated edge synthetic probes have detected endpoint failures. Health checks are actively retrying.</p>
         </div>
-        <p class="text-xs text-white/80 font-medium">Service Disruption Identified</p>
-        <p class="text-xs text-white/50">Our automated edge synthetic probes have detected endpoint failures. Health checks are actively retrying.</p>
-      </div>
-    `;
-  } else {
-    todayIncidentHtml = `
-      <div class="relative pl-6 pb-6 border-l border-white/10 space-y-1">
-        <span class="absolute -left-1.5 top-1 h-3 w-3 rounded-full status-bar-operational timeline-ring"></span>
-        <span class="font-semibold text-white text-xs uppercase tracking-wider">${todayStr}</span>
-        <p class="text-xs text-white/60">No incidents or service interruptions reported today.</p>
-      </div>
-    `;
+      `;
+    } else {
+      todayIncidentHtml = `
+        <div class="relative pl-6 pb-6 border-l border-white/10 space-y-1">
+          <span class="absolute -left-1.5 top-1 h-3 w-3 rounded-full status-bar-operational timeline-ring"></span>
+          <span class="font-semibold text-white text-xs uppercase tracking-wider">${todayStr}</span>
+          <p class="text-xs text-white/60">No incidents or service interruptions reported today.</p>
+        </div>
+      `;
+    }
   }
 
   // Generate 2 past days with clean operational history
@@ -1059,7 +1133,7 @@ function renderIncidentTimeline(data) {
     `;
   }
 
-  batchInsertHTML(container, maintTimelineHtml + todayIncidentHtml + pastDaysHtml);
+  batchInsertHTML(container, maintTimelineHtml + incidentTimelineHtml + todayIncidentHtml + pastDaysHtml);
 }
 
 // ── Refresh & Countdown Logic ────────────────────────────────────────────────
@@ -1336,85 +1410,9 @@ function renderMonitorDetailData(data) {
   }
 }
 
-async function triggerDetailPing() {
-  if (!currentDetailMonitorId) return;
-
-  const btn = document.getElementById('detail-modal-ping-btn');
-  const icon = document.getElementById('detail-ping-icon');
-  const text = document.getElementById('detail-ping-text');
-
-  if (btn) btn.disabled = true;
-  if (icon) icon.textContent = '⏳';
-  if (text) text.textContent = 'Pinging...';
-
-  try {
-    const fetchFn = window.apiFetch || window.fetch;
-    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/ping`, {
-      method: 'POST',
-      credentials: 'include',
-      skipAuthRedirect: true,
-    });
-
-    if (res.status === 401) {
-      if (typeof window.showToast === 'function') {
-        window.showToast({
-          title: 'Authentication Required',
-          message: 'Admin login required to trigger on-demand ping.',
-          type: 'warning',
-        });
-      } else {
-        alert('Admin login required to trigger on-demand ping.');
-      }
-      return;
-    }
-
-    if (!res.ok) {
-      if (typeof window.showToast === 'function') {
-        window.showToast({
-          title: 'Ping Failed',
-          message: `Server returned HTTP ${res.status}`,
-          type: 'error',
-        });
-      }
-      return;
-    }
-
-    const pingData = await res.json();
-    if (typeof window.showToast === 'function') {
-      window.showToast({
-        title: `Ping Result: ${pingData.status}`,
-        message: `HTTP ${pingData.status_code || '—'} in ${pingData.latency_ms} ms`,
-        type: pingData.status === 'UP' ? 'success' : 'error',
-      });
-    }
-
-    // Refresh telemetry immediately
-    const detailsRes = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/details`, {
-      credentials: 'include',
-    });
-    if (detailsRes.ok) {
-      const detailsData = await detailsRes.json();
-      renderMonitorDetailData(detailsData);
-    }
-  } catch (err) {
-    if (typeof window.showToast === 'function') {
-      window.showToast({
-        title: 'Ping Error',
-        message: err.message || 'Network error executing ping',
-        type: 'error',
-      });
-    }
-  } finally {
-    if (btn) btn.disabled = false;
-    if (icon) icon.textContent = '⚡';
-    if (text) text.textContent = 'Ping Now';
-  }
-}
-
 // Global exports
 window.openMonitorDetailModal = openMonitorDetailModal;
 window.closeMonitorDetailModal = closeMonitorDetailModal;
-window.triggerDetailPing = triggerDetailPing;
 
 document.addEventListener('click', (e) => {
   const detailCard = e.target.closest('[data-action="open-detail"]');

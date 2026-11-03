@@ -33,29 +33,7 @@
       }
     })();
   </script>
-  <script src="https://cdn.tailwindcss.com"></script>
-  <script>
-    tailwind.config = {
-      darkMode: 'class',
-      theme: {
-        extend: {
-          colors: {
-            status: {
-              bg: '#0b0b0c',
-              green: '#30d158',
-              red: '#ff453a',
-              yellow: '#ffd60a',
-              blue: '#0a84ff',
-            }
-          },
-          fontFamily: {
-            sans: ['system-ui', 'BlinkMacSystemFont', '"SF Pro Display"', '"SF Pro Text"', 'sans-serif'],
-            mono: ['"SF Mono"', 'ui-monospace', 'Menlo', 'Monaco', 'monospace'],
-          }
-        }
-      }
-    }
-  </script>
+  <link rel="stylesheet" href="/output.css">
   <style>
     /* Baseline CSS Variables */
     :root {
@@ -466,8 +444,10 @@
     <!-- Centered Brand Header / Logo -->
     <div id="status-page-header" class="flex flex-col items-center justify-center text-center space-y-3 pt-2 pb-1">
       <div class="flex items-center gap-3">
+        <!-- Brand Logo Container -->
+        <img id="status-custom-logo" class="w-8 h-8 shrink-0 rounded-lg object-contain hidden" alt="Brand Logo" />
         <!-- 32x32px Squircle SVG Logo Mark -->
-        <svg class="w-8 h-8 shrink-0" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
+        <svg id="status-default-logo" class="w-8 h-8 shrink-0" width="32" height="32" viewBox="0 0 32 32" fill="none" xmlns="http://www.w3.org/2000/svg">
           <rect x="0.5" y="0.5" width="31" height="31" rx="8.5" fill="#141416" stroke="url(#status-hero-border)" stroke-width="1" />
           <path d="M6 17H11L14 11L18 21L21 15H26" stroke="url(#status-hero-pulse)" stroke-width="2.2" stroke-linecap="round" stroke-linejoin="round" />
           <circle cx="25" cy="8" r="3" fill="#30D158" fill-opacity="0.35" filter="url(#status-hero-glow)" />
@@ -574,6 +554,11 @@
         <span>Powered by <strong class="text-white/80 font-semibold tracking-tight">KeepUp</strong> — Zero-overhead uptime engine</span>
       </div>
       <div class="flex items-center gap-4 text-white/50">
+        <a id="rss-feed-link" href="/status/rss.xml" class="hover:text-white transition flex items-center gap-1.5" title="RSS 2.0 Feed">
+          <svg class="w-3.5 h-3.5" viewBox="0 0 24 24" fill="currentColor"><circle cx="6.18" cy="17.82" r="2.18"/><path d="M4 4.44v2.83c7.03 0 12.73 5.7 12.73 12.73h2.83c0-8.59-6.97-15.56-15.56-15.56zm0 5.66v2.83c3.9 0 7.07 3.17 7.07 7.07h2.83c0-5.47-4.43-9.9-9.9-9.9z"/></svg>
+          RSS Feed
+        </a>
+        <span>•</span>
         <a href="/" class="hover:text-white transition">Dashboard</a>
         <span>•</span>
         <a href="https://github.com/RidloGhifary/keepup" target="_blank" rel="noopener noreferrer" class="hover:text-white transition">Documentation</a>
@@ -597,10 +582,6 @@
         </div>
 
         <div class="flex items-center gap-2 shrink-0">
-          <button id="detail-modal-ping-btn" type="button" onclick="triggerDetailPing()" class="px-3 py-1.5 rounded-xl bg-white/10 hover:bg-white/15 border border-white/15 text-white text-xs font-semibold flex items-center gap-1.5 transition active:scale-95 cursor-pointer disabled:opacity-50 disabled:cursor-not-allowed" title="Execute out-of-band manual ping">
-            <span id="detail-ping-icon">⚡</span>
-            <span id="detail-ping-text">Ping Now</span>
-          </button>
           <button type="button" data-action="close-detail-modal" onclick="closeMonitorDetailModal()" class="text-neutral-400 hover:text-white p-1.5 rounded-lg hover:bg-white/5 transition" title="Close Modal">
             <svg class="w-5 h-5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
