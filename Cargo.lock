@@ -1331,6 +1331,7 @@ dependencies = [
  "time",
  "tokio",
  "tokio-rustls",
+ "tokio-stream",
  "tower",
  "tower-http 0.5.2",
  "tower_governor",
@@ -2799,6 +2800,7 @@ dependencies = [
  "futures-core",
  "pin-project-lite",
  "tokio",
+ "tokio-util",
 ]
 
 [[package]]

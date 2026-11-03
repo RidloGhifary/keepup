@@ -16,9 +16,25 @@ use crate::AppState;
 pub(crate) struct Assets;
 
 /// Direct handler for public status pages (e.g. `/status` and `/status/*path`).
-pub async fn status_page_handler(uri: Uri) -> Response {
+pub async fn status_page_handler(
+    State(state): State<Arc<AppState>>,
+    uri: Uri,
+) -> Response {
     let raw_path = uri.path();
     let sub = raw_path.strip_prefix("/status/").unwrap_or("");
+    if sub == "rss.xml" {
+        return crate::api::observability::rss_feed_handler(State(state), None)
+            .await
+            .unwrap_or_else(|e| e.into_response());
+    } else if let Some(slug) = sub.strip_suffix("/rss.xml") {
+        return crate::api::observability::rss_feed_handler(
+            State(state),
+            Some(axum::extract::Path(slug.to_string())),
+        )
+        .await
+        .unwrap_or_else(|e| e.into_response());
+    }
+
     if !sub.is_empty() {
         if let Some(file) = Assets::get(sub) {
             let mime_type = guess_mime(sub);

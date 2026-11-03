@@ -1,4 +1,5 @@
 pub mod checks;
+pub mod incidents;
 pub mod maintenance;
 pub mod monitors;
 pub mod notifications;

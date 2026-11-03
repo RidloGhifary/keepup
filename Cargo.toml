@@ -10,6 +10,7 @@ homepage = "https://github.com/RidloGhifary/keepup"
 [dependencies]
 # Async Runtime & Web Framework
 tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "io-util"] }
+tokio-stream = { version = "0.1", features = ["sync"] }
 axum = { version = "0.7", features = ["macros"] }
 tower-http = { version = "0.5", features = ["cors", "compression-gzip", "set-header"] }
 

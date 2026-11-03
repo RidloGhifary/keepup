@@ -43,6 +43,7 @@ pub struct AppState {
             std::collections::HashMap<String, crate::checker::scheduler::MonitorState>,
         >,
     >,
+    pub events_tx: tokio::sync::broadcast::Sender<String>,
 }
 
 impl AppState {
@@ -63,6 +64,7 @@ impl AppState {
             std::time::Duration::from_secs(5),
         )
         .expect("valid test http client");
+        let (events_tx, _) = tokio::sync::broadcast::channel(100);
         Arc::new(Self {
             db,
             config,
@@ -71,6 +73,7 @@ impl AppState {
             session_version: Arc::new(AtomicU64::new(1)),
             status_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
             monitor_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            events_tx,
         })
     }
 }
@@ -79,6 +82,7 @@ impl AppState {
 /// explicit-only CORS, gzip compression, and defensive HTTP security headers.
 pub fn build_http_app(state: Arc<AppState>) -> axum::Router {
     let mut app = axum::Router::new()
+        .route("/metrics", axum::routing::get(api::observability::metrics_handler))
         .route("/status", axum::routing::get(ui::status_page_handler))
         .route("/status/*path", axum::routing::get(ui::status_page_handler))
         .route("/badge/:id", axum::routing::get(api::public::badge))
@@ -166,8 +170,9 @@ async fn main() -> anyhow::Result<()> {
     // Bootstrap persistent JWT secret, initial Argon2id admin password, and session_version.
     let initial_session_ver = api::auth::bootstrap_security_state(&pool, &mut config).await?;
 
-    // Create broadcast channel for monitor reload notifications.
+    // Create broadcast channels for monitor reload and live SSE events.
     let (reload_tx, reload_rx) = tokio::sync::broadcast::channel::<String>(100);
+    let (events_tx, _) = tokio::sync::broadcast::channel::<String>(100);
 
     // Build shared HTTP client with outbound SSRF guard for health checks & webhooks.
     let http_client = net_guard::build_http_client(
@@ -184,6 +189,7 @@ async fn main() -> anyhow::Result<()> {
         session_version: Arc::new(AtomicU64::new(initial_session_ver)),
         status_cache: Arc::new(tokio::sync::RwLock::new(std::collections::HashMap::new())),
         monitor_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        events_tx,
     });
 
     // Spawn the background health-check scheduler with reload receiver.

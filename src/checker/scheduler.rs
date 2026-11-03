@@ -186,6 +186,8 @@ pub async fn run_scheduler(
                 });
             }
             _ = tick.tick() => {
+                check_push_deadlines(&state).await;
+
                 let monitors = match fetch_due_monitors(&pool).await {
                     Ok(m) => m,
                     Err(e) => {
@@ -251,7 +253,25 @@ pub async fn run_scheduler(
 
                         if new_state.status != prev_state.status {
                             state_task.invalidate_status_cache().await;
+                            let _ = state_task.events_tx.send(
+                                serde_json::json!({
+                                    "event": "status_changed",
+                                    "monitor_id": monitor_id,
+                                    "old_status": prev_state.status,
+                                    "new_status": new_state.status,
+                                })
+                                .to_string(),
+                            );
                         }
+
+                        let _ = state_task.events_tx.send(
+                            serde_json::json!({
+                                "event": "check_completed",
+                                "monitor_id": monitor_id,
+                                "status": new_state.status,
+                            })
+                            .to_string(),
+                        );
 
                         if let Some(payload) = alert {
                             let p = pool_task.clone();
@@ -651,6 +671,8 @@ pub async fn run_check_and_evaluate(
                 .execute(pool)
                 .await;
 
+            let _ = crate::db::incidents::auto_resolve_incident_on_up(pool, &monitor.id).await;
+
             let payload = AlertPayload {
                 monitor_id: Some(monitor.id.clone()),
                 monitor_name: monitor.name.clone(),
@@ -724,7 +746,7 @@ pub async fn run_check_and_evaluate(
             "Check FAILED"
         );
 
-        if (prev.status == "UP" || prev.status == "MAINTENANCE") && next.consecutive_failures >= monitor.max_retries {
+        if (prev.status == "UP" || prev.status == "DEGRADED" || prev.status == "MAINTENANCE") && next.consecutive_failures >= monitor.max_retries {
             // ▸ Transition: UP/MAINTENANCE → DOWN
             let now = Utc::now();
             let now_rfc3339 = now.to_rfc3339();
@@ -747,6 +769,14 @@ pub async fn run_check_and_evaluate(
                 .bind(&monitor.id)
                 .execute(pool)
                 .await;
+
+            let _ = crate::db::incidents::auto_create_incident_on_down(
+                pool,
+                &monitor.id,
+                &monitor.name,
+                result.error_msg.as_deref().unwrap_or("Health check failed"),
+            )
+            .await;
 
             let payload = AlertPayload {
                 monitor_id: Some(monitor.id.clone()),
@@ -862,6 +892,7 @@ pub async fn fetch_due_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, sqlx:
                m.resend_interval_mins, m.last_alerted_at
         FROM   monitors m
         WHERE  m.is_active = 1
+          AND  m.push_token IS NULL
           AND  NOT EXISTS (
                  SELECT 1
                  FROM   check_logs cl
@@ -915,6 +946,131 @@ pub fn format_downtime_duration(secs: u64) -> String {
         format!("{m}m {s}s")
     } else {
         format!("{secs}s")
+    }
+}
+
+/// Check active push/heartbeat monitors and mark overdue ones as DOWN.
+/// Respects grace_secs and does NOT mark monitors DOWN before check_interval_secs + grace_secs
+/// has elapsed since creation (Review Focus #5).
+pub async fn check_push_deadlines(state: &AppState) {
+    let push_monitors: Vec<crate::db::monitors::Monitor> = match sqlx::query_as(
+        r#"
+        SELECT * FROM monitors
+        WHERE is_active = 1 AND push_token IS NOT NULL
+        "#,
+    )
+    .fetch_all(&state.db)
+    .await
+    {
+        Ok(m) => m,
+        Err(_) => return,
+    };
+
+    let now = Utc::now();
+
+    for monitor in push_monitors {
+        let last_time_str: Option<String> = sqlx::query_scalar(
+            "SELECT checked_at FROM check_logs WHERE monitor_id = ? ORDER BY checked_at DESC LIMIT 1"
+        )
+        .bind(&monitor.id)
+        .fetch_optional(&state.db)
+        .await
+        .unwrap_or(None);
+
+        let parse_dt = |s: &str| -> Option<chrono::DateTime<Utc>> {
+            let trimmed = s.trim();
+            if trimmed.is_empty() {
+                return None;
+            }
+            if let Ok(dt) = chrono::DateTime::parse_from_rfc3339(trimmed) {
+                return Some(dt.with_timezone(&Utc));
+            }
+            chrono::NaiveDateTime::parse_from_str(trimmed, "%Y-%m-%d %H:%M:%S")
+                .ok()
+                .map(|ndt| ndt.and_utc())
+        };
+
+        let baseline_time = match last_time_str {
+            Some(ref s) if !s.trim().is_empty() => parse_dt(s),
+            _ => parse_dt(&monitor.created_at),
+        };
+
+        let baseline = match baseline_time {
+            Some(b) => b,
+            None => now,
+        };
+
+        let deadline_secs = (monitor.check_interval_secs + monitor.grace_secs) as i64;
+        let is_overdue = (now - baseline).num_seconds() > deadline_secs;
+
+        if is_overdue && monitor.last_status != "DOWN" {
+            let error_msg = format!(
+                "Missed heartbeat deadline: expected every {}s (+{}s grace)",
+                monitor.check_interval_secs, monitor.grace_secs
+            );
+            let now_rfc = now.to_rfc3339();
+
+            let _ = sqlx::query(
+                r#"
+                INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, error_msg, checked_at)
+                VALUES (?, 500, 0, 0, ?, ?)
+                "#,
+            )
+            .bind(&monitor.id)
+            .bind(&error_msg)
+            .bind(&now_rfc)
+            .execute(&state.db)
+            .await;
+
+            let _ = crate::db::monitors::update_monitor_status(&state.db, &monitor.id, "DOWN", Some(&now_rfc)).await;
+            let _ = sqlx::query("UPDATE monitors SET last_alerted_at = ? WHERE id = ?")
+                .bind(&now_rfc)
+                .bind(&monitor.id)
+                .execute(&state.db)
+                .await;
+
+            let _ = crate::db::incidents::auto_create_incident_on_down(
+                &state.db,
+                &monitor.id,
+                &monitor.name,
+                &error_msg,
+            )
+            .await;
+
+            let _ = state.events_tx.send(
+                serde_json::json!({
+                    "event": "status_changed",
+                    "monitor_id": monitor.id,
+                    "old_status": monitor.last_status,
+                    "new_status": "DOWN",
+                })
+                .to_string(),
+            );
+
+            state.invalidate_status_cache().await;
+
+            let payload = AlertPayload {
+                monitor_id: Some(monitor.id.clone()),
+                monitor_name: monitor.name.clone(),
+                monitor_url: monitor.url.clone(),
+                new_status: "DOWN".to_string(),
+                old_status: monitor.last_status.clone(),
+                http_status: Some(500),
+                response_time_ms: None,
+                error_msg: Some(error_msg),
+                downtime_duration: None,
+                downtime_duration_secs: None,
+                timestamp: now_rfc,
+                domain_days_remaining: None,
+                domain_expires_at: None,
+            };
+
+            let p = state.db.clone();
+            let c = state.http_client.clone();
+            tokio::spawn(async move {
+                crate::alerting::dispatch_alerts(&p, &c, &payload).await;
+            });
+        }
     }
 }
 
@@ -1312,5 +1468,50 @@ mod tests {
             .await
             .unwrap();
         assert_eq!(remaining.0, 1, "The recent check log must remain");
+    }
+
+    #[tokio::test]
+    async fn test_push_heartbeat_deadline_scheduler_and_grace_period() {
+        let pool = crate::db::init_pool(":memory:").await.unwrap();
+        crate::db::run_migrations(&pool).await.unwrap();
+
+        let config = crate::config::Config::default();
+        let state = AppState::new_for_test(pool.clone(), config);
+
+        // 1. Create a push monitor with interval=60s, grace=30s
+        let monitor_id = "test-push-sched-1";
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, max_retries, is_active, is_public, last_status, push_token, grace_secs, created_at) \
+             VALUES (?, 'Nightly Backup', 'push://backup', 60, 5, 1, 1, 1, 'UP', 'token-push-sched-1', 30, datetime('now'))"
+        )
+        .bind(monitor_id)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Check immediately: created 0s ago <= 60+30s -> NOT overdue
+        check_push_deadlines(&state).await;
+        let mon: crate::db::monitors::Monitor = sqlx::query_as("SELECT * FROM monitors WHERE id = ?")
+            .bind(monitor_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(mon.last_status, "UP", "Newly created push monitor must NOT trigger DOWN before deadline (Review Focus #5)");
+
+        // 2. Simulate time passing past deadline by updating created_at to 120s ago
+        sqlx::query("UPDATE monitors SET created_at = datetime('now', '-120 seconds') WHERE id = ?")
+            .bind(monitor_id)
+            .execute(&pool)
+            .await
+            .unwrap();
+
+        check_push_deadlines(&state).await;
+        let mon_down: crate::db::monitors::Monitor = sqlx::query_as("SELECT * FROM monitors WHERE id = ?")
+            .bind(monitor_id)
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(mon_down.last_status, "DOWN", "Overdue push monitor must transition to DOWN");
+        assert!(mon_down.down_since.is_some());
     }
 }

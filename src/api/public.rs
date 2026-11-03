@@ -288,6 +288,15 @@ pub async fn get_public_status_impl(
         .or_else(|_| std::env::var("KEEPUP_THEME"))
         .ok();
 
+    let monitor_ids: Vec<String> = public_monitors.iter().map(|m| m.id.clone()).collect();
+    let incidents = crate::db::incidents::get_public_incidents_for_page(
+        &state.db,
+        Some(slug),
+        &monitor_ids,
+    )
+    .await
+    .unwrap_or_default();
+
     Ok(PublicStatus {
         title,
         description,
@@ -295,7 +304,7 @@ pub async fn get_public_status_impl(
         status_page_theme,
         custom_logo_url: state.config.custom_logo_url.clone(),
         maintenance_windows,
-        incidents: Vec::new(),
+        incidents,
         groups,
         monitors: public_monitors,
     })
@@ -1507,7 +1516,7 @@ mod tests {
 
         // 6. Test UI status_page_handler for /status/dri serves HTML
         let uri_page = axum::http::Uri::from_static("/status/dri");
-        let html_res = crate::ui::status_page_handler(uri_page).await;
+        let html_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_page).await;
         assert_eq!(html_res.status(), StatusCode::OK);
         assert_eq!(
             html_res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
@@ -1522,7 +1531,7 @@ mod tests {
 
         // 7. Test UI status_page_handler for /status/status.js serves JS (NOT HTML!)
         let uri_js = axum::http::Uri::from_static("/status/status.js");
-        let js_res = crate::ui::status_page_handler(uri_js).await;
+        let js_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_js).await;
         assert_eq!(js_res.status(), StatusCode::OK);
         assert!(
             js_res

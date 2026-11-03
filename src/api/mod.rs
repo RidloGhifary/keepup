@@ -1,10 +1,13 @@
 pub mod admin;
 pub mod auth;
 pub mod dto;
+pub mod incidents;
 pub mod logs;
 pub mod maintenance;
 pub mod monitors;
+pub mod observability;
 pub mod public;
+pub mod push;
 pub mod status_pages;
 
 use std::sync::Arc;
@@ -139,6 +142,38 @@ fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             get(admin::get_monitor_channels),
         )
         .route("/monitors/:id/channels", get(admin::get_monitor_channels))
+        .route("/admin/dashboard", get(observability::dashboard_batch_handler))
+        .route("/dashboard", get(observability::dashboard_batch_handler))
+        .route("/admin/export", get(observability::export_handler))
+        .route("/export", get(observability::export_handler))
+        .route("/admin/import", post(observability::import_handler))
+        .route("/import", post(observability::import_handler))
+        .route("/admin/events", get(observability::events_sse_handler))
+        .route("/events", get(observability::events_sse_handler))
+        .route(
+            "/admin/incidents",
+            get(incidents::list_incidents).post(incidents::create_incident),
+        )
+        .route(
+            "/incidents",
+            get(incidents::list_incidents).post(incidents::create_incident),
+        )
+        .route(
+            "/admin/incidents/:id/updates",
+            post(incidents::add_update),
+        )
+        .route(
+            "/incidents/:id/updates",
+            post(incidents::add_update),
+        )
+        .route(
+            "/admin/incidents/:id",
+            axum::routing::delete(incidents::delete_incident),
+        )
+        .route(
+            "/incidents/:id",
+            axum::routing::delete(incidents::delete_incident),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
             state,
             crate::middleware::auth::require_auth,
@@ -147,6 +182,7 @@ fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .nest("/auth", auth_routes)
         .nest("/public", public_api)
+        .route("/push/:token", get(push::push_handler).post(push::push_handler))
         .route("/badge/:id", get(public::badge))
         .route("/admin/monitors/:id/details", get(admin::get_monitor_details))
         .route("/monitors/:id/details", get(admin::get_monitor_details))
