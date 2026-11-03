@@ -222,6 +222,27 @@ function updateOverviewHero(statusData) {
 
 // ── Rendering Monitors (Card Grid vs Compact List) ───────────────────────────
 
+window.monitorsCurrentPage = 1;
+window.monitorsPageSize = 12;
+
+function changeMonitorsPage(page) {
+  window.monitorsCurrentPage = Number(page);
+  renderMonitors();
+  const panel = document.getElementById('monitors-panel');
+  if (panel && window.scrollY > panel.offsetTop + 100) {
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function changeMonitorsPageSize(size) {
+  window.monitorsPageSize = size === 'all' ? 'all' : parseInt(size, 10) || 12;
+  window.monitorsCurrentPage = 1;
+  renderMonitors();
+}
+
+window.changeMonitorsPage = changeMonitorsPage;
+window.changeMonitorsPageSize = changeMonitorsPageSize;
+
 function renderMonitors() {
   const container = document.getElementById('monitors-container');
   if (!container) return;
@@ -237,6 +258,10 @@ function renderMonitors() {
   const countBadge = document.getElementById('monitors-count-badge');
   if (countBadge) countBadge.innerText = `${filtered.length} target${filtered.length === 1 ? '' : 's'}`;
 
+  const paginationContainer = document.getElementById('monitors-pagination-container');
+  const pageInfo = document.getElementById('monitors-page-info');
+  const paginationControls = document.getElementById('monitors-pagination-controls');
+
   if (filtered.length === 0) {
     container.className = 'w-full';
     batchInsertHTML(
@@ -251,15 +276,105 @@ function renderMonitors() {
       </div>
     `
     );
+    if (paginationContainer) paginationContainer.classList.add('hidden');
     return;
   }
 
+  // Calculate pagination bounds
+  const totalItems = filtered.length;
+  const isAll = window.monitorsPageSize === 'all';
+  const pageSize = isAll ? totalItems : window.monitorsPageSize;
+  const totalPages = isAll ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
+
+  // Clamp current page
+  if (window.monitorsCurrentPage > totalPages) {
+    window.monitorsCurrentPage = totalPages;
+  }
+  if (window.monitorsCurrentPage < 1) {
+    window.monitorsCurrentPage = 1;
+  }
+
+  const currentPage = window.monitorsCurrentPage;
+  const startIndex = isAll ? 0 : (currentPage - 1) * pageSize;
+  const endIndex = isAll ? totalItems : Math.min(startIndex + pageSize, totalItems);
+  const pageItems = filtered.slice(startIndex, endIndex);
+
   if (window.currentViewMode === 'grid') {
     container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
-    batchInsertHTML(container, filtered.map((m) => renderMonitorCard(m)).join(''));
+    batchInsertHTML(container, pageItems.map((m) => renderMonitorCard(m)).join(''));
   } else {
     container.className = 'space-y-2.5';
-    batchInsertHTML(container, filtered.map((m) => renderMonitorListRow(m)).join(''));
+    batchInsertHTML(container, pageItems.map((m) => renderMonitorListRow(m)).join(''));
+  }
+
+  // Render pagination controls
+  if (paginationContainer) {
+    paginationContainer.classList.remove('hidden');
+
+    if (pageInfo) {
+      if (isAll || totalItems <= pageSize) {
+        pageInfo.innerText = `Showing all ${totalItems} target${totalItems === 1 ? '' : 's'}`;
+      } else {
+        pageInfo.innerText = `Showing ${startIndex + 1}–${endIndex} of ${totalItems} targets`;
+      }
+    }
+
+    if (paginationControls) {
+      if (totalPages <= 1) {
+        paginationControls.innerHTML = '';
+      } else {
+        let controlsHtml = '';
+
+        // Previous button
+        const prevDisabled = currentPage === 1;
+        controlsHtml += `
+          <button type="button" ${prevDisabled ? 'disabled' : `onclick="changeMonitorsPage(${currentPage - 1})"`} class="px-2.5 py-1 rounded-lg border border-white/10 ${prevDisabled ? 'opacity-30 cursor-not-allowed text-white/30' : 'text-white/70 hover:text-white hover:bg-white/10 cursor-pointer'} transition flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+            <span class="hidden sm:inline">Prev</span>
+          </button>
+        `;
+
+        // Smart page windowing
+        let pages = [];
+        if (totalPages <= 7) {
+          for (let i = 1; i <= totalPages; i++) pages.push(i);
+        } else {
+          pages.push(1);
+          if (currentPage > 3) pages.push('...');
+          const start = Math.max(2, currentPage - 1);
+          const end = Math.min(totalPages - 1, currentPage + 1);
+          for (let i = start; i <= end; i++) pages.push(i);
+          if (currentPage < totalPages - 2) pages.push('...');
+          pages.push(totalPages);
+        }
+
+        pages.forEach((p) => {
+          if (p === '...') {
+            controlsHtml += `<span class="px-1.5 py-1 text-white/30 text-xs">…</span>`;
+          } else {
+            const isActive = p === currentPage;
+            controlsHtml += `
+              <button type="button" onclick="changeMonitorsPage(${p})" class="w-7 h-7 rounded-lg text-xs font-mono font-medium transition flex items-center justify-center cursor-pointer ${isActive ? 'bg-[#30d158] text-[#0b0b0c] font-bold shadow-sm' : 'text-white/70 hover:text-white hover:bg-white/10 border border-white/10'}">${p}</button>
+            `;
+          }
+        });
+
+        // Next button
+        const nextDisabled = currentPage === totalPages;
+        controlsHtml += `
+          <button type="button" ${nextDisabled ? 'disabled' : `onclick="changeMonitorsPage(${currentPage + 1})"`} class="px-2.5 py-1 rounded-lg border border-white/10 ${nextDisabled ? 'opacity-30 cursor-not-allowed text-white/30' : 'text-white/70 hover:text-white hover:bg-white/10 cursor-pointer'} transition flex items-center gap-1">
+            <span class="hidden sm:inline">Next</span>
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          </button>
+        `;
+
+        paginationControls.innerHTML = controlsHtml;
+      }
+    }
   }
 }
 
@@ -692,6 +807,7 @@ function setViewMode(mode) {
 }
 
 function filterMonitors() {
+  window.monitorsCurrentPage = 1;
   renderMonitors();
 }
 
@@ -2558,9 +2674,63 @@ async function importConfigJson(inputEl) {
 }
 window.importConfigJson = importConfigJson;
 
+// ── Consolidated Navigation Dropdown Menu ────────────────────────────────────
+
+function toggleNavDropdown(e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  const menu = document.getElementById('nav-dropdown-menu');
+  const btn = document.getElementById('nav-dropdown-btn');
+  const caret = document.getElementById('nav-dropdown-caret');
+  if (!menu) return;
+
+  const isHidden = menu.classList.contains('hidden');
+  if (isHidden) {
+    menu.classList.remove('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+    if (caret) caret.classList.add('rotate-180');
+  } else {
+    menu.classList.add('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (caret) caret.classList.remove('rotate-180');
+  }
+}
+
+function closeNavDropdown() {
+  const menu = document.getElementById('nav-dropdown-menu');
+  const btn = document.getElementById('nav-dropdown-btn');
+  const caret = document.getElementById('nav-dropdown-caret');
+  if (menu && !menu.classList.contains('hidden')) {
+    menu.classList.add('hidden');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (caret) caret.classList.remove('rotate-180');
+  }
+}
+
+window.toggleNavDropdown = toggleNavDropdown;
+window.closeNavDropdown = closeNavDropdown;
+
+async function loadNavUserProfile() {
+  try {
+    const res = await apiFetch('/api/auth/me');
+    if (res && res.user) {
+      const label = document.getElementById('nav-user-label');
+      if (label) label.textContent = res.user;
+    }
+  } catch (_) {}
+}
+
 // ── Initialization & Auto-Refresh Loop (Every 5 seconds) ─────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('click', (e) => {
+    const container = document.getElementById('nav-dropdown-container');
+    if (container && !container.contains(e.target)) {
+      closeNavDropdown();
+    }
+  });
   const badgeBackdrop = document.getElementById('badge-modal');
   if (badgeBackdrop) {
     badgeBackdrop.addEventListener('click', (e) => {
@@ -2617,6 +2787,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      closeNavDropdown();
       const channelModal = document.getElementById('channel-modal');
       if (channelModal && !channelModal.classList.contains('hidden')) {
         closeChannelModal();
@@ -2659,6 +2830,7 @@ document.addEventListener('DOMContentLoaded', () => {
 
   if (!isAuthOrStatusPage) {
     setViewMode(window.currentViewMode);
+    loadNavUserProfile();
     fetchDashboardData(true);
     initLiveEventStream();
 

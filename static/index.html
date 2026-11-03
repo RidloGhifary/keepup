@@ -542,62 +542,81 @@
         </div>
       </nav>
 
-      <!-- Zone 3: Right Zone (Actions & Security Utilities) -->
+      <!-- Zone 3: Right Zone (Actions & Consolidated Dropdown) -->
       <div class="flex items-center gap-2 sm:gap-2.5 shrink-0">
-        <!-- Export & Import JSON Config -->
-        <button id="btn-export-json" onclick="exportConfigJson()" class="h-8 px-2.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/5 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer" title="Export Configuration as JSON">
-          <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
-          </svg>
-          <span class="hidden lg:inline">Export</span>
-        </button>
-        <label for="import-file-input" class="h-8 px-2.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/5 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer" title="Import Configuration from JSON">
-          <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12"/>
-          </svg>
-          <span class="hidden lg:inline">Import</span>
-          <input type="file" id="import-file-input" accept=".json,application/json" class="hidden" onchange="importConfigJson(this)" />
-        </label>
-
-        <!-- Public Page Link: Ghost action link with external indicator -->
-        <a href="/status" target="_blank" rel="noopener noreferrer" class="h-8 px-2.5 rounded-lg text-xs font-medium text-white/60 hover:text-white hover:bg-white/5 transition flex items-center gap-1.5 whitespace-nowrap" title="Open Public Status Page">
-          <span class="hidden md:inline">Public Page</span>
-          <svg class="w-3.5 h-3.5 shrink-0 text-white/40" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
-          </svg>
-        </a>
-
         <!-- Primary CTA: High-contrast emerald styling with glow on hover -->
         <button onclick="openEditMonitorModal(null)" class="h-8 px-3 sm:px-3.5 rounded-lg bg-[#30d158] hover:bg-[#28b84d] text-[#0b0b0c] text-xs font-semibold shadow-sm hover:shadow-[0_0_15px_rgba(48,209,88,0.35)] active:scale-95 transition flex items-center gap-1.5 whitespace-nowrap cursor-pointer">
           <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
           </svg>
-          <span class="hidden sm:inline">Add Monitor</span>
-          <span class="sm:hidden">Add</span>
+          <span>Add Monitor</span>
         </button>
 
-        <!-- Utility Actions Cluster: Refresh, Password, Logout with identical 28x28px bounding boxes -->
-        <div class="flex items-center bg-white/5 p-0.5 rounded-lg border border-white/10 space-x-0.5">
-          <!-- Manual Refresh Button -->
-          <button id="refresh-btn" onclick="fetchDashboardData(true)" class="w-7 h-7 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition flex items-center justify-center cursor-pointer" title="Refresh Telemetry">
-            <svg id="refresh-icon" class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+        <!-- Manual Refresh Button -->
+        <button id="refresh-btn" onclick="fetchDashboardData(true)" class="h-8 w-8 rounded-lg bg-white/5 hover:bg-white/10 text-white/60 hover:text-white border border-white/10 transition flex items-center justify-center cursor-pointer shrink-0" title="Refresh Telemetry">
+          <svg id="refresh-icon" class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+          </svg>
+        </button>
+
+        <!-- Consolidated Dropdown Menu: Public Page, Export, Import, Change Password, Logout -->
+        <div class="relative" id="nav-dropdown-container">
+          <button id="nav-dropdown-btn" type="button" onclick="toggleNavDropdown(event)" class="h-8 px-2.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 hover:text-white border border-white/10 transition flex items-center gap-1.5 text-xs font-medium cursor-pointer" aria-expanded="false" aria-haspopup="true" title="Settings & Account">
+            <span class="w-2 h-2 rounded-full bg-[#30d158] shrink-0"></span>
+            <span id="nav-user-label" class="hidden sm:inline">Admin</span>
+            <svg class="w-3 h-3 text-white/40 transition-transform duration-200 shrink-0" id="nav-dropdown-caret" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
             </svg>
           </button>
 
-          <!-- Password Modal Trigger -->
-          <button type="button" data-action="open-password-modal" onclick="openPasswordModal()" class="w-7 h-7 rounded-md text-white/60 hover:text-white hover:bg-white/10 transition flex items-center justify-center cursor-pointer" title="Change Admin Password">
-            <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
-            </svg>
-          </button>
+          <div id="nav-dropdown-menu" class="hidden absolute right-0 mt-2 w-56 rounded-xl bg-zinc-950/95 backdrop-blur-xl border border-white/10 shadow-2xl py-1 z-50 text-xs">
+            <!-- Open Public Status Page -->
+            <a href="/status" target="_blank" rel="noopener noreferrer" onclick="closeNavDropdown()" class="flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition">
+              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 6H6a2 2 0 00-2 2v10a2 2 0 002 2h10a2 2 0 002-2v-4M14 4h6m0 0v6m0-6L10 14"/>
+              </svg>
+              <span>Public Status Page</span>
+            </a>
 
-          <!-- Admin Logout Button -->
-          <button onclick="handleLogout()" class="w-7 h-7 rounded-md text-white/60 hover:text-[#ff453a] hover:bg-white/10 transition flex items-center justify-center cursor-pointer" title="Log Out">
-            <svg class="w-3.5 h-3.5 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
-            </svg>
-          </button>
+            <div class="h-px bg-white/10 my-1"></div>
+
+            <!-- Export Config (JSON) -->
+            <button type="button" id="btn-export-json" onclick="closeNavDropdown(); exportConfigJson()" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer">
+              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4"/>
+              </svg>
+              <span>Export Config (JSON)</span>
+            </button>
+
+            <!-- Import Config (JSON) -->
+            <label for="import-file-input" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer">
+              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-8l4-4m0 0l4 4m-4-4v12"/>
+              </svg>
+              <span>Import Config (JSON)</span>
+              <input type="file" id="import-file-input" accept=".json,application/json" class="hidden" onchange="closeNavDropdown(); importConfigJson(this)" />
+            </label>
+
+            <div class="h-px bg-white/10 my-1"></div>
+
+            <!-- Change Password -->
+            <button type="button" data-action="open-password-modal" onclick="closeNavDropdown(); openPasswordModal()" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-white/70 hover:text-white hover:bg-white/10 transition cursor-pointer">
+              <svg class="w-4 h-4 text-white/50 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 15v2m-6 4h12a2 2 0 002-2v-6a2 2 0 00-2-2H6a2 2 0 00-2 2v6a2 2 0 002 2zm10-10V7a4 4 0 00-8 0v4h8z"/>
+              </svg>
+              <span>Change Password</span>
+            </button>
+
+            <div class="h-px bg-white/10 my-1"></div>
+
+            <!-- Log Out -->
+            <button type="button" onclick="closeNavDropdown(); handleLogout()" class="w-full text-left flex items-center gap-2.5 px-3.5 py-2 text-rose-400 hover:text-rose-300 hover:bg-rose-500/10 transition cursor-pointer">
+              <svg class="w-4 h-4 text-rose-400 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M17 16l4-4m0 0l-4-4m4 4H7m6 4v1a3 3 0 01-3 3H6a3 3 0 01-3-3V7a3 3 0 013-3h4a3 3 0 013 3v1"/>
+              </svg>
+              <span>Log Out</span>
+            </button>
+          </div>
         </div>
       </div>
     </div>
@@ -699,6 +718,27 @@
           <!-- Rendered dynamically by app.js -->
           <div class="col-span-full glass-card rounded-2xl p-12 text-center text-white/50 text-xs">
             Loading health monitors...
+          </div>
+        </div>
+
+        <!-- Monitors Pagination & Limit Controls -->
+        <div id="monitors-pagination-container" class="hidden flex flex-col sm:flex-row items-center justify-between gap-3 pt-4 border-t border-white/5 text-xs text-white/60">
+          <div class="flex items-center gap-3">
+            <span id="monitors-page-info">Showing 0 of 0 targets</span>
+            <div class="flex items-center gap-1.5 pl-3 border-l border-white/10">
+              <label for="monitors-page-size" class="text-white/40">Per page:</label>
+              <select id="monitors-page-size" onchange="changeMonitorsPageSize(this.value)" class="bg-black/40 border border-white/10 rounded-lg px-2 py-1 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158] cursor-pointer">
+                <option value="6">6</option>
+                <option value="12" selected>12</option>
+                <option value="24">24</option>
+                <option value="48">48</option>
+                <option value="all">All</option>
+              </select>
+            </div>
+          </div>
+
+          <div id="monitors-pagination-controls" class="flex items-center gap-1">
+            <!-- Dynamic Page Buttons inserted by app.js -->
           </div>
         </div>
       </section>
@@ -874,11 +914,11 @@
   </footer>
 
   <!-- ── 6. Modal (Workspace: Edit & Create Monitors) ─────────────── -->
-  <div id="modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/80 flex items-start justify-center p-4 sm:p-6 overflow-y-auto transition-all duration-300">
-    <div id="modal-card" class="bg-zinc-950 border border-white/10 rounded-2xl w-[90vw] max-w-6xl h-[90vh] mt-8 shadow-2xl relative flex flex-col transition-all duration-300 ease-out transform scale-95 opacity-0 overflow-hidden text-white">
+  <div id="modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/80 flex items-center justify-center p-3 sm:p-5 overflow-y-auto transition-all duration-300">
+    <div id="modal-card" class="bg-zinc-950 border border-white/10 rounded-2xl w-full max-w-4xl max-h-[90vh] my-auto shadow-2xl relative flex flex-col transition-all duration-300 ease-out transform scale-95 opacity-0 overflow-hidden text-white">
       
       <!-- Fixed Header Bar -->
-      <div class="p-5 sm:p-6 border-b border-white/10 bg-zinc-950/90 backdrop-blur-md flex items-center justify-between shrink-0">
+      <div class="px-6 py-4 border-b border-white/10 bg-zinc-950/90 backdrop-blur-md flex items-center justify-between shrink-0">
         <div>
           <h3 id="modal-title" class="text-lg sm:text-xl font-bold tracking-tight text-white">Add New Monitor</h3>
           <p id="modal-subtitle" class="text-xs text-white/50 mt-0.5">Configure synthetic HTTP/TCP probes, SLA thresholds, and alert routing</p>
@@ -896,25 +936,25 @@
 
         <!-- Scrollable 2-Column Workspace Body -->
         <div class="flex-1 overflow-y-auto p-5 sm:p-6">
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 sm:gap-8">
+          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
             
             <!-- Left Column: Core Endpoint Configuration -->
-            <div class="space-y-5">
-              <div class="border-b border-white/5 pb-2">
-                <h4 class="text-xs font-semibold uppercase tracking-wider text-[#30d158] font-mono">1. Endpoint Parameters</h4>
-                <p class="text-[11px] text-white/50">Core target connection and interval thresholds</p>
+            <div class="space-y-4">
+              <div class="flex items-center gap-2 pb-1.5 border-b border-white/10">
+                <span class="w-1.5 h-3.5 bg-[#30d158] rounded-full"></span>
+                <h4 class="text-xs font-semibold uppercase tracking-wider text-white font-mono">1. Endpoint Parameters</h4>
               </div>
 
               <!-- Friendly Name -->
-              <div>
-                <label for="m-name" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Friendly Name</label>
-                <input required id="m-name" type="text" placeholder="e.g. Production API Gateway" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm" />
+              <div class="space-y-1.5">
+                <label for="m-name" class="block font-medium text-white/80 text-xs sm:text-sm">Friendly Name</label>
+                <input required id="m-name" type="text" placeholder="e.g. Production API Gateway" class="w-full h-10 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm" />
               </div>
 
               <!-- Probe Protocol Selector -->
-              <div>
-                <label for="m-probe-type" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Probe Protocol</label>
-                <select id="m-probe-type" onchange="onProbeTypeChange()" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm font-sans">
+              <div class="space-y-1.5">
+                <label for="m-probe-type" class="block font-medium text-white/80 text-xs sm:text-sm">Probe Protocol</label>
+                <select id="m-probe-type" onchange="onProbeTypeChange()" class="w-full h-10 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm font-sans cursor-pointer">
                   <option value="http">HTTP / HTTPS Probe</option>
                   <option value="tcp">TCP Port Socket Probe</option>
                   <option value="dns">DNS Record Resolution</option>
@@ -923,40 +963,41 @@
               </div>
 
               <!-- Target URL with HTTP/HTTPS validation indicator -->
-              <div>
-                <div class="flex items-center justify-between mb-1.5">
+              <div class="space-y-1.5">
+                <div class="flex items-center justify-between">
                   <label for="m-url" id="m-url-label" class="block font-medium text-white/80 text-xs sm:text-sm">Target URL</label>
                   <span id="url-validation-indicator" class="text-[10px] font-mono flex items-center gap-1.5">
                     <span class="w-1.5 h-1.5 rounded-full bg-white/30"></span>
                     <span class="text-white/40">HTTP / HTTPS</span>
                   </span>
                 </div>
-                <input required id="m-url" type="text" placeholder="https://api.example.com/health" oninput="validateUrlInput(this)" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
-                <p id="m-url-hint" class="text-[11px] text-white/40 mt-1">Accepts standard HTTPS or HTTP endpoints with custom ports</p>
+                <input required id="m-url" type="text" placeholder="https://api.example.com/health" oninput="validateUrlInput(this)" class="w-full h-10 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                <p id="m-url-hint" class="text-[11px] text-white/40">Accepts standard HTTPS or HTTP endpoints with custom ports</p>
               </div>
 
               <!-- Interval, Timeout, Max Retries Grid -->
               <div class="grid grid-cols-3 gap-3">
-                <div>
-                  <label for="m-interval" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Interval (s)</label>
-                  <input required id="m-interval" type="number" min="5" max="86400" value="60" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                <div class="space-y-1.5">
+                  <label for="m-interval" class="block font-medium text-white/80 text-xs">Interval (s)</label>
+                  <input required id="m-interval" type="number" min="5" max="86400" value="60" class="w-full h-10 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
                 </div>
-                <div>
-                  <label for="m-timeout" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Timeout (s)</label>
-                  <input required id="m-timeout" type="number" min="1" max="60" value="5" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                <div class="space-y-1.5">
+                  <label for="m-timeout" class="block font-medium text-white/80 text-xs">Timeout (s)</label>
+                  <input required id="m-timeout" type="number" min="1" max="60" value="5" class="w-full h-10 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
                 </div>
-                <div>
-                  <label for="m-retries" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Max Retries</label>
-                  <input required id="m-retries" type="number" min="1" max="10" value="3" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                <div class="space-y-1.5">
+                  <label for="m-retries" class="block font-medium text-white/80 text-xs">Max Retries</label>
+                  <input required id="m-retries" type="number" min="1" max="10" value="3" class="w-full h-10 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
                 </div>
               </div>
 
               <!-- HTTP Probing Assertions & Options -->
-              <div id="m-http-options" class="space-y-4 pt-3 border-t border-white/5">
+              <div id="m-http-options" class="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-3.5">
+                <div class="text-xs font-semibold uppercase tracking-wider text-white/60 font-mono">HTTP Assertions</div>
                 <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label for="m-http-method" class="block font-medium text-white/80 text-xs mb-1">HTTP Method</label>
-                    <select id="m-http-method" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono">
+                  <div class="space-y-1">
+                    <label for="m-http-method" class="block font-medium text-white/70 text-xs">HTTP Method</label>
+                    <select id="m-http-method" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]">
                       <option value="GET">GET</option>
                       <option value="POST">POST</option>
                       <option value="HEAD">HEAD</option>
@@ -966,45 +1007,46 @@
                       <option value="OPTIONS">OPTIONS</option>
                     </select>
                   </div>
-                  <div>
-                    <label for="m-expected-status" class="block font-medium text-white/80 text-xs mb-1">Expected Status</label>
-                    <input id="m-expected-status" type="text" value="200-299" placeholder="200-299 or 200,204" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  <div class="space-y-1">
+                    <label for="m-expected-status" class="block font-medium text-white/70 text-xs">Expected Status</label>
+                    <input id="m-expected-status" type="text" value="200-299" placeholder="200-299" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
                   </div>
                 </div>
 
-                <div>
-                  <label for="m-request-headers" class="block font-medium text-white/80 text-xs mb-1">Request Headers (JSON or Key: Value)</label>
-                  <textarea id="m-request-headers" rows="2" placeholder='{"Authorization": "Bearer token", "X-Custom": "val"}' class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono"></textarea>
+                <div class="space-y-1">
+                  <label for="m-request-headers" class="block font-medium text-white/70 text-xs">Request Headers (JSON or Key: Value)</label>
+                  <textarea id="m-request-headers" rows="2" placeholder='{"Authorization": "Bearer ...", "X-Custom": "val"}' class="w-full rounded-lg px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]"></textarea>
                 </div>
 
-                <div>
-                  <label for="m-body-keyword" class="block font-medium text-white/80 text-xs mb-1">Response Body Keyword Search</label>
-                  <input id="m-body-keyword" type="text" placeholder="e.g. status: ok" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                <div class="space-y-1">
+                  <label for="m-body-keyword" class="block font-medium text-white/70 text-xs">Response Body Keyword Search</label>
+                  <input id="m-body-keyword" type="text" placeholder="e.g. status: ok" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
                 </div>
 
                 <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label for="m-json-pointer" class="block font-medium text-white/80 text-xs mb-1">JSON Pointer Path</label>
-                    <input id="m-json-pointer" type="text" placeholder="/data/status" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  <div class="space-y-1">
+                    <label for="m-json-pointer" class="block font-medium text-white/70 text-xs">JSON Pointer Path</label>
+                    <input id="m-json-pointer" type="text" placeholder="/data/status" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
                   </div>
-                  <div>
-                    <label for="m-json-expected" class="block font-medium text-white/80 text-xs mb-1">JSON Expected Value</label>
-                    <input id="m-json-expected" type="text" placeholder="healthy" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  <div class="space-y-1">
+                    <label for="m-json-expected" class="block font-medium text-white/70 text-xs">JSON Expected Value</label>
+                    <input id="m-json-expected" type="text" placeholder="healthy" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
                   </div>
                 </div>
 
-                <div>
-                  <label for="m-degraded-latency" class="block font-medium text-white/80 text-xs mb-1">Degraded Latency Threshold (ms)</label>
-                  <input id="m-degraded-latency" type="number" min="1" placeholder="e.g. 1500 (warn if slower)" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                <div class="space-y-1">
+                  <label for="m-degraded-latency" class="block font-medium text-white/70 text-xs">Degraded Latency Threshold (ms)</label>
+                  <input id="m-degraded-latency" type="number" min="1" placeholder="e.g. 1500 (warn if slower)" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
                 </div>
               </div>
 
               <!-- DNS Probing Options -->
-              <div id="m-dns-options" class="space-y-4 pt-3 border-t border-white/5 hidden">
+              <div id="m-dns-options" class="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-3.5 hidden">
+                <div class="text-xs font-semibold uppercase tracking-wider text-white/60 font-mono">DNS Resolution</div>
                 <div class="grid grid-cols-2 gap-3">
-                  <div>
-                    <label for="m-dns-record-type" class="block font-medium text-white/80 text-xs mb-1">DNS Record Type</label>
-                    <select id="m-dns-record-type" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono">
+                  <div class="space-y-1">
+                    <label for="m-dns-record-type" class="block font-medium text-white/70 text-xs">DNS Record Type</label>
+                    <select id="m-dns-record-type" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]">
                       <option value="A">A (IPv4)</option>
                       <option value="AAAA">AAAA (IPv6)</option>
                       <option value="CNAME">CNAME</option>
@@ -1012,44 +1054,44 @@
                       <option value="TXT">TXT</option>
                     </select>
                   </div>
-                  <div>
-                    <label for="m-dns-expected" class="block font-medium text-white/80 text-xs mb-1">Expected Resolved Value</label>
-                    <input id="m-dns-expected" type="text" placeholder="93.184.216.34" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                  <div class="space-y-1">
+                    <label for="m-dns-expected" class="block font-medium text-white/70 text-xs">Expected Resolved Value</label>
+                    <input id="m-dns-expected" type="text" placeholder="93.184.216.34" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
                   </div>
                 </div>
               </div>
 
               <!-- Push Heartbeat Options -->
-              <div id="m-push-options" class="space-y-4 pt-3 border-t border-white/5 hidden">
+              <div id="m-push-options" class="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-3.5 hidden">
                 <div class="bg-black/60 rounded-xl p-3 border border-white/10 space-y-2">
                   <div class="flex items-center justify-between">
                     <span class="text-xs font-semibold text-[#30d158] uppercase font-mono">Push Ingestion Endpoint</span>
-                    <button type="button" onclick="copyPushUrl()" class="text-[11px] text-[#0a84ff] hover:underline cursor-pointer">Copy URL</button>
+                    <button type="button" onclick="copyPushUrl()" class="text-xs text-[#0a84ff] hover:underline cursor-pointer">Copy URL</button>
                   </div>
-                  <input id="m-push-url-display" readonly type="text" value="Generated upon creation" class="w-full rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white/70 text-[11px] font-mono select-all" />
+                  <input id="m-push-url-display" readonly type="text" value="Generated upon creation" class="w-full rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white/70 text-xs font-mono select-all" />
                   <p class="text-[11px] text-white/40">Ping this URL from cron, systemd, or CI/CD: <code>curl -fsS https://.../api/push/{token}</code></p>
                 </div>
-                <div>
-                  <label for="m-grace-secs" class="block font-medium text-white/80 text-xs mb-1">Heartbeat Grace Period (seconds)</label>
-                  <input id="m-grace-secs" type="number" min="1" value="60" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
+                <div class="space-y-1">
+                  <label for="m-grace-secs" class="block font-medium text-white/70 text-xs">Heartbeat Grace Period (seconds)</label>
+                  <input id="m-grace-secs" type="number" min="1" value="60" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
                 </div>
               </div>
             </div>
 
             <!-- Right Column: Health Checks & Notification Attachments -->
-            <div class="space-y-5">
-              <div class="border-b border-white/5 pb-2">
-                <h4 class="text-xs font-semibold uppercase tracking-wider text-[#30d158] font-mono">2. Probing &amp; Alert Routing</h4>
-                <p class="text-[11px] text-white/50">Active diagnostics, security checks, and channel delivery</p>
+            <div class="space-y-4">
+              <div class="flex items-center gap-2 pb-1.5 border-b border-white/10">
+                <span class="w-1.5 h-3.5 bg-[#0a84ff] rounded-full"></span>
+                <h4 class="text-xs font-semibold uppercase tracking-wider text-white font-mono">2. Probing &amp; Alert Routing</h4>
               </div>
 
               <!-- Switch Cards Group -->
-              <div class="bg-black/40 rounded-xl p-3.5 border border-white/10 space-y-3">
+              <div class="bg-white/[0.02] rounded-xl p-4 border border-white/10 space-y-3.5">
                 <!-- Active Monitoring -->
                 <div class="flex items-center justify-between">
                   <div>
                     <div class="font-medium text-white text-xs sm:text-sm">Active Monitoring</div>
-                    <div class="text-[11px] text-white/40">Continuously execute synthetic probes on configured interval</div>
+                    <div class="text-[11px] text-white/40">Execute synthetic probes on configured interval</div>
                   </div>
                   <label class="relative inline-flex items-center cursor-pointer">
                     <input id="m-active" type="checkbox" checked class="sr-only peer">
@@ -1058,7 +1100,7 @@
                 </div>
 
                 <!-- Public Status Page -->
-                <div class="border-t border-white/5 pt-3 flex items-center justify-between">
+                <div class="border-t border-white/5 pt-3.5 flex items-center justify-between">
                   <div>
                     <div class="font-medium text-white text-xs sm:text-sm">Public Status Page</div>
                     <div class="text-[11px] text-white/40">Surface component uptime &amp; SLAs on public status pages</div>
@@ -1070,7 +1112,7 @@
                 </div>
 
                 <!-- Domain Expiration Check (RDAP) -->
-                <div class="border-t border-white/5 pt-3">
+                <div class="border-t border-white/5 pt-3.5">
                   <div class="flex items-center justify-between">
                     <div>
                       <div class="font-medium text-white text-xs sm:text-sm">Domain Expiration Check (RDAP)</div>
@@ -1083,12 +1125,12 @@
                   </div>
                   <div id="m-domain-warning-container" class="mt-2.5 hidden">
                     <label for="m-domain-warning-days" class="block font-medium text-white/70 text-xs mb-1">Warning Threshold (Days Remaining)</label>
-                    <input id="m-domain-warning-days" type="number" min="1" max="365" value="30" class="w-full rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
+                    <input id="m-domain-warning-days" type="number" min="1" max="365" value="30" class="w-full h-9 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#30d158] font-mono text-xs bg-black/40 border border-white/10 text-white" />
                   </div>
                 </div>
 
                 <!-- TLS/SSL Expiration Check -->
-                <div class="border-t border-white/5 pt-3">
+                <div class="border-t border-white/5 pt-3.5">
                   <div class="flex items-center justify-between">
                     <div>
                       <div class="font-medium text-white text-xs sm:text-sm">TLS / SSL Expiration Check</div>
@@ -1101,33 +1143,33 @@
                   </div>
                   <div id="m-ssl-warning-container" class="mt-2.5 hidden">
                     <label for="m-ssl-warning-days" class="block font-medium text-white/70 text-xs mb-1">Warning Threshold (Days Remaining)</label>
-                    <input id="m-ssl-warning-days" type="number" min="1" max="365" value="30" class="w-full rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
+                    <input id="m-ssl-warning-days" type="number" min="1" max="365" value="30" class="w-full h-9 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#30d158] font-mono text-xs bg-black/40 border border-white/10 text-white" />
                   </div>
                 </div>
 
                 <!-- Repeat Alert Reminder Interval -->
-                <div class="border-t border-white/5 pt-3">
-                  <label for="m-resend-interval" class="block font-medium text-white/80 text-xs mb-1">Repeat Down Alerts Every (Minutes)</label>
-                  <input id="m-resend-interval" type="number" min="0" value="0" placeholder="0 = disabled (alert once)" class="w-full rounded-xl px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono" />
-                  <p class="text-[11px] text-white/40 mt-1">If > 0, re-dispatches alerts every N minutes while the monitor remains DOWN.</p>
+                <div class="border-t border-white/5 pt-3.5 space-y-1">
+                  <label for="m-resend-interval" class="block font-medium text-white/80 text-xs">Repeat Down Alerts Every (Minutes)</label>
+                  <input id="m-resend-interval" type="number" min="0" value="0" placeholder="0 = disabled (alert once)" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
+                  <p class="text-[11px] text-white/40">If > 0, re-dispatches alerts every N minutes while DOWN.</p>
                 </div>
               </div>
 
               <!-- Notification Channels Selector -->
-              <div>
-                <div class="flex items-center justify-between mb-1.5">
+              <div class="bg-white/[0.02] rounded-xl p-4 border border-white/10 space-y-2.5">
+                <div class="flex items-center justify-between">
                   <label class="block font-medium text-white/80 text-xs sm:text-sm">Notification Channels</label>
                   <button type="button" onclick="openCreateChannelInline()" class="text-xs text-[#30d158] hover:underline font-medium flex items-center gap-1 cursor-pointer">
                     <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                       <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
                     </svg>
-                    <span>+ Create Channel</span>
+                    <span>Create Channel</span>
                   </button>
                 </div>
-                <div id="monitor-channels-checklist" class="p-3 bg-black/40 rounded-xl border border-white/10 space-y-2 max-h-48 overflow-y-auto text-xs">
+                <div id="monitor-channels-checklist" class="p-3 bg-black/40 rounded-xl border border-white/10 space-y-2 max-h-40 overflow-y-auto text-xs">
                   <div class="text-[11px] text-white/40 italic">Loading channels...</div>
                 </div>
-                <p class="text-[11px] text-white/40 mt-1">Channels selected above receive instant state transition alerts.</p>
+                <p class="text-[11px] text-white/40">Channels selected above receive instant state transition alerts.</p>
               </div>
 
             </div>
@@ -1136,7 +1178,7 @@
         </div>
 
         <!-- Fixed Footer Action Bar -->
-        <div class="p-4 sm:p-5 border-t border-white/10 bg-zinc-950/90 backdrop-blur-md flex items-center justify-end gap-3 shrink-0">
+        <div class="px-6 py-4 border-t border-white/10 bg-zinc-950/90 backdrop-blur-md flex items-center justify-end gap-3 shrink-0">
           <button type="button" onclick="closeModal()" class="px-4 py-2 rounded-xl border border-white/10 text-white/70 hover:text-white hover:bg-white/5 text-xs sm:text-sm font-medium transition cursor-pointer">Cancel</button>
           <button type="submit" id="save-monitor-btn" class="px-5 py-2 rounded-xl bg-[#30d158] hover:bg-[#28b84d] text-[#0b0b0c] text-xs sm:text-sm font-semibold shadow-sm hover:shadow-[0_0_15px_rgba(48,209,88,0.35)] active:scale-95 transition cursor-pointer">Save Changes</button>
         </div>
