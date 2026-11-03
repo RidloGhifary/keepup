@@ -7,7 +7,7 @@ use sqlx::SqlitePool;
 use tokio::time;
 use tracing::{error, info, warn};
 
-use super::http::{ping_http, CheckResult};
+use super::http::CheckResult;
 use crate::notifier::AlertPayload;
 
 // ── Row type for the monitors query ──────────────────────────────────────────
@@ -42,6 +42,11 @@ struct Monitor {
     pub ssl_expires_at: Option<String>,
     pub ssl_days_remaining: Option<i32>,
     pub ssl_last_checked_at: Option<String>,
+    #[sqlx(default)]
+    pub check_type: String,
+    pub port: Option<i32>,
+    pub dns_record_type: Option<String>,
+    pub dns_expected_value: Option<String>,
 }
 
 // ── In-memory per-monitor state ──────────────────────────────────────────────
@@ -208,7 +213,9 @@ async fn run_check_and_evaluate(
     let mut domain_days: Option<i32> = monitor.domain_days_remaining;
     let mut domain_expires: Option<String> = monitor.domain_expires_at.clone();
 
-    if monitor.check_domain_expiry == 1 {
+    let is_http = monitor.check_type.is_empty() || monitor.check_type == "http";
+
+    if is_http && monitor.check_domain_expiry == 1 {
         let needs_lookup = match &monitor.domain_last_checked_at {
             None => true,
             Some(last_str) => match chrono::DateTime::parse_from_rfc3339(last_str) {
@@ -304,7 +311,7 @@ async fn run_check_and_evaluate(
 
     // ── Check TLS / SSL certificate expiration if enabled ───────────
     let mut ssl_days: Option<i32> = monitor.ssl_days_remaining;
-    if monitor.check_ssl == 1 {
+    if is_http && monitor.check_ssl == 1 {
         let needs_ssl_lookup = match &monitor.ssl_last_checked_at {
             None => true,
             Some(last_str) => match chrono::DateTime::parse_from_rfc3339(last_str) {
@@ -335,8 +342,23 @@ async fn run_check_and_evaluate(
         }
     }
 
+    let check_type_str = if monitor.check_type.is_empty() {
+        "http"
+    } else {
+        &monitor.check_type
+    };
+
     if in_maintenance {
-        let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
+        let result = crate::checker::execute_probe(
+            client,
+            check_type_str,
+            &monitor.url,
+            monitor.port,
+            monitor.dns_record_type.as_deref(),
+            monitor.dns_expected_value.as_deref(),
+            monitor.timeout_secs as u64,
+        )
+        .await;
 
         // Persist check log with is_up = true (no SLA penalty) and error_msg = "MAINTENANCE"
         let maint_result = CheckResult {
@@ -365,7 +387,16 @@ async fn run_check_and_evaluate(
         return (next, None);
     }
 
-    let result = ping_http(client, &monitor.url, monitor.timeout_secs as u64).await;
+    let result = crate::checker::execute_probe(
+        client,
+        check_type_str,
+        &monitor.url,
+        monitor.port,
+        monitor.dns_record_type.as_deref(),
+        monitor.dns_expected_value.as_deref(),
+        monitor.timeout_secs as u64,
+    )
+    .await;
 
     // Persist the raw check result.
     if let Err(e) = insert_check_log(pool, &monitor.id, &result, domain_days, ssl_days).await {
@@ -507,7 +538,8 @@ async fn fetch_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Monit
         SELECT m.id, m.name, m.url, m.check_interval_secs, m.timeout_secs, m.max_retries, m.last_status, m.down_since,
                m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
                m.last_domain_alert_days, m.domain_last_checked_at,
-               m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at
+               m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at,
+               m.check_type, m.port, m.dns_record_type, m.dns_expected_value
         FROM   monitors m
         WHERE  m.id = ? AND m.is_active = 1
         "#,
@@ -525,7 +557,8 @@ async fn fetch_due_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, sqlx::Err
         SELECT m.id, m.name, m.url, m.check_interval_secs, m.timeout_secs, m.max_retries, m.last_status, m.down_since,
                m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
                m.last_domain_alert_days, m.domain_last_checked_at,
-               m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at
+               m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at,
+               m.check_type, m.port, m.dns_record_type, m.dns_expected_value
         FROM   monitors m
         WHERE  m.is_active = 1
           AND  NOT EXISTS (
@@ -662,6 +695,10 @@ mod tests {
             ssl_expires_at: None,
             ssl_days_remaining: None,
             ssl_last_checked_at: None,
+            check_type: "http".to_string(),
+            port: None,
+            dns_record_type: None,
+            dns_expected_value: None,
         };
 
         let prev = MonitorState {

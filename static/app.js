@@ -51,7 +51,10 @@ async function handleLogout() {
 window.allMonitors = [];
 window.allWebhooks = [];
 window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'grid';
-let statusMap = {};
+window.statusMap = {};
+let statusMap = window.statusMap;
+window.selectedMonitorIds = new Set();
+let lastSelectedMonitorId = null;
 let logsCache = {};
 let isFetching = false;
 let dashboardFetchController = null;
@@ -84,10 +87,9 @@ async function fetchDashboardData(showSpin = false) {
   }
 
   try {
-    const [monitorsRes, statusRes, webhooksRes] = await Promise.all([
+    const [monitorsRes, statusRes] = await Promise.all([
       apiFetch('/api/monitors', { signal }),
       apiFetch('/api/v1/public/status', { signal }),
-      apiFetch('/api/webhooks', { signal }),
     ]);
 
     // If unauthorized, do not render dashboard contents (redirect is underway)
@@ -105,18 +107,14 @@ async function fetchDashboardData(showSpin = false) {
       window.allMonitors = await monitorsRes.json();
     }
 
-    if (statusRes.ok) {
+    if (statusRes && statusRes.ok) {
       const statusData = await statusRes.json();
       statusMap = {};
+      window.statusMap = statusMap;
       (statusData.monitors || []).forEach((m) => {
         statusMap[m.id] = m;
       });
       updateOverviewHero(statusData);
-    }
-
-    if (webhooksRes.ok) {
-      window.allWebhooks = await webhooksRes.json();
-      renderWebhooksSection(window.allWebhooks);
     }
 
     // Fetch recent check logs for historical bar charts (top 30 per monitor)
@@ -218,7 +216,442 @@ function updateOverviewHero(statusData) {
   }
 }
 
-// ── Rendering Monitors (Card Grid vs Compact List) ───────────────────────────
+// ── Rendering Monitors (Card Grid vs Compact List with Pagination & Sorting) ──
+
+const MONITORS_PAGE_SIZE = 9;
+let monitorDisplayLimit = MONITORS_PAGE_SIZE;
+
+let currentSortKey = localStorage.getItem('keepup_sort_key') || 'status';
+let currentSortDir = localStorage.getItem('keepup_sort_dir') || 'desc';
+
+function getStatusRank(m) {
+  if (m.is_active === 0) return 4; // PAUSED
+  const sm = window.statusMap || statusMap;
+  const live = (sm && sm[m.id]) || m;
+  const status = live?.current_status || (live?.is_up === false ? 'DOWN' : (m.current_status || 'UP'));
+  switch (status.toUpperCase()) {
+    case 'DOWN': return 0;
+    case 'DEGRADED': return 1;
+    case 'MAINTENANCE': return 2;
+    case 'UP': return 3;
+    default: return 3;
+  }
+}
+
+function getAssetExpiryDays(m) {
+  const daysArr = [];
+  if (m.check_ssl && m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
+    daysArr.push(m.ssl_days_remaining);
+  }
+  if (m.check_domain_expiry && m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
+    daysArr.push(m.domain_days_remaining);
+  }
+  if (daysArr.length === 0) return Infinity;
+  return Math.min(...daysArr);
+}
+
+function sortMonitors(list) {
+  const sorted = [...list];
+  const isAsc = currentSortDir === 'asc';
+
+  sorted.sort((a, b) => {
+    let result = 0;
+
+    switch (currentSortKey) {
+      case 'status': {
+        const rankA = getStatusRank(a);
+        const rankB = getStatusRank(b);
+        // Default (desc): rank 0 (DOWN) before rank 1 (DEGRADED) before rank 3 (UP)
+        result = isAsc ? (rankB - rankA) : (rankA - rankB);
+        break;
+      }
+      case 'name': {
+        const nameA = (a.name || '').toLowerCase();
+        const nameB = (b.name || '').toLowerCase();
+        result = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+        if (!isAsc) result = -result;
+        break;
+      }
+      case 'latency': {
+        const sm = window.statusMap || statusMap;
+        const liveA = (sm && sm[a.id]) || a;
+        const liveB = (sm && sm[b.id]) || b;
+        const latA = (liveA && liveA.last_latency_ms !== null && liveA.last_latency_ms !== undefined) ? liveA.last_latency_ms : -1;
+        const latB = (liveB && liveB.last_latency_ms !== null && liveB.last_latency_ms !== undefined) ? liveB.last_latency_ms : -1;
+        // Default (desc): highest latency first
+        result = isAsc ? (latA - latB) : (latB - latA);
+        break;
+      }
+      case 'expiry': {
+        const expA = getAssetExpiryDays(a);
+        const expB = getAssetExpiryDays(b);
+        // Default (asc): lowest days remaining first (nearest expiration)
+        result = isAsc ? (expA - expB) : (expB - expA);
+        break;
+      }
+      default:
+        result = 0;
+    }
+
+    // Tie-breaker: Name alphabetical
+    if (result === 0) {
+      result = (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    }
+
+    return result;
+  });
+
+  return sorted;
+}
+
+function setSortKey(key) {
+  if (key !== currentSortKey) {
+    currentSortKey = key;
+    if (key === 'name' || key === 'expiry') {
+      currentSortDir = 'asc';
+    } else {
+      currentSortDir = 'desc';
+    }
+  }
+  localStorage.setItem('keepup_sort_key', currentSortKey);
+  localStorage.setItem('keepup_sort_dir', currentSortDir);
+  updateSortDirectionBtnUI();
+  renderMonitors();
+}
+window.setSortKey = setSortKey;
+
+function toggleSortDirection() {
+  currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+  localStorage.setItem('keepup_sort_dir', currentSortDir);
+  updateSortDirectionBtnUI();
+  renderMonitors();
+}
+window.toggleSortDirection = toggleSortDirection;
+
+function updateSortDirectionBtnUI() {
+  const btn = document.getElementById('sort-dir-btn');
+  const icon = document.getElementById('sort-dir-icon');
+  const text = document.getElementById('sort-dir-text');
+  if (!btn) return;
+
+  const isAsc = currentSortDir === 'asc';
+  btn.title = `Sort order: ${isAsc ? 'Ascending' : 'Descending'} (click to toggle)`;
+  btn.setAttribute('aria-label', btn.title);
+
+  if (text) {
+    text.textContent = isAsc ? 'ASC' : 'DESC';
+  }
+
+  if (icon) {
+    if (isAsc) {
+      icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>`;
+    } else {
+      icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>`;
+    }
+  }
+}
+window.updateSortDirectionBtnUI = updateSortDirectionBtnUI;
+
+function initSortingControls() {
+  currentSortKey = localStorage.getItem('keepup_sort_key') || currentSortKey || 'status';
+  currentSortDir = localStorage.getItem('keepup_sort_dir') || currentSortDir || 'desc';
+  const sortSelect = document.getElementById('sort-select');
+  if (sortSelect) {
+    sortSelect.value = currentSortKey;
+  }
+  updateSortDirectionBtnUI();
+}
+window.initSortingControls = initSortingControls;
+
+// ── Multi-Select Batch Operations Controller ─────────────────────────────────
+
+function handleMonitorCardCheckbox(id, checked, event) {
+  if (event) {
+    event.stopPropagation();
+  }
+
+  // Shift-Click Range Selection: Contiguous selection between last selected item and current
+  if (event && event.shiftKey && lastSelectedMonitorId && lastSelectedMonitorId !== id) {
+    const searchInput = document.getElementById('search-input');
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const filtered = (window.allMonitors || []).filter(
+      (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
+    );
+    const sorted = typeof sortMonitors === 'function' ? sortMonitors(filtered) : filtered;
+
+    const idx1 = sorted.findIndex((m) => m.id === lastSelectedMonitorId);
+    const idx2 = sorted.findIndex((m) => m.id === id);
+
+    if (idx1 !== -1 && idx2 !== -1) {
+      const start = Math.min(idx1, idx2);
+      const end = Math.max(idx1, idx2);
+      for (let i = start; i <= end; i++) {
+        if (checked) {
+          window.selectedMonitorIds.add(sorted[i].id);
+        } else {
+          window.selectedMonitorIds.delete(sorted[i].id);
+        }
+      }
+    }
+  } else {
+    if (checked) {
+      window.selectedMonitorIds.add(id);
+    } else {
+      window.selectedMonitorIds.delete(id);
+    }
+  }
+
+  lastSelectedMonitorId = id;
+  updateBulkActionBarUI();
+  renderMonitors();
+}
+window.handleMonitorCardCheckbox = handleMonitorCardCheckbox;
+
+function handleMasterSelectToggle(checked) {
+  const searchInput = document.getElementById('search-input');
+  const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+  const filtered = (window.allMonitors || []).filter(
+    (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
+  );
+  const sorted = typeof sortMonitors === 'function' ? sortMonitors(filtered) : filtered;
+
+  if (checked) {
+    sorted.forEach((m) => window.selectedMonitorIds.add(m.id));
+  } else {
+    window.selectedMonitorIds.clear();
+  }
+
+  updateBulkActionBarUI();
+  renderMonitors();
+}
+window.handleMasterSelectToggle = handleMasterSelectToggle;
+
+function clearMonitorSelection() {
+  if (window.selectedMonitorIds) {
+    window.selectedMonitorIds.clear();
+  }
+  lastSelectedMonitorId = null;
+  updateBulkActionBarUI();
+  renderMonitors();
+}
+window.clearMonitorSelection = clearMonitorSelection;
+
+function updateBulkActionBarUI() {
+  const bar = document.getElementById('bulk-action-bar');
+  const countSpan = document.getElementById('bulk-selected-count');
+  const masterCb = document.getElementById('master-select-cb');
+
+  const count = window.selectedMonitorIds ? window.selectedMonitorIds.size : 0;
+
+  if (bar) {
+    if (count > 0) {
+      bar.classList.remove('hidden', 'translate-y-8', 'opacity-0', 'pointer-events-none');
+      bar.classList.add('translate-y-0', 'opacity-100', 'pointer-events-auto');
+    } else {
+      bar.classList.remove('translate-y-0', 'opacity-100', 'pointer-events-auto');
+      bar.classList.add('translate-y-8', 'opacity-0', 'pointer-events-none');
+      setTimeout(() => {
+        if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) {
+          bar.classList.add('hidden');
+        }
+      }, 300);
+    }
+  }
+
+  if (countSpan) {
+    countSpan.textContent = `${count} monitor${count === 1 ? '' : 's'} selected`;
+  }
+
+  if (masterCb) {
+    const searchInput = document.getElementById('search-input');
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const filtered = (window.allMonitors || []).filter(
+      (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
+    );
+    const totalVisible = filtered.length;
+
+    if (count === 0 || totalVisible === 0) {
+      masterCb.checked = false;
+      masterCb.indeterminate = false;
+    } else if (count >= totalVisible) {
+      masterCb.checked = true;
+      masterCb.indeterminate = false;
+    } else {
+      masterCb.checked = false;
+      masterCb.indeterminate = true;
+    }
+  }
+}
+window.updateBulkActionBarUI = updateBulkActionBarUI;
+
+async function executeBulkAction(action) {
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
+  const ids = Array.from(window.selectedMonitorIds);
+
+  const endpoint = action === 'pause'
+    ? '/api/admin/monitors/bulk-pause'
+    : '/api/admin/monitors/bulk-resume';
+
+  try {
+    const res = await apiFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_ids: ids }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const newActive = action === 'pause' ? 0 : 1;
+      (window.allMonitors || []).forEach((m) => {
+        if (window.selectedMonitorIds.has(m.id)) {
+          m.is_active = newActive;
+        }
+      });
+
+      renderMonitors();
+
+      const statActive = document.getElementById('hero-stat-active');
+      if (statActive) {
+        const activeCount = (window.allMonitors || []).filter((m) => m.is_active === 1).length;
+        statActive.innerText = `${activeCount} / ${window.allMonitors.length}`;
+      }
+
+      if (typeof showToast === 'function') {
+        showToast({
+          title: action === 'pause' ? 'Monitors Paused' : 'Monitors Resumed',
+          message: data.message || `Selected monitors successfully updated`,
+          type: action === 'pause' ? 'info' : 'success',
+        });
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Batch Action Failed',
+          message: err.error || 'Failed to update selected monitors',
+          type: 'error',
+        });
+      }
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Network Error',
+        message: err.message || 'Could not reach server',
+        type: 'error',
+      });
+    }
+  }
+}
+window.executeBulkAction = executeBulkAction;
+
+async function openBulkDeleteModal() {
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
+  const ids = Array.from(window.selectedMonitorIds);
+
+  const modal = document.getElementById('bulk-delete-modal');
+  const countEl = document.getElementById('bulk-delete-count');
+  const logsCountEl = document.getElementById('bulk-delete-logs-count');
+  if (countEl) countEl.textContent = String(ids.length);
+  if (logsCountEl) logsCountEl.textContent = '...';
+
+  if (modal) {
+    modal.classList.remove('hidden');
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/monitors/bulk-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_ids: ids }),
+    });
+    if (res.ok) {
+      const stats = await res.json();
+      if (logsCountEl) logsCountEl.textContent = String(stats.check_logs_count || 0);
+    } else {
+      if (logsCountEl) logsCountEl.textContent = 'all historical';
+    }
+  } catch (_) {
+    if (logsCountEl) logsCountEl.textContent = 'all historical';
+  }
+}
+window.openBulkDeleteModal = openBulkDeleteModal;
+
+function closeBulkDeleteModal() {
+  const modal = document.getElementById('bulk-delete-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+}
+window.closeBulkDeleteModal = closeBulkDeleteModal;
+
+async function confirmBulkDelete() {
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
+  const ids = Array.from(window.selectedMonitorIds);
+
+  const confirmBtn = document.getElementById('confirm-bulk-delete-btn');
+  const originalText = confirmBtn ? confirmBtn.innerHTML : '';
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = '<span>Deleting...</span>';
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/monitors/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_ids: ids }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      window.allMonitors = (window.allMonitors || []).filter(
+        (m) => !window.selectedMonitorIds.has(m.id)
+      );
+      window.selectedMonitorIds.clear();
+      closeBulkDeleteModal();
+      updateBulkActionBarUI();
+      renderMonitors();
+
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Monitors Deleted',
+          message: data.message || `Permanently removed ${ids.length} monitors`,
+          type: 'success',
+        });
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Delete Failed',
+          message: err.error || 'Failed to delete selected monitors',
+          type: 'error',
+        });
+      }
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Network Error',
+        message: err.message || 'Could not reach server',
+        type: 'error',
+      });
+    }
+  } finally {
+    if (confirmBtn) {
+      confirmBtn.disabled = false;
+      confirmBtn.innerHTML = originalText;
+    }
+  }
+}
+window.confirmBulkDelete = confirmBulkDelete;
+
+function showMoreMonitors() {
+  monitorDisplayLimit += MONITORS_PAGE_SIZE;
+  renderMonitors();
+}
+window.showMoreMonitors = showMoreMonitors;
 
 function renderMonitors() {
   const container = document.getElementById('monitors-container');
@@ -226,16 +659,22 @@ function renderMonitors() {
 
   const searchInput = document.getElementById('search-input');
   const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+  const isSearching = query.length > 0;
 
   const filtered = window.allMonitors.filter(
     (m) =>
       m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
   );
 
+  const sorted = sortMonitors(filtered);
+
   const countBadge = document.getElementById('monitors-count-badge');
   if (countBadge) countBadge.innerText = `${filtered.length} target${filtered.length === 1 ? '' : 's'}`;
 
+  const paginationContainer = document.getElementById('monitors-pagination');
+
   if (filtered.length === 0) {
+    if (paginationContainer) paginationContainer.classList.add('hidden');
     container.className = 'w-full';
     batchInsertHTML(
       container,
@@ -252,48 +691,44 @@ function renderMonitors() {
     return;
   }
 
+  // Client-side search (⌘K) automatically bypasses pagination limits to search across all monitors
+  const visible = isSearching ? sorted : sorted.slice(0, monitorDisplayLimit);
+
   if (window.currentViewMode === 'grid') {
     container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
-    batchInsertHTML(container, filtered.map((m) => renderMonitorCard(m)).join(''));
+    batchInsertHTML(container, visible.map((m) => renderMonitorCard(m)).join(''));
   } else {
     container.className = 'space-y-2.5';
-    batchInsertHTML(container, filtered.map((m) => renderMonitorListRow(m)).join(''));
+    batchInsertHTML(container, visible.map((m) => renderMonitorListRow(m)).join(''));
   }
+
+  // Toggle "Show More" pagination button
+  if (paginationContainer) {
+    if (!isSearching && filtered.length > monitorDisplayLimit) {
+      paginationContainer.classList.remove('hidden');
+    } else {
+      paginationContainer.classList.add('hidden');
+    }
+  }
+
+  updateBulkActionBarUI();
 }
 
-// ── Domain & SSL Expiration Badges ──────────────────────────────────────────
+// ── Protocol Badge Component ───────────────────────────────────────────────
 
-function renderDomainExpiryBadge(m) {
-  if (!m.check_domain_expiry || m.domain_days_remaining === null || m.domain_days_remaining === undefined) {
-    return '';
+function renderProtocolBadge(type) {
+  const t = (type || 'http').toUpperCase();
+  let badgeStyle = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+  if (t === 'TCP') {
+    badgeStyle = 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+  } else if (t === 'DNS') {
+    badgeStyle = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+  } else if (t === 'PING') {
+    badgeStyle = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
   }
-  const days = m.domain_days_remaining;
-  const warningDays = m.domain_warning_days || 30;
-
-  if (days <= 0) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/20" title="Domain registration has expired">🔴 Domain Expired</span>`;
-  } else if (days <= warningDays) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20" title="Domain registration expiring soon (${days} days remaining)">⚠️ ${days}d domain left</span>`;
-  } else {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-white/60 border-black/5 dark:border-white/10" title="Domain registration healthy (${days} days remaining)">🌐 ${days}d domain left</span>`;
-  }
+  return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border ${badgeStyle} shrink-0">${t}</span>`;
 }
-
-function renderSslExpiryBadge(m) {
-  if (!m.check_ssl || m.ssl_days_remaining === null || m.ssl_days_remaining === undefined) {
-    return '';
-  }
-  const days = m.ssl_days_remaining;
-  const warningDays = m.ssl_warning_days || 30;
-
-  if (days <= 0) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/20" title="TLS/SSL certificate has expired">🔴 SSL Expired</span>`;
-  } else if (days <= warningDays) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20" title="TLS/SSL certificate expiring soon (${days} days remaining)">🔒 ${days}d SSL left</span>`;
-  } else {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-white/60 border-black/5 dark:border-white/10" title="TLS/SSL certificate healthy (${days} days remaining)">🔒 ${days}d SSL left</span>`;
-  }
-}
+window.renderProtocolBadge = renderProtocolBadge;
 
 // ── Single Monitor Card (Grid View) ──────────────────────────────────────────
 
@@ -301,26 +736,23 @@ function renderMonitorCard(m) {
   const live = statusMap[m.id];
   const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
 
   let statusColor = '#30d158'; // Status Green
-  let statusBadgeBg = 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20';
   let statusLabel = 'OPERATIONAL';
 
   if (isPaused) {
     statusColor = '#8e8e93'; // Neutral Gray
-    statusBadgeBg = 'bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20';
     statusLabel = 'PAUSED';
   } else if (live && live.current_status === 'MAINTENANCE') {
     statusColor = '#c084fc'; // Maintenance Purple
-    statusBadgeBg = 'bg-purple-500/15 text-purple-700 dark:text-purple-400 border border-purple-500/20';
     statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
     statusColor = '#ff453a'; // Outage Red
-    statusBadgeBg = 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
     statusLabel = 'DOWN';
   } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
     statusColor = '#ffd60a'; // Degraded Yellow
-    statusBadgeBg = 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20';
     statusLabel = 'DEGRADED';
   }
 
@@ -336,26 +768,24 @@ function renderMonitorCard(m) {
   const barsHtml = renderUptimeTickBars(logs);
 
   return `
-    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer">
-      <!-- Card Header -->
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="relative flex h-2.5 w-2.5">
-              ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[${statusColor}] opacity-75"></span>` : ''}
-              <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
-            </span>
-            <h3 class="font-semibold text-neutral-900 dark:text-white text-sm sm:text-base truncate tracking-tight">${escapeHtml(m.name)}</h3>
-          </div>
-          <p class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}</p>
-        </div>
-
-        <div class="flex items-center gap-1.5 shrink-0">
-          ${renderSslExpiryBadge(m)}
-          ${renderDomainExpiryBadge(m)}
-          <span class="px-2 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider ${statusBadgeBg}">
-            ${statusLabel}
+    <div data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
+      <!-- Card Header: Left-Aligned Status Dot, Title & Target URL with Right Selection Checkbox -->
+      <div class="flex items-start justify-between gap-3 min-w-0">
+        <div class="flex items-start gap-2.5 min-w-0 flex-1">
+          <span class="relative flex h-2.5 w-2.5 mt-1.5 shrink-0" title="${statusLabel}">
+            ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
           </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <h3 class="font-semibold text-neutral-900 dark:text-white text-sm sm:text-base truncate tracking-tight leading-snug">${escapeHtml(m.name)}</h3>
+              ${renderProtocolBadge(m.check_type)}
+            </div>
+            <p class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</p>
+          </div>
+        </div>
+        <div class="shrink-0 pt-0.5" onclick="event.stopPropagation()">
+          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? 'checked' : ''} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? 'opacity-100 ring-2 ring-emerald-500/50' : (anySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100')}" title="Select monitor" />
         </div>
       </div>
 
@@ -404,6 +834,12 @@ function renderMonitorCard(m) {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
           </button>
+          <button data-action="clone-monitor" data-id="${m.id}" onclick="cloneMonitor('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition flex items-center gap-1" title="Clone Target">
+            <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+            <span>Clone</span>
+          </button>
           <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
             Edit
           </button>
@@ -427,26 +863,23 @@ function renderMonitorListRow(m) {
   const live = statusMap[m.id];
   const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
 
   let statusColor = '#30d158';
-  let statusBadgeBg = 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20';
   let statusLabel = 'UP';
 
   if (isPaused) {
     statusColor = '#8e8e93';
-    statusBadgeBg = 'bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20';
     statusLabel = 'PAUSED';
   } else if (live && live.current_status === 'MAINTENANCE') {
     statusColor = '#c084fc';
-    statusBadgeBg = 'bg-purple-500/15 text-purple-700 dark:text-purple-400 border border-purple-500/20';
     statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
     statusColor = '#ff453a';
-    statusBadgeBg = 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
     statusLabel = 'DOWN';
   } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
     statusColor = '#ffd60a';
-    statusBadgeBg = 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20';
     statusLabel = 'DEGRADED';
   }
 
@@ -456,23 +889,25 @@ function renderMonitorListRow(m) {
       : '—';
 
   return `
-    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer">
-      <div class="flex items-center gap-3 min-w-0">
-        <span class="relative flex h-2.5 w-2.5 shrink-0">
+    <div data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
+      <div class="flex items-center gap-2.5 min-w-0 flex-1">
+        <div class="shrink-0" onclick="event.stopPropagation()">
+          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? 'checked' : ''} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? 'opacity-100 ring-2 ring-emerald-500/50' : (anySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100')}" title="Select monitor" />
+        </div>
+        <span class="relative flex h-2.5 w-2.5 shrink-0" title="${statusLabel}">
+          ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
         </span>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <span class="font-semibold text-neutral-900 dark:text-white text-sm truncate">${escapeHtml(m.name)}</span>
-            <span class="px-2 py-0.5 rounded-full text-[10px] font-medium border uppercase ${statusBadgeBg}">${statusLabel}</span>
-            ${renderSslExpiryBadge(m)}
-            ${renderDomainExpiryBadge(m)}
+            <span class="font-semibold text-neutral-900 dark:text-white text-sm truncate tracking-tight">${escapeHtml(m.name)}</span>
+            ${renderProtocolBadge(m.check_type)}
           </div>
-          <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono">${escapeHtml(m.url)}</div>
+          <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</div>
         </div>
       </div>
 
-      <div class="flex items-center justify-between sm:justify-end gap-4 font-mono text-xs">
+      <div class="flex items-center justify-between sm:justify-end gap-4 font-mono text-xs shrink-0">
         <div class="text-right">
           <span class="text-neutral-900 dark:text-white font-medium">${latencyText}</span>
           <span class="text-neutral-500 dark:text-white/40 text-[10px] ml-1">(${m.check_interval_secs}s)</span>
@@ -486,6 +921,12 @@ function renderMonitorListRow(m) {
             <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
+          </button>
+          <button data-action="clone-monitor" data-id="${m.id}" onclick="cloneMonitor('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition flex items-center gap-1" title="Clone Target">
+            <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+            <span class="hidden sm:inline">Clone</span>
           </button>
           <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
           <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
@@ -1146,7 +1587,7 @@ let currentDetailMonitorId = null;
 
 async function openMonitorDetailModal(id) {
   currentDetailMonitorId = id;
-  const modal = document.getElementById('monitor-detail-modal');
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (!modal) return;
 
   modal.classList.remove('hidden');
@@ -1193,7 +1634,7 @@ async function openMonitorDetailModal(id) {
 }
 
 function closeMonitorDetailModal() {
-  const modal = document.getElementById('monitor-detail-modal');
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (modal) {
     modal.classList.add('hidden');
   }
@@ -1256,8 +1697,8 @@ function renderMonitorDetailData(data) {
   const statusBadge = document.getElementById('detail-modal-status-badge');
 
   if (nameEl) nameEl.textContent = m.name || 'Monitor';
-  if (urlEl) urlEl.textContent = m.url || '';
-  if (methodEl) methodEl.textContent = m.method || 'GET';
+  if (urlEl) urlEl.textContent = m.url ? (m.port ? `${m.url}:${m.port}` : m.url) : '';
+  if (methodEl) methodEl.textContent = (m.check_type || m.method || 'HTTP').toUpperCase();
 
   if (statusBadge) {
     const isPaused = !m.is_active;
@@ -1477,6 +1918,161 @@ async function triggerDetailPing() {
   }
 }
 
+// ── Clone & Delete Monitor Logic ─────────────────────────────────────────────
+
+async function cloneMonitor(id) {
+  let monitor = (window.allMonitors || []).find((m) => m.id === id);
+  let channelIds = [];
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/channels`);
+    if (res && res.ok) {
+      channelIds = await res.json();
+    }
+  } catch (_) {}
+
+  if (!monitor) {
+    try {
+      const fetchFn = window.apiFetch || window.fetch;
+      const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/details`);
+      if (res && res.ok) {
+        const details = await res.json();
+        monitor = details.monitor;
+      }
+    } catch (_) {}
+  }
+
+  if (!monitor) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: 'Target monitor not found', type: 'error' });
+    }
+    return;
+  }
+
+  if (typeof closeMonitorDetailModal === 'function') {
+    closeMonitorDetailModal();
+  }
+
+  if (typeof window.openCloneMonitorModal === 'function') {
+    window.openCloneMonitorModal(monitor, channelIds);
+  }
+}
+window.cloneMonitor = cloneMonitor;
+
+function triggerDetailClone() {
+  if (!currentDetailMonitorId) return;
+  cloneMonitor(currentDetailMonitorId);
+}
+window.triggerDetailClone = triggerDetailClone;
+
+function triggerDetailDelete() {
+  if (!currentDetailMonitorId) return;
+  const nameEl = document.getElementById('detail-modal-name');
+  const monitor = (window.allMonitors || []).find((m) => m.id === currentDetailMonitorId);
+  const name = (nameEl && nameEl.textContent && nameEl.textContent !== 'Monitor Details' && nameEl.textContent !== 'Loading monitor telemetry...')
+    ? nameEl.textContent
+    : (monitor ? monitor.name : 'Target');
+  openSingleDeleteModal(currentDetailMonitorId, name);
+}
+window.triggerDetailDelete = triggerDetailDelete;
+
+function openSingleDeleteModal(id, name) {
+  const modal = document.getElementById('single-delete-modal');
+  const idEl = document.getElementById('single-delete-id');
+  const nameEl = document.getElementById('single-delete-name');
+  if (!modal) {
+    if (confirm(`Are you sure you want to delete monitor "${name}"?`)) {
+      confirmSingleDeleteDirect(id, name);
+    }
+    return;
+  }
+
+  if (idEl) idEl.value = id;
+  if (nameEl) nameEl.textContent = name || 'Monitor Target';
+
+  modal.classList.remove('hidden');
+}
+window.openSingleDeleteModal = openSingleDeleteModal;
+
+function closeSingleDeleteModal() {
+  const modal = document.getElementById('single-delete-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeSingleDeleteModal = closeSingleDeleteModal;
+
+async function confirmSingleDelete() {
+  const id = document.getElementById('single-delete-id')?.value;
+  const name = document.getElementById('single-delete-name')?.textContent || 'Target';
+  if (!id) return;
+
+  const btn = document.getElementById('confirm-single-delete-btn');
+  const originalText = btn ? btn.innerHTML : 'Delete Monitor';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>Deleting...</span>';
+  }
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/v1/monitors/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+
+    if (res && res.ok) {
+      closeSingleDeleteModal();
+      closeMonitorDetailModal();
+
+      // Dynamic in-memory purge & DOM re-render without full page reload
+      window.allMonitors = (window.allMonitors || []).filter((m) => m.id !== id);
+      if (typeof statusMap !== 'undefined' && statusMap[id]) delete statusMap[id];
+      if (typeof logsCache !== 'undefined' && logsCache[id]) delete logsCache[id];
+      if (window.selectedMonitorIds) {
+        window.selectedMonitorIds.delete(id);
+      }
+
+      renderMonitors();
+      updateBulkActionBarUI();
+
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Target Removed',
+          message: `Target "${name}" removed successfully`,
+          type: 'success',
+        });
+      }
+    } else if (res && res.status !== 401 && res.status !== 429) {
+      const err = await res.json().catch(() => ({}));
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Delete Failed',
+          message: err.error || 'Failed to delete monitor',
+          type: 'error',
+        });
+      }
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Network Error',
+        message: err.message || 'Error deleting monitor',
+        type: 'error',
+      });
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+}
+window.confirmSingleDelete = confirmSingleDelete;
+
+function deleteMonitor(id, name) {
+  openSingleDeleteModal(id, name);
+}
+window.deleteMonitor = deleteMonitor;
+
 // ── Centralized Event Delegation ─────────────────────────────────────────────
 
 document.addEventListener('click', (e) => {
@@ -1511,6 +2107,11 @@ document.addEventListener('click', (e) => {
       const id = target.dataset.id;
       const name = target.dataset.name;
       openBadgeModal(id, name);
+      break;
+    }
+    case 'clone-monitor': {
+      const id = target.dataset.id;
+      if (id) cloneMonitor(id);
       break;
     }
     case 'edit-monitor': {
@@ -1594,7 +2195,7 @@ document.addEventListener('keydown', (e) => {
     if (passwordModal && !passwordModal.classList.contains('hidden')) {
       closePasswordModal();
     }
-    const detailModal = document.getElementById('monitor-detail-modal');
+    const detailModal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
     if (detailModal && !detailModal.classList.contains('hidden')) {
       closeMonitorDetailModal();
     }
@@ -2193,7 +2794,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  const detailBackdrop = document.getElementById('monitor-detail-modal');
+  const detailBackdrop = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (detailBackdrop) {
     detailBackdrop.addEventListener('click', (e) => {
       if (e.target === detailBackdrop) {
@@ -2211,11 +2812,37 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const bulkDeleteBackdrop = document.getElementById('bulk-delete-modal');
+  if (bulkDeleteBackdrop) {
+    bulkDeleteBackdrop.addEventListener('click', (e) => {
+      if (e.target === bulkDeleteBackdrop) {
+        closeBulkDeleteModal();
+      }
+    });
+  }
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      const bulkDeleteModal = document.getElementById('bulk-delete-modal');
+      if (bulkDeleteModal && !bulkDeleteModal.classList.contains('hidden')) {
+        closeBulkDeleteModal();
+        return;
+      }
+      if (window.selectedMonitorIds && window.selectedMonitorIds.size > 0) {
+        clearMonitorSelection();
+        return;
+      }
       const channelModal = document.getElementById('channel-modal');
       if (channelModal && !channelModal.classList.contains('hidden')) {
         closeChannelModal();
+        return;
+      }
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      const searchInput = document.getElementById('search-input');
+      if (searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
       }
     }
   });
@@ -2225,6 +2852,7 @@ document.addEventListener('DOMContentLoaded', () => {
     window.location.pathname.includes('status');
 
   if (!isAuthOrStatusPage) {
+    initSortingControls();
     setViewMode(window.currentViewMode);
     fetchDashboardData(true);
 

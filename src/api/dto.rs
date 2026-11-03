@@ -23,6 +23,10 @@ pub struct UpdateMonitorDto {
     pub check_ssl: Option<bool>,
     pub ssl_warning_days: Option<i32>,
     pub channel_ids: Option<Vec<String>>,
+    pub check_type: Option<String>,
+    pub port: Option<i32>,
+    pub dns_record_type: Option<String>,
+    pub dns_expected_value: Option<String>,
 }
 
 impl UpdateMonitorDto {
@@ -34,12 +38,45 @@ impl UpdateMonitorDto {
                 ));
             }
         }
+        if let Some(ref ctype) = self.check_type {
+            let t = ctype.trim().to_lowercase();
+            if t != "http" && t != "tcp" && t != "dns" && t != "ping" {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid check_type '{ctype}'. Allowed values: http, tcp, dns, ping"
+                )));
+            }
+        }
         if let Some(ref url) = self.url {
             let u = url.trim();
-            if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
+            if u.is_empty() {
                 return Err(AppError::BadRequest(
-                    "Monitor URL must be a valid http or https URL".to_string(),
+                    "Target URL/host cannot be empty".to_string(),
                 ));
+            }
+            let is_http = self
+                .check_type
+                .as_deref()
+                .map(|t| t.eq_ignore_ascii_case("http"))
+                .unwrap_or(u.starts_with("http://") || u.starts_with("https://"));
+            if is_http && !u.starts_with("http://") && !u.starts_with("https://") {
+                return Err(AppError::BadRequest(
+                    "HTTP Monitor URL must start with http:// or https://".to_string(),
+                ));
+            }
+        }
+        if let Some(port) = self.port {
+            if !(1..=65535).contains(&port) {
+                return Err(AppError::BadRequest(
+                    "TCP port must be between 1 and 65535".to_string(),
+                ));
+            }
+        }
+        if let Some(ref rtype) = self.dns_record_type {
+            let rt = rtype.trim().to_uppercase();
+            if rt != "A" && rt != "AAAA" && rt != "CNAME" && rt != "TXT" && rt != "MX" {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid dns_record_type '{rtype}'. Allowed: A, AAAA, CNAME, TXT, MX"
+                )));
             }
         }
         if let Some(interval) = self.check_interval_secs {
@@ -215,6 +252,16 @@ pub struct CreateStatusPageDto {
     #[serde(default = "default_true")]
     pub is_public: bool,
     pub monitors: Option<Vec<StatusPageMonitorInput>>,
+    #[serde(default = "default_true")]
+    pub allow_indexing: bool,
+    #[serde(default)]
+    pub meta_title: Option<String>,
+    #[serde(default)]
+    pub meta_description: Option<String>,
+    #[serde(default)]
+    pub og_image_url: Option<String>,
+    #[serde(default)]
+    pub canonical_url: Option<String>,
 }
 
 #[derive(Debug, Clone, Deserialize, Serialize)]
@@ -237,4 +284,14 @@ pub struct UpdateStatusPageDto {
     #[serde(default = "default_true")]
     pub is_public: bool,
     pub monitors: Option<Vec<StatusPageMonitorInput>>,
+    #[serde(default = "default_true")]
+    pub allow_indexing: bool,
+    #[serde(default)]
+    pub meta_title: Option<String>,
+    #[serde(default)]
+    pub meta_description: Option<String>,
+    #[serde(default)]
+    pub og_image_url: Option<String>,
+    #[serde(default)]
+    pub canonical_url: Option<String>,
 }

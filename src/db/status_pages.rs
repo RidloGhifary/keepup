@@ -3,6 +3,10 @@ use sqlx::SqlitePool;
 
 use crate::error::AppError;
 
+fn default_true() -> bool {
+    true
+}
+
 /// Core status page entity.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct StatusPage {
@@ -11,6 +15,17 @@ pub struct StatusPage {
     pub description: Option<String>,
     pub is_public: i64,
     pub created_at: String,
+    #[serde(default = "default_true")]
+    #[sqlx(default)]
+    pub allow_indexing: bool,
+    #[sqlx(default)]
+    pub meta_title: Option<String>,
+    #[sqlx(default)]
+    pub meta_description: Option<String>,
+    #[sqlx(default)]
+    pub og_image_url: Option<String>,
+    #[sqlx(default)]
+    pub canonical_url: Option<String>,
 }
 
 /// Status page entity including count of assigned monitors.
@@ -22,6 +37,17 @@ pub struct StatusPageWithCount {
     pub is_public: i64,
     pub created_at: String,
     pub monitor_count: i64,
+    #[serde(default = "default_true")]
+    #[sqlx(default)]
+    pub allow_indexing: bool,
+    #[sqlx(default)]
+    pub meta_title: Option<String>,
+    #[sqlx(default)]
+    pub meta_description: Option<String>,
+    #[sqlx(default)]
+    pub og_image_url: Option<String>,
+    #[sqlx(default)]
+    pub canonical_url: Option<String>,
 }
 
 /// Monitor assignment configuration for a status page.
@@ -41,6 +67,12 @@ pub struct StatusPageDetail {
     pub is_public: bool,
     pub created_at: String,
     pub monitors: Vec<StatusPageMonitorAssignment>,
+    #[serde(default = "default_true")]
+    pub allow_indexing: bool,
+    pub meta_title: Option<String>,
+    pub meta_description: Option<String>,
+    pub og_image_url: Option<String>,
+    pub canonical_url: Option<String>,
 }
 
 /// Monitor row returned for public status page rendering.
@@ -126,7 +158,12 @@ pub async fn list_status_pages(pool: &SqlitePool) -> Result<Vec<StatusPageWithCo
             sp.description,
             sp.is_public,
             sp.created_at,
-            COUNT(spm.monitor_id) AS monitor_count
+            COUNT(spm.monitor_id) AS monitor_count,
+            sp.allow_indexing,
+            sp.meta_title,
+            sp.meta_description,
+            sp.og_image_url,
+            sp.canonical_url
         FROM status_pages sp
         LEFT JOIN status_page_monitors spm ON sp.slug = spm.status_page_slug
         GROUP BY sp.slug
@@ -145,7 +182,7 @@ pub async fn get_status_page(
     slug: &str,
 ) -> Result<Option<StatusPage>, AppError> {
     let page = sqlx::query_as::<_, StatusPage>(
-        "SELECT slug, title, description, is_public, created_at FROM status_pages WHERE LOWER(slug) = LOWER(?)",
+        "SELECT slug, title, description, is_public, created_at, allow_indexing, meta_title, meta_description, og_image_url, canonical_url FROM status_pages WHERE LOWER(slug) = LOWER(?)",
     )
     .bind(slug)
     .fetch_optional(pool)
@@ -199,6 +236,11 @@ pub async fn create_status_page(
     description: Option<&str>,
     is_public: bool,
     monitors: Option<Vec<StatusPageMonitorAssignment>>,
+    allow_indexing: bool,
+    meta_title: Option<&str>,
+    meta_description: Option<&str>,
+    og_image_url: Option<&str>,
+    canonical_url: Option<&str>,
 ) -> Result<StatusPage, AppError> {
     validate_slug(slug)?;
     let title_clean = title.trim();
@@ -207,16 +249,22 @@ pub async fn create_status_page(
     }
 
     let is_pub_int = if is_public { 1i64 } else { 0i64 };
+    let allow_idx_int = if allow_indexing { 1i64 } else { 0i64 };
 
     let mut tx = pool.begin().await?;
 
     sqlx::query(
-        "INSERT INTO status_pages (slug, title, description, is_public) VALUES (?, ?, ?, ?)",
+        "INSERT INTO status_pages (slug, title, description, is_public, allow_indexing, meta_title, meta_description, og_image_url, canonical_url) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(slug.trim())
     .bind(title_clean)
     .bind(description.map(|d| d.trim()))
     .bind(is_pub_int)
+    .bind(allow_idx_int)
+    .bind(meta_title.map(|m| m.trim()))
+    .bind(meta_description.map(|m| m.trim()))
+    .bind(og_image_url.map(|m| m.trim()))
+    .bind(canonical_url.map(|m| m.trim()))
     .execute(&mut *tx)
     .await
     .map_err(|e| {
@@ -278,6 +326,11 @@ pub async fn update_status_page(
     description: Option<&str>,
     is_public: bool,
     monitors: Option<Vec<StatusPageMonitorAssignment>>,
+    allow_indexing: bool,
+    meta_title: Option<&str>,
+    meta_description: Option<&str>,
+    og_image_url: Option<&str>,
+    canonical_url: Option<&str>,
 ) -> Result<StatusPageDetail, AppError> {
     let title_clean = title.trim();
     if title_clean.is_empty() {
@@ -290,15 +343,21 @@ pub async fn update_status_page(
         .ok_or_else(|| AppError::NotFound(format!("Status page '{slug}' not found")))?;
 
     let is_pub_int = if is_public { 1i64 } else { 0i64 };
+    let allow_idx_int = if allow_indexing { 1i64 } else { 0i64 };
 
     let mut tx = pool.begin().await?;
 
     sqlx::query(
-        "UPDATE status_pages SET title = ?, description = ?, is_public = ? WHERE slug = ?",
+        "UPDATE status_pages SET title = ?, description = ?, is_public = ?, allow_indexing = ?, meta_title = ?, meta_description = ?, og_image_url = ?, canonical_url = ? WHERE slug = ?",
     )
     .bind(title_clean)
     .bind(description.map(|d| d.trim()))
     .bind(is_pub_int)
+    .bind(allow_idx_int)
+    .bind(meta_title.map(|m| m.trim()))
+    .bind(meta_description.map(|m| m.trim()))
+    .bind(og_image_url.map(|m| m.trim()))
+    .bind(canonical_url.map(|m| m.trim()))
     .bind(slug)
     .execute(&mut *tx)
     .await?;
@@ -350,6 +409,11 @@ pub async fn update_status_page(
         is_public: updated_page.is_public == 1,
         created_at: updated_page.created_at,
         monitors: updated_monitors,
+        allow_indexing: updated_page.allow_indexing,
+        meta_title: updated_page.meta_title,
+        meta_description: updated_page.meta_description,
+        og_image_url: updated_page.og_image_url,
+        canonical_url: updated_page.canonical_url,
     })
 }
 
@@ -415,12 +479,19 @@ mod tests {
             Some("Public APIs and gateways"),
             true,
             None,
+            true,
+            Some("SEO Title"),
+            Some("SEO Description"),
+            Some("https://example.com/og.png"),
+            Some("https://status.example.com/api-services"),
         )
         .await
         .unwrap();
 
         assert_eq!(created.slug, "api-services");
         assert_eq!(created.title, "API Systems Status");
+        assert!(created.allow_indexing);
+        assert_eq!(created.meta_title.as_deref(), Some("SEO Title"));
 
         // 2. Insert test monitors
         sqlx::query("INSERT INTO monitors (id, name, url) VALUES ('m1', 'Users API', 'https://api.test/users')")
@@ -453,11 +524,18 @@ mod tests {
             Some("Updated description"),
             true,
             Some(assignments),
+            false,
+            Some("Updated SEO Title"),
+            Some("Updated SEO Desc"),
+            None,
+            None,
         )
         .await
         .unwrap();
 
         assert_eq!(updated.title, "Updated API Status");
+        assert!(!updated.allow_indexing);
+        assert_eq!(updated.meta_title.as_deref(), Some("Updated SEO Title"));
         assert_eq!(updated.monitors.len(), 2);
         assert_eq!(updated.monitors[0].group_name, "Core APIs");
         assert_eq!(updated.monitors[1].group_name, "Finance");

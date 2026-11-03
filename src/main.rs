@@ -101,6 +101,7 @@ async fn main() -> anyhow::Result<()> {
 
     // Build Axum router with explicit status routes, API routes and embedded UI fallback.
     let app = axum::Router::new()
+        .route("/robots.txt", axum::routing::get(api::public::robots_txt))
         .route("/status", axum::routing::get(ui::status_page_handler))
         .route("/status/*path", axum::routing::get(ui::status_page_handler))
         .route("/badge/:id", axum::routing::get(api::public::badge))

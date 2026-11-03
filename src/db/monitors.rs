@@ -5,6 +5,10 @@ use sqlx::SqlitePool;
 use crate::api::dto::UpdateMonitorDto;
 use crate::error::AppError;
 
+fn default_check_type() -> String {
+    "http".to_string()
+}
+
 /// Full monitor database row model.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Monitor {
@@ -34,6 +38,15 @@ pub struct Monitor {
     pub ssl_expires_at: Option<String>,
     pub ssl_days_remaining: Option<i32>,
     pub ssl_last_checked_at: Option<String>,
+    #[serde(default = "default_check_type")]
+    #[sqlx(default)]
+    pub check_type: String,
+    #[sqlx(default)]
+    pub port: Option<i32>,
+    #[sqlx(default)]
+    pub dns_record_type: Option<String>,
+    #[sqlx(default)]
+    pub dns_expected_value: Option<String>,
 }
 
 /// Fetch a single monitor by its primary ID.
@@ -43,7 +56,8 @@ pub async fn get_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Monitor, A
                 is_active, is_public, last_status, down_since, created_at, \
                 check_domain_expiry, domain_warning_days, domain_expires_at, \
                 domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
+                check_type, port, dns_record_type, dns_expected_value \
          FROM monitors WHERE id = ?",
     )
     .bind(id)
@@ -89,13 +103,18 @@ pub async fn update_monitor(
     let ssl_warning_days = payload
         .ssl_warning_days
         .unwrap_or(existing.ssl_warning_days);
+    let check_type = payload.check_type.unwrap_or(existing.check_type);
+    let port = payload.port.or(existing.port);
+    let dns_record_type = payload.dns_record_type.or(existing.dns_record_type);
+    let dns_expected_value = payload.dns_expected_value.or(existing.dns_expected_value);
 
     sqlx::query(
         "UPDATE monitors \
          SET name = ?, url = ?, check_interval_secs = ?, timeout_secs = ?, \
              max_retries = ?, is_active = ?, is_public = ?, \
              check_domain_expiry = ?, domain_warning_days = ?, \
-             check_ssl = ?, ssl_warning_days = ? \
+             check_ssl = ?, ssl_warning_days = ?, \
+             check_type = ?, port = ?, dns_record_type = ?, dns_expected_value = ? \
          WHERE id = ?",
     )
     .bind(&name)
@@ -109,6 +128,10 @@ pub async fn update_monitor(
     .bind(domain_warning_days)
     .bind(check_ssl)
     .bind(ssl_warning_days)
+    .bind(&check_type)
+    .bind(port)
+    .bind(&dns_record_type)
+    .bind(&dns_expected_value)
     .bind(id)
     .execute(pool)
     .await?;
@@ -165,7 +188,8 @@ pub async fn get_asset_expiry_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>
                 is_active, is_public, last_status, down_since, created_at, \
                 check_domain_expiry, domain_warning_days, domain_expires_at, \
                 domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
+                check_type, port, dns_record_type, dns_expected_value \
          FROM monitors \
          WHERE is_active = 1 AND (check_ssl = 1 OR check_domain_expiry = 1)",
     )
@@ -378,6 +402,195 @@ pub async fn get_24h_latency_history(
     }
 
     Ok(latency_24h)
+}
+
+/// Disable active health checking for all registered monitors in SQLite.
+pub async fn pause_all_monitors(pool: &SqlitePool) -> Result<u64, AppError> {
+    let result = sqlx::query("UPDATE monitors SET is_active = 0")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Enable active health checking for all registered monitors in SQLite.
+pub async fn resume_all_monitors(pool: &SqlitePool) -> Result<u64, AppError> {
+    let result = sqlx::query("UPDATE monitors SET is_active = 1")
+        .execute(pool)
+        .await?;
+    Ok(result.rows_affected())
+}
+
+/// Return global monitoring state ("ALL_ACTIVE", "ALL_PAUSED", or "PARTIAL"),
+/// along with the active monitor count and total monitor count.
+pub async fn get_global_monitoring_state(
+    pool: &SqlitePool,
+) -> Result<(String, usize, usize), AppError> {
+    let row: (i64, i64) = sqlx::query_as(
+        "SELECT COUNT(*) as total, COALESCE(SUM(CASE WHEN is_active = 1 THEN 1 ELSE 0 END), 0) as active FROM monitors",
+    )
+    .fetch_one(pool)
+    .await?;
+
+    let total = row.0 as usize;
+    let active = row.1 as usize;
+    let state = if total == 0 || active == 0 {
+        "ALL_PAUSED".to_string()
+    } else if active == total {
+        "ALL_ACTIVE".to_string()
+    } else {
+        "PARTIAL".to_string()
+    };
+    Ok((state, active, total))
+}
+
+/// Query all registered monitors from SQLite ordered by creation date descending.
+pub async fn get_all_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, AppError> {
+    let monitors = sqlx::query_as::<_, Monitor>(
+        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
+                is_active, is_public, last_status, down_since, created_at, \
+                check_domain_expiry, domain_warning_days, domain_expires_at, \
+                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
+                check_type, port, dns_record_type, dns_expected_value \
+         FROM monitors ORDER BY created_at DESC",
+    )
+    .fetch_all(pool)
+    .await?;
+    Ok(monitors)
+}
+
+/// Disable active monitoring status for a batch of specified monitor IDs in a single transaction.
+pub async fn bulk_pause_monitors(pool: &SqlitePool, ids: &[String]) -> Result<u64, AppError> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut tx = pool.begin().await?;
+    let sql = format!("UPDATE monitors SET is_active = 0 WHERE id IN ({placeholders})");
+    let mut q = sqlx::query(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let res = q.execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(res.rows_affected())
+}
+
+/// Enable active monitoring status for a batch of specified monitor IDs in a single transaction.
+pub async fn bulk_resume_monitors(pool: &SqlitePool, ids: &[String]) -> Result<u64, AppError> {
+    if ids.is_empty() {
+        return Ok(0);
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut tx = pool.begin().await?;
+    let sql = format!("UPDATE monitors SET is_active = 1 WHERE id IN ({placeholders})");
+    let mut q = sqlx::query(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let res = q.execute(&mut *tx).await?;
+    tx.commit().await?;
+    Ok(res.rows_affected())
+}
+
+/// Atomically deletes a batch of monitors along with all cascading check logs and relation bindings.
+/// Returns (deleted_monitors_count, deleted_logs_count).
+pub async fn bulk_delete_monitors(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> Result<(u64, u64), AppError> {
+    if ids.is_empty() {
+        return Ok((0, 0));
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let mut tx = pool.begin().await?;
+
+    // Count check logs first to report accurate purged log count
+    let count_query = format!("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ({placeholders})");
+    let mut q = sqlx::query_as::<_, (i64,)>(&count_query);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let logs_count: (i64,) = q.fetch_one(&mut *tx).await?;
+
+    let relation_tables = [
+        "check_logs",
+        "monitor_notifications",
+        "status_page_monitors",
+        "maintenance_monitors",
+        "monitor_notification_channels",
+    ];
+    for table in relation_tables {
+        let sql = format!("DELETE FROM {table} WHERE monitor_id IN ({placeholders})");
+        let mut q = sqlx::query(&sql);
+        for id in ids {
+            q = q.bind(id);
+        }
+        let _ = q.execute(&mut *tx).await;
+    }
+
+    let del_sql = format!("DELETE FROM monitors WHERE id IN ({placeholders})");
+    let mut q = sqlx::query(&del_sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let res = q.execute(&mut *tx).await?;
+
+    tx.commit().await?;
+    Ok((res.rows_affected(), logs_count.0 as u64))
+}
+
+/// Retrieve exact counts of matching monitors and historical check logs for deletion preview.
+pub async fn get_bulk_monitors_stats(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> Result<(usize, usize), AppError> {
+    if ids.is_empty() {
+        return Ok((0, 0));
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+
+    let count_logs_sql = format!("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ({placeholders})");
+    let mut q = sqlx::query_as::<_, (i64,)>(&count_logs_sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let logs_row: (i64,) = q.fetch_one(pool).await?;
+
+    let count_mons_sql = format!("SELECT COUNT(*) FROM monitors WHERE id IN ({placeholders})");
+    let mut q2 = sqlx::query_as::<_, (i64,)>(&count_mons_sql);
+    for id in ids {
+        q2 = q2.bind(id);
+    }
+    let mons_row: (i64,) = q2.fetch_one(pool).await?;
+
+    Ok((mons_row.0 as usize, logs_row.0 as usize))
+}
+
+/// Retrieve a batch of monitors by their primary IDs.
+pub async fn get_monitors_by_ids(
+    pool: &SqlitePool,
+    ids: &[String],
+) -> Result<Vec<Monitor>, AppError> {
+    if ids.is_empty() {
+        return Ok(Vec::new());
+    }
+    let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
+    let sql = format!(
+        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
+                is_active, is_public, last_status, down_since, created_at, \
+                check_domain_expiry, domain_warning_days, domain_expires_at, \
+                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
+                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
+                check_type, port, dns_record_type, dns_expected_value \
+         FROM monitors WHERE id IN ({placeholders})"
+    );
+    let mut q = sqlx::query_as::<_, Monitor>(&sql);
+    for id in ids {
+        q = q.bind(id);
+    }
+    let res = q.fetch_all(pool).await?;
+    Ok(res)
 }
 
 #[cfg(test)]
@@ -677,5 +890,122 @@ mod tests {
             .unwrap();
         let mon_with_milestone = get_monitor_by_id(&pool, monitor_id).await.unwrap();
         assert_eq!(mon_with_milestone.last_domain_alert_days, Some(14));
+    }
+
+    #[tokio::test]
+    async fn test_pause_resume_all_monitors_db() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // Seed 3 monitors: 2 active, 1 paused
+        sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('m1', 'Mon 1', 'https://a.com', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('m2', 'Mon 2', 'https://b.com', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('m3', 'Mon 3', 'https://c.com', 0, 1)")
+            .execute(&pool).await.unwrap();
+
+        let (state, active, total) = get_global_monitoring_state(&pool).await.unwrap();
+        assert_eq!(state, "PARTIAL");
+        assert_eq!(active, 2);
+        assert_eq!(total, 3);
+
+        // Pause all
+        let paused_count = pause_all_monitors(&pool).await.unwrap();
+        assert_eq!(paused_count, 3);
+
+        let (state, active, total) = get_global_monitoring_state(&pool).await.unwrap();
+        assert_eq!(state, "ALL_PAUSED");
+        assert_eq!(active, 0);
+        assert_eq!(total, 3);
+
+        // Resume all
+        let resumed_count = resume_all_monitors(&pool).await.unwrap();
+        assert_eq!(resumed_count, 3);
+
+        let (state, active, total) = get_global_monitoring_state(&pool).await.unwrap();
+        assert_eq!(state, "ALL_ACTIVE");
+        assert_eq!(active, 3);
+        assert_eq!(total, 3);
+
+        let all = get_all_monitors(&pool).await.unwrap();
+        assert_eq!(all.len(), 3);
+        assert!(all.iter().all(|m| m.is_active == 1));
+    }
+
+    #[tokio::test]
+    async fn test_bulk_pause_resume_delete_monitors_db() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+
+        sqlx::migrate!("./migrations")
+            .run(&pool)
+            .await
+            .unwrap();
+
+        // Seed 3 monitors
+        sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('b1', 'Batch 1', 'https://1.com', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('b2', 'Batch 2', 'https://2.com', 1, 1)")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('b3', 'Batch 3', 'https://3.com', 1, 1)")
+            .execute(&pool).await.unwrap();
+
+        // Add 5 check logs for b1 and b2
+        sqlx::query("INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, checked_at, created_at) VALUES ('b1', 200, 10, 1, datetime('now'), datetime('now'))")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, checked_at, created_at) VALUES ('b1', 200, 12, 1, datetime('now'), datetime('now'))")
+            .execute(&pool).await.unwrap();
+        sqlx::query("INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, checked_at, created_at) VALUES ('b2', 200, 20, 1, datetime('now'), datetime('now'))")
+            .execute(&pool).await.unwrap();
+
+        // Test get_bulk_monitors_stats for b1 and b2
+        let target_ids = vec!["b1".to_string(), "b2".to_string()];
+        let (mon_count, log_count) = get_bulk_monitors_stats(&pool, &target_ids).await.unwrap();
+        assert_eq!(mon_count, 2);
+        assert_eq!(log_count, 3);
+
+        // Test bulk_pause_monitors for b1 and b2
+        let paused = bulk_pause_monitors(&pool, &target_ids).await.unwrap();
+        assert_eq!(paused, 2);
+
+        let mons = get_monitors_by_ids(&pool, &target_ids).await.unwrap();
+        assert_eq!(mons.len(), 2);
+        assert!(mons.iter().all(|m| m.is_active == 0));
+
+        // b3 should remain active
+        let b3 = get_monitor_by_id(&pool, "b3").await.unwrap();
+        assert_eq!(b3.is_active, 1);
+
+        // Test bulk_resume_monitors for b1 only
+        let resumed = bulk_resume_monitors(&pool, &["b1".to_string()]).await.unwrap();
+        assert_eq!(resumed, 1);
+        let b1 = get_monitor_by_id(&pool, "b1").await.unwrap();
+        assert_eq!(b1.is_active, 1);
+
+        // Test bulk_delete_monitors for b1 and b2
+        let (del_mons, del_logs) = bulk_delete_monitors(&pool, &target_ids).await.unwrap();
+        assert_eq!(del_mons, 2);
+        assert_eq!(del_logs, 3);
+
+        // Verify monitors and logs are gone
+        assert!(get_monitor_by_id(&pool, "b1").await.is_err());
+        assert!(get_monitor_by_id(&pool, "b2").await.is_err());
+        assert!(get_monitor_by_id(&pool, "b3").await.is_ok());
+
+        let remaining_logs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ('b1', 'b2')")
+            .fetch_one(&pool).await.unwrap();
+        assert_eq!(remaining_logs.0, 0);
     }
 }
