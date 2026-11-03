@@ -450,6 +450,380 @@
       border-color: rgba(0, 0, 0, 0.12) !important;
       box-shadow: 0 1px 3px rgba(0, 0, 0, 0.08) !important;
     }
+
+    /* ── Add New Monitor Modal (Mockup Precise Styles) ────────────────── */
+    #modal-card {
+      --bg: #0c0c0d;
+      --panel: #161617;
+      --field: #101011;
+      --border: #2a2a2d;
+      --sep: #232326;
+      --text: #f2f2f3;
+      --dim: #8b8b90;
+      --ph: #5f5f65;
+      --green: #84cc6e;
+      --blue: #5b7cf0;
+      --off: #3a3a3e;
+      --sans: Inter, -apple-system, BlinkMacSystemFont, "SF Pro Text", "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+      --mono: "SF Mono", ui-monospace, Menlo, Consolas, "Liberation Mono", monospace;
+
+      position: relative !important;
+      width: 100% !important;
+      max-width: 896px !important;
+      max-height: 92vh !important;
+      background: var(--panel) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 22px !important;
+      overflow: hidden !important;
+      color: var(--text) !important;
+      font-family: var(--sans) !important;
+      -webkit-font-smoothing: antialiased;
+      box-shadow: 0 24px 60px rgba(0, 0, 0, 0.7) !important;
+      display: flex !important;
+      flex-direction: column !important;
+      margin: auto !important;
+    }
+
+    #modal-card .header {
+      padding: 24px 80px 20px 24px;
+      border-bottom: 1px solid var(--sep);
+      flex-shrink: 0;
+    }
+    #modal-card .title {
+      font-size: 17px;
+      font-weight: 600;
+      line-height: 1.3;
+      letter-spacing: -0.01em;
+      color: var(--text);
+    }
+    #modal-card .subtitle {
+      font-size: 12px;
+      color: var(--dim);
+      margin-top: 6px;
+    }
+    #modal-card .close {
+      position: absolute;
+      top: 22px;
+      right: 22px;
+      width: 34px;
+      height: 34px;
+      border-radius: 10px;
+      border: 1px solid var(--border);
+      background: var(--field);
+      color: var(--text);
+      display: grid;
+      place-items: center;
+      cursor: pointer;
+      transition: background .15s;
+      z-index: 10;
+    }
+    #modal-card .close:hover { background: #1d1d1f; }
+
+    #modal-card .body {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 26px;
+      padding: 28px 24px 24px;
+      align-items: start;
+      overflow-y: auto;
+      flex: 1;
+      min-height: 0;
+    }
+
+    #modal-card .section-title {
+      display: flex;
+      align-items: center;
+      gap: 10px;
+      padding-bottom: 10px;
+      margin-bottom: 22px;
+      border-bottom: 1px solid var(--sep);
+      font-family: var(--mono);
+      font-size: 11px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      color: var(--text);
+    }
+    #modal-card .section-title::before {
+      content: "";
+      width: 4px;
+      height: 12px;
+      border-radius: 2px;
+      background: var(--green);
+      flex-shrink: 0;
+    }
+    #modal-card .section-title.blue::before { background: var(--blue); }
+
+    #modal-card .field { margin-bottom: 20px; }
+    #modal-card .label {
+      display: block;
+      font-size: 13px;
+      font-weight: 600;
+      margin-bottom: 9px;
+      color: var(--text);
+    }
+    #modal-card .label-row {
+      display: flex;
+      justify-content: space-between;
+      align-items: baseline;
+      margin-bottom: 9px;
+    }
+    #modal-card .label-row .label { margin-bottom: 0; }
+    #modal-card .tag {
+      font-family: var(--mono);
+      font-size: 10px;
+      color: var(--dim);
+      letter-spacing: 0.06em;
+    }
+
+    #modal-card input:not([type="checkbox"]):not([type="radio"]),
+    #modal-card select,
+    #modal-card textarea {
+      width: 100% !important;
+      height: 40px !important;
+      background-color: var(--field) !important;
+      border: 1px solid var(--border) !important;
+      border-radius: 10px !important;
+      padding: 0 14px !important;
+      color: var(--text) !important;
+      font-family: var(--sans) !important;
+      font-size: 14px !important;
+      outline: none !important;
+      box-sizing: border-box !important;
+      transition: border-color .15s, box-shadow .15s !important;
+    }
+    #modal-card input:not([type="checkbox"]):not([type="radio"])::placeholder,
+    #modal-card textarea::placeholder {
+      color: var(--ph) !important;
+      opacity: 1 !important;
+    }
+    #modal-card input:not([type="checkbox"]):not([type="radio"]):focus,
+    #modal-card select:focus,
+    #modal-card textarea:focus {
+      border-color: rgba(132, 204, 110, .6) !important;
+      box-shadow: 0 0 0 3px rgba(132, 204, 110, .15) !important;
+    }
+    #modal-card .mono,
+    #modal-card input.mono,
+    #modal-card textarea.mono {
+      font-family: var(--mono) !important;
+      font-size: 13px !important;
+    }
+    #modal-card textarea {
+      display: block !important;
+      height: auto !important;
+      min-height: 50px !important;
+      padding: 9px 14px !important;
+      line-height: 1.45 !important;
+      resize: vertical !important;
+    }
+    #modal-card select {
+      appearance: none !important;
+      -webkit-appearance: none !important;
+      padding-right: 36px !important;
+      cursor: pointer !important;
+      background-image: url("data:image/svg+xml,%3Csvg xmlns='http://www.w3.org/2000/svg' width='12' height='12' viewBox='0 0 24 24' fill='none' stroke='%23f2f2f3' stroke-width='2.2' stroke-linecap='round' stroke-linejoin='round'%3E%3Cpath d='m6 9 6 6 6-6'/%3E%3C/svg%3E") !important;
+      background-repeat: no-repeat !important;
+      background-position: right 14px center !important;
+    }
+    #modal-card select option {
+      background-color: var(--field) !important;
+      color: var(--text) !important;
+    }
+
+    #modal-card .hint {
+      font-size: 11px;
+      color: var(--dim);
+      margin-top: 9px;
+      line-height: 1.4;
+    }
+
+    #modal-card .grid-3 {
+      display: grid;
+      grid-template-columns: repeat(3, 1fr);
+      gap: 14px;
+      margin-bottom: 16px;
+    }
+    #modal-card .grid-2 {
+      display: grid;
+      grid-template-columns: 1fr 1fr;
+      gap: 12px;
+    }
+    #modal-card .grid-3 .field,
+    #modal-card .grid-2 .field { margin-bottom: 0; }
+
+    #modal-card input[type=number] { -moz-appearance: textfield; }
+    #modal-card input[type=number]::-webkit-inner-spin-button,
+    #modal-card input[type=number]::-webkit-outer-spin-button { -webkit-appearance: none; margin: 0; }
+
+    #modal-card .num { position: relative; }
+    #modal-card .num input { padding-right: 34px !important; }
+    #modal-card .stepper {
+      position: absolute;
+      right: 9px;
+      top: 50%;
+      transform: translateY(-50%);
+      width: 15px;
+      height: 18px;
+      border-radius: 4px;
+      background: var(--border);
+      display: flex;
+      flex-direction: column;
+      overflow: hidden;
+      z-index: 2;
+    }
+    #modal-card .stepper button {
+      flex: 1;
+      border: 0;
+      padding: 0;
+      background: transparent;
+      color: #c9c9cd;
+      cursor: pointer;
+      display: grid;
+      place-items: center;
+      line-height: 1;
+    }
+    #modal-card .stepper button:hover { background: #38383c; color: var(--text); }
+    #modal-card .stepper svg { width: 7px; height: 4px; display: block; }
+
+    #modal-card .box {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 16px 16px 18px;
+    }
+    #modal-card .box-title {
+      font-family: var(--mono);
+      font-size: 10.5px;
+      font-weight: 700;
+      letter-spacing: 0.14em;
+      text-transform: uppercase;
+      margin-bottom: 14px;
+      color: var(--text);
+    }
+    #modal-card .box .field { margin-bottom: 16px; }
+    #modal-card .box .field:last-child { margin-bottom: 0; }
+    #modal-card .box .grid-2 { margin-bottom: 16px; }
+    #modal-card .box .label { margin-bottom: 8px; }
+
+    #modal-card .card {
+      border: 1px solid var(--border);
+      border-radius: 14px;
+      padding: 2px 16px 16px;
+    }
+    #modal-card .card + .card { margin-top: 16px; }
+
+    #modal-card .toggle-row {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 12px 0;
+      border-bottom: 1px solid var(--sep);
+    }
+    #modal-card .toggle-title { font-size: 14px; font-weight: 600; color: var(--text); }
+    #modal-card .toggle-desc { font-size: 11px; color: var(--dim); margin-top: 4px; }
+
+    #modal-card .switch {
+      position: relative;
+      flex: none;
+      width: 44px;
+      height: 26px;
+      cursor: pointer;
+    }
+    #modal-card .switch input { position: absolute; opacity: 0; width: 0; height: 0; margin: 0; }
+    #modal-card .track {
+      position: absolute;
+      inset: 0;
+      border-radius: 999px;
+      background: var(--off) !important;
+      transition: background .2s ease;
+    }
+    #modal-card .track::after {
+      content: "";
+      position: absolute;
+      top: 3px;
+      left: 3px;
+      width: 20px;
+      height: 20px;
+      border-radius: 50%;
+      background: #fff;
+      box-shadow: 0 1px 2px rgba(0, 0, 0, .3);
+      transition: transform .2s cubic-bezier(.4, 0, .2, 1);
+    }
+    #modal-card .switch input:checked + .track { background: var(--green) !important; }
+    #modal-card .switch input:checked + .track::after { transform: translateX(18px); }
+    #modal-card .switch input:focus-visible + .track { box-shadow: 0 0 0 3px rgba(132, 204, 110, .25); }
+
+    #modal-card .repeat { padding-top: 16px; }
+    #modal-card .repeat .input { height: 42px !important; }
+
+    #modal-card .channels-head {
+      display: flex;
+      justify-content: space-between;
+      align-items: center;
+      padding: 14px 0 12px;
+    }
+    #modal-card .link {
+      background: none;
+      border: 0;
+      padding: 0;
+      font-family: var(--sans);
+      font-size: 13px;
+      color: var(--green);
+      cursor: pointer;
+      font-weight: 500;
+    }
+    #modal-card .link:hover { text-decoration: underline; }
+
+    #modal-card .empty {
+      min-height: 64px;
+      padding: 12px 14px;
+      background: var(--field);
+      border: 1px solid var(--border);
+      border-radius: 10px;
+      font-size: 13px;
+      line-height: 1.5;
+      color: var(--dim);
+    }
+    #modal-card .card .hint { margin-top: 12px; }
+
+    #modal-card .footer {
+      display: flex;
+      justify-content: flex-end;
+      gap: 12px;
+      padding: 16px 24px 18px;
+      border-top: 1px solid var(--sep);
+      flex-shrink: 0;
+    }
+    #modal-card .btn {
+      height: 40px;
+      padding: 0 18px;
+      border-radius: 12px;
+      font-family: var(--sans);
+      font-size: 14px;
+      font-weight: 600;
+      cursor: pointer;
+      transition: background .15s, filter .15s;
+      display: inline-flex;
+      align-items: center;
+      justify-content: center;
+    }
+    #modal-card .btn-ghost {
+      background: var(--field) !important;
+      border: 1px solid var(--border) !important;
+      color: var(--text) !important;
+    }
+    #modal-card .btn-ghost:hover { background: #1c1c1e !important; }
+    #modal-card .btn-primary {
+      background: var(--green) !important;
+      border: 1px solid var(--green) !important;
+      color: var(--bg) !important;
+    }
+    #modal-card .btn-primary:hover { filter: brightness(1.06); }
+
+    @media (max-width: 759px) {
+      #modal-card .body { grid-template-columns: 1fr; }
+    }
   </style>
 </head>
 <body class="min-h-screen antialiased flex flex-col font-sans selection:bg-[#0a84ff]/30 selection:text-white">
@@ -914,273 +1288,295 @@
   </footer>
 
   <!-- ── 6. Modal (Workspace: Edit & Create Monitors) ─────────────── -->
-  <div id="modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-black/80 flex items-center justify-center p-3 sm:p-5 overflow-y-auto transition-all duration-300">
-    <div id="modal-card" class="bg-zinc-950 border border-white/10 rounded-2xl w-full max-w-4xl max-h-[92vh] my-auto shadow-2xl relative flex flex-col transition-all duration-300 ease-out transform scale-95 opacity-0 overflow-hidden text-white">
+  <div id="modal-backdrop" class="fixed inset-0 z-50 hidden backdrop-blur-md bg-[#0c0c0d]/80 flex items-center justify-center p-3 sm:p-5 overflow-y-auto transition-all duration-300">
+    <div id="modal-card" class="modal scale-95 opacity-0 transition-all duration-200 ease-out" role="dialog" aria-labelledby="modal-title">
       
-      <!-- Header Bar -->
-      <div class="px-7 pt-7 pb-5 flex items-start justify-between shrink-0">
-        <div>
-          <h3 id="modal-title" class="text-xl font-bold tracking-tight text-white">Add New Monitor</h3>
-          <p id="modal-subtitle" class="text-xs text-white/50 mt-1">Configure synthetic HTTP/TCP probes, SLA thresholds, and alert routing</p>
-        </div>
-        <button type="button" onclick="closeModal()" class="w-8 h-8 rounded-lg bg-white/5 hover:bg-white/10 border border-white/10 flex items-center justify-center text-white/50 hover:text-white transition cursor-pointer" title="Close Workspace">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
-          </svg>
-        </button>
+      <!-- Header -->
+      <div class="header">
+        <h3 id="modal-title" class="title">Add New Monitor</h3>
+        <p id="modal-subtitle" class="subtitle">Configure synthetic HTTP/TCP probes, SLA thresholds, and alert routing</p>
       </div>
+      <button type="button" class="close" aria-label="Close" onclick="closeModal()">
+        <svg width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round"><path d="M6 6l12 12M18 6L6 18"/></svg>
+      </button>
 
-      <!-- Main Modal Body: 2-Column Responsive Grid with Scrollable Content -->
       <form id="monitor-form" onsubmit="handleMonitorSubmit(event)" class="flex-1 flex flex-col min-h-0 overflow-hidden">
         <input type="hidden" id="edit-monitor-id" value="">
 
-        <!-- Scrollable 2-Column Workspace Body -->
-        <div class="flex-1 overflow-y-auto px-7 pb-4">
-          <div class="grid grid-cols-1 lg:grid-cols-2 gap-6 items-start">
-            
-            <!-- Left Column: Core Endpoint Configuration & Assertions -->
-            <div class="space-y-4">
-              <div class="flex items-center gap-2 pb-1.5 border-b border-white/10">
-                <span class="w-1.5 h-3.5 bg-[#30d158] rounded-full"></span>
-                <h4 class="text-xs font-semibold uppercase tracking-wider text-white font-mono">1. Endpoint Parameters</h4>
+        <div class="body">
+
+          <!-- Left column -->
+          <div>
+            <div class="section-title">1. Endpoint Parameters</div>
+
+            <div class="field">
+              <label class="label" for="m-name">Friendly Name</label>
+              <input required id="m-name" class="input" type="text" placeholder="e.g. Production API Gateway">
+            </div>
+
+            <div class="field">
+              <label class="label" for="m-probe-type">Probe Protocol</label>
+              <select id="m-probe-type" onchange="onProbeTypeChange()" class="input">
+                <option value="http">HTTP / HTTPS Probe</option>
+                <option value="tcp">TCP Port Socket Probe</option>
+                <option value="dns">DNS Record Resolution</option>
+                <option value="push">Push Heartbeat (Cron / Background Daemon)</option>
+              </select>
+            </div>
+
+            <div class="field">
+              <div class="label-row">
+                <label class="label" for="m-url" id="m-url-label">Target URL</label>
+                <span id="url-validation-indicator" class="tag">HTTP / HTTPS</span>
               </div>
+              <input required id="m-url" class="input mono" type="text" placeholder="https://api.example.com/health" oninput="validateUrlInput(this)">
+              <p id="m-url-hint" class="hint">Accepts standard HTTPS or HTTP endpoints with custom ports</p>
+            </div>
 
-              <!-- Friendly Name -->
-              <div class="space-y-1.5">
-                <label for="m-name" class="block font-medium text-white/80 text-xs sm:text-sm">Friendly Name</label>
-                <input required id="m-name" type="text" placeholder="e.g. Production API Gateway" class="w-full h-10 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm" />
-              </div>
-
-              <!-- Probe Protocol Selector -->
-              <div class="space-y-1.5">
-                <label for="m-probe-type" class="block font-medium text-white/80 text-xs sm:text-sm">Probe Protocol</label>
-                <select id="m-probe-type" onchange="onProbeTypeChange()" class="w-full h-10 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition bg-black/40 border border-white/10 text-white text-xs sm:text-sm font-sans cursor-pointer">
-                  <option value="http">HTTP / HTTPS Probe</option>
-                  <option value="tcp">TCP Port Socket Probe</option>
-                  <option value="dns">DNS Record Resolution</option>
-                  <option value="push">Push Heartbeat (Cron / Background Daemon)</option>
-                </select>
-              </div>
-
-              <!-- Target URL with HTTP/HTTPS validation indicator -->
-              <div class="space-y-1.5">
-                <div class="flex items-center justify-between">
-                  <label for="m-url" id="m-url-label" class="block font-medium text-white/80 text-xs sm:text-sm">Target URL</label>
-                  <span id="url-validation-indicator" class="text-[10px] font-mono flex items-center gap-1.5">
-                    <span class="w-1.5 h-1.5 rounded-full bg-white/30"></span>
-                    <span class="text-white/40">HTTP / HTTPS</span>
-                  </span>
-                </div>
-                <input required id="m-url" type="text" placeholder="https://api.example.com/health" oninput="validateUrlInput(this)" class="w-full h-10 rounded-xl px-3.5 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
-                <p id="m-url-hint" class="text-[11px] text-white/40">Accepts standard HTTPS or HTTP endpoints with custom ports</p>
-              </div>
-
-              <!-- Interval, Timeout, Max Retries Grid -->
-              <div class="grid grid-cols-3 gap-3">
-                <div class="space-y-1.5">
-                  <label for="m-interval" class="block font-medium text-white/80 text-xs">Interval (s)</label>
-                  <input required id="m-interval" type="number" min="5" max="86400" value="60" class="w-full h-10 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
-                </div>
-                <div class="space-y-1.5">
-                  <label for="m-timeout" class="block font-medium text-white/80 text-xs">Timeout (s)</label>
-                  <input required id="m-timeout" type="number" min="1" max="60" value="5" class="w-full h-10 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
-                </div>
-                <div class="space-y-1.5">
-                  <label for="m-retries" class="block font-medium text-white/80 text-xs">Max Retries</label>
-                  <input required id="m-retries" type="number" min="1" max="10" value="3" class="w-full h-10 rounded-xl px-3 py-2 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs bg-black/40 border border-white/10 text-white" />
-                </div>
-              </div>
-
-              <!-- HTTP Probing Assertions & Options -->
-              <div id="m-http-options" class="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-3.5">
-                <div class="text-xs font-semibold uppercase tracking-wider text-white/60 font-mono">HTTP Assertions</div>
-                <div class="grid grid-cols-2 gap-3">
-                  <div class="space-y-1">
-                    <label for="m-http-method" class="block font-medium text-white/70 text-xs">HTTP Method</label>
-                    <select id="m-http-method" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]">
-                      <option value="GET">GET</option>
-                      <option value="POST">POST</option>
-                      <option value="HEAD">HEAD</option>
-                      <option value="PUT">PUT</option>
-                      <option value="PATCH">PATCH</option>
-                      <option value="DELETE">DELETE</option>
-                      <option value="OPTIONS">OPTIONS</option>
-                    </select>
-                  </div>
-                  <div class="space-y-1">
-                    <label for="m-expected-status" class="block font-medium text-white/70 text-xs">Expected Status</label>
-                    <input id="m-expected-status" type="text" value="200-299" placeholder="200-299" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
-                  </div>
-                </div>
-
-                <div class="space-y-1">
-                  <label for="m-request-headers" class="block font-medium text-white/70 text-xs">Request Headers (JSON or Key: Value)</label>
-                  <textarea id="m-request-headers" rows="2" placeholder='{"Authorization": "Bearer ...", "X-Custom": "val"}' class="w-full rounded-lg px-3 py-2 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]"></textarea>
-                </div>
-
-                <div class="space-y-1">
-                  <label for="m-body-keyword" class="block font-medium text-white/70 text-xs">Response Body Keyword Search</label>
-                  <input id="m-body-keyword" type="text" placeholder="e.g. status: ok" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
-                </div>
-
-                <div class="grid grid-cols-2 gap-3">
-                  <div class="space-y-1">
-                    <label for="m-json-pointer" class="block font-medium text-white/70 text-xs">JSON Pointer Path</label>
-                    <input id="m-json-pointer" type="text" placeholder="/data/status" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
-                  </div>
-                  <div class="space-y-1">
-                    <label for="m-json-expected" class="block font-medium text-white/70 text-xs">JSON Expected Value</label>
-                    <input id="m-json-expected" type="text" placeholder="healthy" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
-                  </div>
-                </div>
-
-                <div class="space-y-1">
-                  <label for="m-degraded-latency" class="block font-medium text-white/70 text-xs">Degraded Latency Threshold (ms)</label>
-                  <input id="m-degraded-latency" type="number" min="1" placeholder="e.g. 1500 (warn if slower)" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
-                </div>
-              </div>
-
-              <!-- DNS Probing Options -->
-              <div id="m-dns-options" class="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-3.5 hidden">
-                <div class="text-xs font-semibold uppercase tracking-wider text-white/60 font-mono">DNS Resolution</div>
-                <div class="grid grid-cols-2 gap-3">
-                  <div class="space-y-1">
-                    <label for="m-dns-record-type" class="block font-medium text-white/70 text-xs">DNS Record Type</label>
-                    <select id="m-dns-record-type" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]">
-                      <option value="A">A (IPv4)</option>
-                      <option value="AAAA">AAAA (IPv6)</option>
-                      <option value="CNAME">CNAME</option>
-                      <option value="MX">MX</option>
-                      <option value="TXT">TXT</option>
-                    </select>
-                  </div>
-                  <div class="space-y-1">
-                    <label for="m-dns-expected" class="block font-medium text-white/70 text-xs">Expected Resolved Value</label>
-                    <input id="m-dns-expected" type="text" placeholder="93.184.216.34" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
+            <div class="grid-3">
+              <div class="field">
+                <label class="label" for="m-interval">Interval (s)</label>
+                <div class="num">
+                  <input required id="m-interval" class="input" type="number" min="5" max="86400" value="60">
+                  <div class="stepper">
+                    <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                    <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
                   </div>
                 </div>
               </div>
-
-              <!-- Push Heartbeat Options -->
-              <div id="m-push-options" class="p-4 rounded-xl bg-white/[0.02] border border-white/10 space-y-3.5 hidden">
-                <div class="bg-black/60 rounded-xl p-3 border border-white/10 space-y-2">
-                  <div class="flex items-center justify-between">
-                    <span class="text-xs font-semibold text-[#30d158] uppercase font-mono">Push Ingestion Endpoint</span>
-                    <button type="button" onclick="copyPushUrl()" class="text-xs text-[#0a84ff] hover:underline cursor-pointer">Copy URL</button>
+              <div class="field">
+                <label class="label" for="m-timeout">Timeout (s)</label>
+                <div class="num">
+                  <input required id="m-timeout" class="input" type="number" min="1" max="60" value="5">
+                  <div class="stepper">
+                    <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                    <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
                   </div>
-                  <input id="m-push-url-display" readonly type="text" value="Generated upon creation" class="w-full rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white/70 text-xs font-mono select-all" />
-                  <p class="text-[11px] text-white/40">Ping this URL from cron, systemd, or CI/CD: <code>curl -fsS https://.../api/push/{token}</code></p>
                 </div>
-                <div class="space-y-1">
-                  <label for="m-grace-secs" class="block font-medium text-white/70 text-xs">Heartbeat Grace Period (seconds)</label>
-                  <input id="m-grace-secs" type="number" min="1" value="60" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
+              </div>
+              <div class="field">
+                <label class="label" for="m-retries">Max Retries</label>
+                <div class="num">
+                  <input required id="m-retries" class="input" type="number" min="1" max="10" value="3">
+                  <div class="stepper">
+                    <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                    <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+                  </div>
                 </div>
               </div>
             </div>
 
-            <!-- Right Column: Probing & Alert Routing -->
-            <div class="space-y-4">
-              <div class="flex items-center gap-2 pb-1.5 border-b border-white/10">
-                <span class="w-1.5 h-3.5 bg-[#0a84ff] rounded-full"></span>
-                <h4 class="text-xs font-semibold uppercase tracking-wider text-white font-mono">2. Probing &amp; Alert Routing</h4>
-              </div>
+            <!-- HTTP Probing Assertions & Options -->
+            <div id="m-http-options" class="box">
+              <div class="box-title">HTTP Assertions</div>
 
-              <!-- Switch Cards Group -->
-              <div class="bg-white/[0.02] rounded-xl p-4 border border-white/10 space-y-3.5">
-                <!-- Active Monitoring -->
-                <div class="flex items-center justify-between">
-                  <div>
-                    <div class="font-medium text-white text-xs sm:text-sm">Active Monitoring</div>
-                    <div class="text-[11px] text-white/40">Execute synthetic probes on configured interval</div>
-                  </div>
-                  <label class="relative inline-flex items-center cursor-pointer">
-                    <input id="m-active" type="checkbox" checked class="sr-only peer">
-                    <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
-                  </label>
+              <div class="grid-2">
+                <div class="field">
+                  <label class="label" for="m-http-method">HTTP Method</label>
+                  <select id="m-http-method" class="input">
+                    <option value="GET">GET</option>
+                    <option value="POST">POST</option>
+                    <option value="HEAD">HEAD</option>
+                    <option value="PUT">PUT</option>
+                    <option value="PATCH">PATCH</option>
+                    <option value="DELETE">DELETE</option>
+                    <option value="OPTIONS">OPTIONS</option>
+                  </select>
                 </div>
-
-                <!-- Public Status Page -->
-                <div class="border-t border-white/5 pt-3.5 flex items-center justify-between">
-                  <div>
-                    <div class="font-medium text-white text-xs sm:text-sm">Public Status Page</div>
-                    <div class="text-[11px] text-white/40">Surface component uptime &amp; SLAs on public status pages</div>
-                  </div>
-                  <label class="relative inline-flex items-center cursor-pointer">
-                    <input id="m-public" type="checkbox" checked class="sr-only peer">
-                    <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
-                  </label>
-                </div>
-
-                <!-- Domain Expiration Check (RDAP) -->
-                <div class="border-t border-white/5 pt-3.5">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <div class="font-medium text-white text-xs sm:text-sm">Domain Expiration Check (RDAP)</div>
-                      <div class="text-[11px] text-white/40">Query HTTPS RDAP / TCP WHOIS registry renewal deadlines</div>
-                    </div>
-                    <label class="relative inline-flex items-center cursor-pointer">
-                      <input id="m-domain-expiry" type="checkbox" onchange="toggleDomainWarningInput()" class="sr-only peer">
-                      <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
-                    </label>
-                  </div>
-                  <div id="m-domain-warning-container" class="mt-2.5 hidden">
-                    <label for="m-domain-warning-days" class="block font-medium text-white/70 text-xs mb-1">Warning Threshold (Days Remaining)</label>
-                    <input id="m-domain-warning-days" type="number" min="1" max="365" value="30" class="w-full h-9 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#30d158] font-mono text-xs bg-black/40 border border-white/10 text-white" />
-                  </div>
-                </div>
-
-                <!-- TLS/SSL Expiration Check -->
-                <div class="border-t border-white/5 pt-3.5">
-                  <div class="flex items-center justify-between">
-                    <div>
-                      <div class="font-medium text-white text-xs sm:text-sm">TLS / SSL Expiration Check</div>
-                      <div class="text-[11px] text-white/40">Inspect remote X.509 certificate validity and expiry dates</div>
-                    </div>
-                    <label class="relative inline-flex items-center cursor-pointer">
-                      <input id="m-ssl" type="checkbox" onchange="toggleSslWarningInput()" class="sr-only peer">
-                      <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
-                    </label>
-                  </div>
-                  <div id="m-ssl-warning-container" class="mt-2.5 hidden">
-                    <label for="m-ssl-warning-days" class="block font-medium text-white/70 text-xs mb-1">Warning Threshold (Days Remaining)</label>
-                    <input id="m-ssl-warning-days" type="number" min="1" max="365" value="30" class="w-full h-9 rounded-lg px-2.5 py-1.5 focus:outline-none focus:ring-1 focus:ring-[#30d158] font-mono text-xs bg-black/40 border border-white/10 text-white" />
-                  </div>
-                </div>
-
-                <!-- Repeat Alert Reminder Interval -->
-                <div class="border-t border-white/5 pt-3.5 space-y-1">
-                  <label for="m-resend-interval" class="block font-medium text-white/80 text-xs">Repeat Down Alerts Every (Minutes)</label>
-                  <input id="m-resend-interval" type="number" min="0" value="0" placeholder="0 = disabled (alert once)" class="w-full h-9 rounded-lg px-2.5 py-1.5 bg-black/40 border border-white/10 text-white text-xs font-mono focus:outline-none focus:ring-1 focus:ring-[#30d158]" />
-                  <p class="text-[11px] text-white/40">If > 0, re-dispatches alerts every N minutes while DOWN.</p>
+                <div class="field">
+                  <label class="label" for="m-expected-status">Expected Status</label>
+                  <input id="m-expected-status" class="input" type="text" value="200-299" placeholder="200-299">
                 </div>
               </div>
 
-              <!-- Notification Channels Selector -->
-              <div class="bg-white/[0.02] rounded-xl p-4 border border-white/10 space-y-2.5">
-                <div class="flex items-center justify-between">
-                  <label class="block font-medium text-white/80 text-xs sm:text-sm">Notification Channels</label>
-                  <button type="button" onclick="openCreateChannelInline()" class="text-xs text-[#30d158] hover:underline font-medium flex items-center gap-1 cursor-pointer">
-                    <svg class="w-3 h-3" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-                      <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 4v16m8-8H4"/>
-                    </svg>
-                    <span>Create Channel</span>
-                  </button>
-                </div>
-                <div id="monitor-channels-checklist" class="p-3 bg-black/40 rounded-xl border border-white/10 space-y-2 max-h-40 overflow-y-auto text-xs">
-                  <div class="text-[11px] text-white/40 italic">Loading channels...</div>
-                </div>
-                <p class="text-[11px] text-white/40">Channels selected above receive instant state transition alerts.</p>
+              <div class="field">
+                <label class="label" for="m-request-headers">Request Headers (JSON or Key: Value)</label>
+                <textarea id="m-request-headers" class="input mono" rows="2" placeholder='{"Authorization": "Bearer ...", "X-Custom": "val"}'></textarea>
               </div>
 
+              <div class="field">
+                <label class="label" for="m-body-keyword">Response Body Keyword Search</label>
+                <input id="m-body-keyword" class="input" type="text" placeholder="e.g. status: ok">
+              </div>
+
+              <div class="grid-2">
+                <div class="field">
+                  <label class="label" for="m-json-pointer">JSON Pointer Path</label>
+                  <input id="m-json-pointer" class="input mono" type="text" placeholder="/data/status">
+                </div>
+                <div class="field">
+                  <label class="label" for="m-json-expected">JSON Expected Value</label>
+                  <input id="m-json-expected" class="input" type="text" placeholder="healthy">
+                </div>
+              </div>
+
+              <div class="field">
+                <label class="label" for="m-degraded-latency">Degraded Latency Threshold (ms)</label>
+                <div class="num">
+                  <input id="m-degraded-latency" class="input" type="number" min="1" placeholder="e.g. 1500 (warn if slower)">
+                  <div class="stepper">
+                    <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                    <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+                  </div>
+                </div>
+              </div>
+            </div>
+
+            <!-- DNS Probing Options -->
+            <div id="m-dns-options" class="box hidden">
+              <div class="box-title">DNS Resolution</div>
+              <div class="grid-2">
+                <div class="field">
+                  <label class="label" for="m-dns-record-type">DNS Record Type</label>
+                  <select id="m-dns-record-type" class="input">
+                    <option value="A">A (IPv4)</option>
+                    <option value="AAAA">AAAA (IPv6)</option>
+                    <option value="CNAME">CNAME</option>
+                    <option value="MX">MX</option>
+                    <option value="TXT">TXT</option>
+                  </select>
+                </div>
+                <div class="field">
+                  <label class="label" for="m-dns-expected">Expected Resolved Value</label>
+                  <input id="m-dns-expected" class="input mono" type="text" placeholder="93.184.216.34">
+                </div>
+              </div>
+            </div>
+
+            <!-- Push Heartbeat Options -->
+            <div id="m-push-options" class="box hidden">
+              <div class="box-title">Push Heartbeat Ingestion</div>
+              <div class="field">
+                <div class="label-row">
+                  <label class="label" style="color: var(--green);">Push Ingestion Endpoint</label>
+                  <button type="button" onclick="copyPushUrl()" class="link">Copy URL</button>
+                </div>
+                <input id="m-push-url-display" readonly type="text" value="Generated upon creation" class="input mono select-all" style="color: var(--dim); cursor: text;">
+                <p class="hint">Ping this URL from cron, systemd, or CI/CD: <code>curl -fsS https://.../api/push/{token}</code></p>
+              </div>
+              <div class="field">
+                <label class="label" for="m-grace-secs">Heartbeat Grace Period (seconds)</label>
+                <div class="num">
+                  <input id="m-grace-secs" class="input" type="number" min="1" value="60">
+                  <div class="stepper">
+                    <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                    <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+                  </div>
+                </div>
+              </div>
             </div>
 
           </div>
+
+          <!-- Right column -->
+          <div>
+            <div class="section-title blue">2. Probing &amp; Alert Routing</div>
+
+            <div class="card">
+              <div class="toggle-row">
+                <div>
+                  <div class="toggle-title">Active Monitoring</div>
+                  <div class="toggle-desc">Execute synthetic probes on configured interval</div>
+                </div>
+                <label class="switch">
+                  <input id="m-active" type="checkbox" checked aria-label="Active Monitoring">
+                  <span class="track"></span>
+                </label>
+              </div>
+
+              <div class="toggle-row">
+                <div>
+                  <div class="toggle-title">Public Status Page</div>
+                  <div class="toggle-desc">Surface component uptime &amp; SLAs on public status pages</div>
+                </div>
+                <label class="switch">
+                  <input id="m-public" type="checkbox" checked aria-label="Public Status Page">
+                  <span class="track"></span>
+                </label>
+              </div>
+
+              <div>
+                <div class="toggle-row" style="border-bottom: 1px solid var(--sep);">
+                  <div>
+                    <div class="toggle-title">Domain Expiration Check (RDAP)</div>
+                    <div class="toggle-desc">Query HTTPS RDAP / TCP WHOIS registry renewal deadlines</div>
+                  </div>
+                  <label class="switch">
+                    <input id="m-domain-expiry" type="checkbox" onchange="toggleDomainWarningInput()" aria-label="Domain Expiration Check (RDAP)">
+                    <span class="track"></span>
+                  </label>
+                </div>
+                <div id="m-domain-warning-container" class="hidden" style="padding: 12px 0 6px; border-bottom: 1px solid var(--sep);">
+                  <div class="field" style="margin-bottom: 0;">
+                    <label class="label" for="m-domain-warning-days" style="font-size: 12px; margin-bottom: 6px;">Warning Threshold (Days Remaining)</label>
+                    <div class="num">
+                      <input id="m-domain-warning-days" class="input" type="number" min="1" max="365" value="30">
+                      <div class="stepper">
+                        <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                        <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div>
+                <div class="toggle-row" style="border-bottom: 1px solid var(--sep);">
+                  <div>
+                    <div class="toggle-title">TLS / SSL Expiration Check</div>
+                    <div class="toggle-desc">Inspect remote X.509 certificate validity and expiry dates</div>
+                  </div>
+                  <label class="switch">
+                    <input id="m-ssl" type="checkbox" onchange="toggleSslWarningInput()" aria-label="TLS / SSL Expiration Check">
+                    <span class="track"></span>
+                  </label>
+                </div>
+                <div id="m-ssl-warning-container" class="hidden" style="padding: 12px 0 6px; border-bottom: 1px solid var(--sep);">
+                  <div class="field" style="margin-bottom: 0;">
+                    <label class="label" for="m-ssl-warning-days" style="font-size: 12px; margin-bottom: 6px;">Warning Threshold (Days Remaining)</label>
+                    <div class="num">
+                      <input id="m-ssl-warning-days" class="input" type="number" min="1" max="365" value="30">
+                      <div class="stepper">
+                        <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                        <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+                      </div>
+                    </div>
+                  </div>
+                </div>
+              </div>
+
+              <div class="repeat">
+                <label class="label" for="m-resend-interval">Repeat Down Alerts Every (Minutes)</label>
+                <div class="num">
+                  <input id="m-resend-interval" class="input" type="number" min="0" value="0">
+                  <div class="stepper">
+                    <button type="button" tabindex="-1" data-dir="up" aria-label="Increase"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M4 0l4 5H0z"/></svg></button>
+                    <button type="button" tabindex="-1" data-dir="down" aria-label="Decrease"><svg viewBox="0 0 8 5" fill="currentColor"><path d="M0 0h8L4 5z"/></svg></button>
+                  </div>
+                </div>
+                <p class="hint">If &gt; 0, re-dispatches alerts every N minutes while DOWN.</p>
+              </div>
+            </div>
+
+            <div class="card">
+              <div class="channels-head">
+                <span class="toggle-title">Notification Channels</span>
+                <button type="button" onclick="openCreateChannelInline()" class="link">+ Create Channel</button>
+              </div>
+              <div id="monitor-channels-checklist">
+                <div class="empty">No channels configured yet. Click "+ Create New Channel" above.</div>
+              </div>
+              <p class="hint">Channels selected above receive instant state transition alerts.</p>
+            </div>
+
+          </div>
+
         </div>
 
         <!-- Footer Action Bar -->
-        <div class="px-7 pb-7 pt-3 flex items-center justify-end gap-3 shrink-0">
-          <button type="button" onclick="closeModal()" class="px-5 py-2.5 rounded-xl border border-white/10 text-white/70 hover:text-white hover:bg-white/5 text-xs sm:text-sm font-medium transition cursor-pointer">Cancel</button>
-          <button type="submit" id="save-monitor-btn" class="px-5 py-2.5 rounded-xl bg-[#a6e27a] hover:bg-[#95d668] text-neutral-950 text-xs sm:text-sm font-semibold transition cursor-pointer">Create Monitor</button>
+        <div class="footer">
+          <button type="button" onclick="closeModal()" class="btn btn-ghost">Cancel</button>
+          <button type="submit" id="save-monitor-btn" class="btn btn-primary">Create Monitor</button>
         </div>
       </form>
     </div>

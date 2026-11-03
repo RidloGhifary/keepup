@@ -91,21 +91,21 @@ function validateUrlInput(input) {
   if (!indicator) return;
   const val = (input?.value || '').trim();
   if (!val) {
-    indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-white/30"></span><span class="text-white/40">HTTP / HTTPS</span>`;
+    indicator.innerHTML = `HTTP / HTTPS`;
     return;
   }
   try {
     const parsed = new URL(val);
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#30d158]"></span><span class="text-[#30d158] font-semibold">${parsed.protocol.toUpperCase().replace(':', '')} VALID</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#84cc6e;display:inline-block;"></span><span style="color:#84cc6e;font-weight:600;font-size:10px;font-family:var(--mono,monospace);">${parsed.protocol.toUpperCase().replace(':', '')} VALID</span></span>`;
     } else {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">INVALID PROTOCOL</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#f0707a;display:inline-block;"></span><span style="color:#f0707a;font-size:10px;font-family:var(--mono,monospace);">INVALID PROTOCOL</span></span>`;
     }
   } catch (_) {
     if (val.startsWith('http://') || val.startsWith('https://')) {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span><span class="text-amber-400">INCOMPLETE</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#e5c07b;display:inline-block;"></span><span style="color:#e5c07b;font-size:10px;font-family:var(--mono,monospace);">INCOMPLETE</span></span>`;
     } else {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">MISSING PROTOCOL</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#f0707a;display:inline-block;"></span><span style="color:#f0707a;font-size:10px;font-family:var(--mono,monospace);">MISSING PROTOCOL</span></span>`;
     }
   }
 }
@@ -609,7 +609,7 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
   const container = document.getElementById('monitor-channels-checklist');
   if (!container) return;
 
-  container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">Loading channels...</div>`;
+  container.innerHTML = `<div class="empty">Loading channels...</div>`;
 
   try {
     let channels = window.cachedChannels || [];
@@ -622,7 +622,7 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
     }
 
     if (!channels || !channels.length) {
-      container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">No channels configured yet. Click "+ Create New Channel" above.</div>`;
+      container.innerHTML = `<div class="empty">No channels configured yet. Click "+ Create New Channel" above.</div>`;
       return;
     }
 
@@ -647,19 +647,19 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
         const isChecked = selectedIds.has(c.id);
         const typeBadge = (c.type || 'webhook').toUpperCase();
         return `
-        <label class="flex items-center justify-between p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition cursor-pointer select-none">
+        <label class="flex items-center justify-between p-2 rounded-xl bg-[#101011] hover:bg-[#1a1a1c] border border-[#2a2a2d] transition cursor-pointer select-none mb-1.5 last:mb-0">
           <div class="flex items-center gap-2.5 min-w-0">
-            <input type="checkbox" name="monitor-channel" value="${c.id}" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-white/20 text-[#30d158] bg-black/40 focus:ring-0 cursor-pointer accent-[#30d158]">
-            <span class="text-white font-medium text-xs truncate">${escapeHtml(c.name)}</span>
-            <span class="text-[10px] text-white/40 uppercase font-mono">(${typeBadge})</span>
+            <input type="checkbox" name="monitor-channel" value="${c.id}" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-[#2a2a2d] text-[#84cc6e] bg-[#101011] focus:ring-0 cursor-pointer accent-[#84cc6e]">
+            <span class="text-[#f2f2f3] font-medium text-xs truncate">${escapeHtml(c.name)}</span>
+            <span class="text-[10px] text-[#8b8b90] uppercase font-mono">(${typeBadge})</span>
           </div>
-          ${c.is_default ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 font-mono">DEFAULT</span>' : ''}
+          ${c.is_default ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#2a2a2d] text-[#8b8b90] font-mono">DEFAULT</span>' : ''}
         </label>
       `;
       })
       .join('');
   } catch (err) {
-    container.innerHTML = `<div class="text-[11px] text-rose-400">Failed to load channels checklist.</div>`;
+    container.innerHTML = `<div class="empty" style="color: #f0707a;">Failed to load channels checklist.</div>`;
   }
 }
 window.loadMonitorChannelsChecklist = loadMonitorChannelsChecklist;
@@ -1759,5 +1759,23 @@ document.addEventListener('DOMContentLoaded', () => {
         break;
       }
     }
+  });
+
+  // Number input steppers (up/down)
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.stepper button');
+    if (!btn) return;
+    const wrap = btn.closest('.num');
+    if (!wrap) return;
+    const input = wrap.querySelector('input');
+    if (!input) return;
+    if (btn.dataset.dir === 'up') {
+      input.stepUp();
+    } else {
+      input.stepDown();
+    }
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.focus();
   });
 });
