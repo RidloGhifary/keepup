@@ -51,7 +51,10 @@ async function handleLogout() {
 window.allMonitors = [];
 window.allWebhooks = [];
 window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'grid';
-let statusMap = {};
+window.statusMap = {};
+let statusMap = window.statusMap;
+window.selectedMonitorIds = new Set();
+let lastSelectedMonitorId = null;
 let logsCache = {};
 let isFetching = false;
 let dashboardFetchController = null;
@@ -101,6 +104,7 @@ async function fetchDashboardData(showSpin = false) {
       const dash = await dashRes.json();
       const monitors = [];
       statusMap = {};
+      window.statusMap = statusMap;
 
       (dash.monitors || []).forEach((item) => {
         const m = { ...item };
@@ -123,6 +127,25 @@ async function fetchDashboardData(showSpin = false) {
         monitors: Object.values(statusMap),
       });
 
+      renderMonitors();
+    } else {
+      const [monitorsRes, statusRes] = await Promise.all([
+        apiFetch('/api/monitors', { signal }),
+        apiFetch('/api/v1/public/status', { signal }),
+      ]);
+      if (monitorsRes && monitorsRes.ok) {
+        window.allMonitors = await monitorsRes.json();
+      }
+      if (statusRes && statusRes.ok) {
+        const statusData = await statusRes.json();
+        statusMap = {};
+        window.statusMap = statusMap;
+        (statusData.monitors || []).forEach((m) => {
+          statusMap[m.id] = m;
+        });
+        updateOverviewHero(statusData);
+      }
+      await fetchRecentLogsForMonitors(window.allMonitors || [], signal);
       renderMonitors();
     }
   } catch (err) {
@@ -220,7 +243,7 @@ function updateOverviewHero(statusData) {
   }
 }
 
-// ── Rendering Monitors (Card Grid vs Compact List) ───────────────────────────
+// ── Rendering Monitors (Card Grid vs Compact List with Pagination & Sorting) ──
 
 window.monitorsCurrentPage = 1;
 window.monitorsPageSize = 12;
@@ -243,17 +266,533 @@ function changeMonitorsPageSize(size) {
 window.changeMonitorsPage = changeMonitorsPage;
 window.changeMonitorsPageSize = changeMonitorsPageSize;
 
-function renderMonitors() {
+const MONITORS_PAGE_SIZE = 9;
+let monitorDisplayLimit = MONITORS_PAGE_SIZE;
+
+let currentSortKey = localStorage.getItem('keepup_sort_key') || 'status';
+let currentSortDir = localStorage.getItem('keepup_sort_dir') || 'desc';
+
+function getStatusRank(m) {
+  if (m.is_active === 0) return 4; // PAUSED
+  const sm = window.statusMap || statusMap;
+  const live = (sm && sm[m.id]) || m;
+  const status = live?.current_status || (live?.is_up === false ? 'DOWN' : (m.current_status || 'UP'));
+  switch (status.toUpperCase()) {
+    case 'DOWN': return 0;
+    case 'DEGRADED': return 1;
+    case 'MAINTENANCE': return 2;
+    case 'UP': return 3;
+    default: return 3;
+  }
+}
+
+function getAssetExpiryDays(m) {
+  const daysArr = [];
+  if (m.check_ssl && m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
+    daysArr.push(m.ssl_days_remaining);
+  }
+  if (m.check_domain_expiry && m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
+    daysArr.push(m.domain_days_remaining);
+  }
+  if (daysArr.length === 0) return Infinity;
+  return Math.min(...daysArr);
+}
+
+function sortMonitors(list) {
+  const sorted = [...list];
+  const isAsc = currentSortDir === 'asc';
+
+  sorted.sort((a, b) => {
+    let result = 0;
+
+    switch (currentSortKey) {
+      case 'status': {
+        const rankA = getStatusRank(a);
+        const rankB = getStatusRank(b);
+        // Default (desc): rank 0 (DOWN) before rank 1 (DEGRADED) before rank 3 (UP)
+        result = isAsc ? (rankB - rankA) : (rankA - rankB);
+        break;
+      }
+      case 'name': {
+        const nameA = (a.name || '').toLowerCase();
+        const nameB = (b.name || '').toLowerCase();
+        result = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
+        if (!isAsc) result = -result;
+        break;
+      }
+      case 'latency': {
+        const sm = window.statusMap || statusMap;
+        const liveA = (sm && sm[a.id]) || a;
+        const liveB = (sm && sm[b.id]) || b;
+        const latA = (liveA && liveA.last_latency_ms !== null && liveA.last_latency_ms !== undefined) ? liveA.last_latency_ms : -1;
+        const latB = (liveB && liveB.last_latency_ms !== null && liveB.last_latency_ms !== undefined) ? liveB.last_latency_ms : -1;
+        // Default (desc): highest latency first
+        result = isAsc ? (latA - latB) : (latB - latA);
+        break;
+      }
+      case 'expiry': {
+        const expA = getAssetExpiryDays(a);
+        const expB = getAssetExpiryDays(b);
+        // Default (asc): lowest days remaining first (nearest expiration)
+        result = isAsc ? (expA - expB) : (expB - expA);
+        break;
+      }
+      default:
+        result = 0;
+    }
+
+    // Tie-breaker: Name alphabetical
+    if (result === 0) {
+      result = (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
+    }
+
+    return result;
+  });
+
+  return sorted;
+}
+
+function setSortKey(key) {
+  if (key !== currentSortKey) {
+    currentSortKey = key;
+    if (key === 'name' || key === 'expiry') {
+      currentSortDir = 'asc';
+    } else {
+      currentSortDir = 'desc';
+    }
+  }
+  localStorage.setItem('keepup_sort_key', currentSortKey);
+  localStorage.setItem('keepup_sort_dir', currentSortDir);
+  updateSortDirectionBtnUI();
+  renderMonitors();
+}
+window.setSortKey = setSortKey;
+
+function toggleSortDirection() {
+  currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+  localStorage.setItem('keepup_sort_dir', currentSortDir);
+  updateSortDirectionBtnUI();
+  renderMonitors();
+}
+window.toggleSortDirection = toggleSortDirection;
+
+function updateSortDirectionBtnUI() {
+  const btn = document.getElementById('sort-dir-btn');
+  const icon = document.getElementById('sort-dir-icon');
+  const text = document.getElementById('sort-dir-text');
+  if (!btn) return;
+
+  const isAsc = currentSortDir === 'asc';
+  btn.title = `Sort order: ${isAsc ? 'Ascending' : 'Descending'} (click to toggle)`;
+  btn.setAttribute('aria-label', btn.title);
+
+  if (text) {
+    text.textContent = isAsc ? 'ASC' : 'DESC';
+  }
+
+  if (icon) {
+    if (isAsc) {
+      icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 15l7-7 7 7"/>`;
+    } else {
+      icon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>`;
+    }
+  }
+}
+window.updateSortDirectionBtnUI = updateSortDirectionBtnUI;
+
+function initSortingControls() {
+  currentSortKey = localStorage.getItem('keepup_sort_key') || currentSortKey || 'status';
+  currentSortDir = localStorage.getItem('keepup_sort_dir') || currentSortDir || 'desc';
+  const sortSelect = document.getElementById('sort-select');
+  if (sortSelect) {
+    sortSelect.value = currentSortKey;
+  }
+  updateSortDirectionBtnUI();
+}
+window.initSortingControls = initSortingControls;
+
+// ── Multi-Select Batch Operations Controller ─────────────────────────────────
+
+function handleMonitorCardCheckbox(id, checked, event) {
+  if (event) {
+    event.stopPropagation();
+  }
+
+  // Shift-Click Range Selection: Contiguous selection between last selected item and current
+  if (event && event.shiftKey && lastSelectedMonitorId && lastSelectedMonitorId !== id) {
+    const searchInput = document.getElementById('search-input');
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const filtered = (window.allMonitors || []).filter(
+      (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
+    );
+    const sorted = typeof sortMonitors === 'function' ? sortMonitors(filtered) : filtered;
+
+    const idx1 = sorted.findIndex((m) => m.id === lastSelectedMonitorId);
+    const idx2 = sorted.findIndex((m) => m.id === id);
+
+    if (idx1 !== -1 && idx2 !== -1) {
+      const start = Math.min(idx1, idx2);
+      const end = Math.max(idx1, idx2);
+      for (let i = start; i <= end; i++) {
+        if (checked) {
+          window.selectedMonitorIds.add(sorted[i].id);
+        } else {
+          window.selectedMonitorIds.delete(sorted[i].id);
+        }
+      }
+    }
+  } else {
+    if (checked) {
+      window.selectedMonitorIds.add(id);
+    } else {
+      window.selectedMonitorIds.delete(id);
+    }
+  }
+
+  lastSelectedMonitorId = id;
+  updateBulkActionBarUI();
+  renderMonitors();
+}
+window.handleMonitorCardCheckbox = handleMonitorCardCheckbox;
+
+function handleMasterSelectToggle(checked) {
+  const searchInput = document.getElementById('search-input');
+  const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+  const filtered = (window.allMonitors || []).filter(
+    (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
+  );
+  const sorted = typeof sortMonitors === 'function' ? sortMonitors(filtered) : filtered;
+
+  if (checked) {
+    sorted.forEach((m) => window.selectedMonitorIds.add(m.id));
+  } else {
+    window.selectedMonitorIds.clear();
+  }
+
+  updateBulkActionBarUI();
+  renderMonitors();
+}
+window.handleMasterSelectToggle = handleMasterSelectToggle;
+
+function clearMonitorSelection() {
+  if (window.selectedMonitorIds) {
+    window.selectedMonitorIds.clear();
+  }
+  lastSelectedMonitorId = null;
+  updateBulkActionBarUI();
+  renderMonitors();
+}
+window.clearMonitorSelection = clearMonitorSelection;
+
+function updateBulkActionBarUI() {
+  const bar = document.getElementById('bulk-action-bar');
+  const countSpan = document.getElementById('bulk-selected-count');
+  const masterCb = document.getElementById('master-select-cb');
+
+  const count = window.selectedMonitorIds ? window.selectedMonitorIds.size : 0;
+
+  if (bar) {
+    if (count > 0) {
+      bar.classList.remove('hidden', 'translate-y-8', 'opacity-0', 'pointer-events-none');
+      bar.classList.add('translate-y-0', 'opacity-100', 'pointer-events-auto');
+    } else {
+      bar.classList.remove('translate-y-0', 'opacity-100', 'pointer-events-auto');
+      bar.classList.add('translate-y-8', 'opacity-0', 'pointer-events-none');
+      setTimeout(() => {
+        if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) {
+          bar.classList.add('hidden');
+        }
+      }, 300);
+    }
+  }
+
+  if (countSpan) {
+    countSpan.textContent = `${count} monitor${count === 1 ? '' : 's'} selected`;
+  }
+
+  if (masterCb) {
+    const searchInput = document.getElementById('search-input');
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+    const filtered = (window.allMonitors || []).filter(
+      (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
+    );
+    const totalVisible = filtered.length;
+
+    if (count === 0 || totalVisible === 0) {
+      masterCb.checked = false;
+      masterCb.indeterminate = false;
+    } else if (count >= totalVisible) {
+      masterCb.checked = true;
+      masterCb.indeterminate = false;
+    } else {
+      masterCb.checked = false;
+      masterCb.indeterminate = true;
+    }
+  }
+}
+window.updateBulkActionBarUI = updateBulkActionBarUI;
+
+async function executeBulkAction(action) {
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
+  const ids = Array.from(window.selectedMonitorIds);
+
+  const endpoint = action === 'pause'
+    ? '/api/admin/monitors/bulk-pause'
+    : '/api/admin/monitors/bulk-resume';
+
+  try {
+    const res = await apiFetch(endpoint, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_ids: ids }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      const newActive = action === 'pause' ? 0 : 1;
+      (window.allMonitors || []).forEach((m) => {
+        if (window.selectedMonitorIds.has(m.id)) {
+          m.is_active = newActive;
+        }
+      });
+
+      renderMonitors();
+
+      const statActive = document.getElementById('hero-stat-active');
+      if (statActive) {
+        const activeCount = (window.allMonitors || []).filter((m) => m.is_active === 1).length;
+        statActive.innerText = `${activeCount} / ${window.allMonitors.length}`;
+      }
+
+      if (typeof showToast === 'function') {
+        showToast({
+          title: action === 'pause' ? 'Monitors Paused' : 'Monitors Resumed',
+          message: data.message || `Selected monitors successfully updated`,
+          type: action === 'pause' ? 'info' : 'success',
+        });
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Batch Action Failed',
+          message: err.error || 'Failed to update selected monitors',
+          type: 'error',
+        });
+      }
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Network Error',
+        message: err.message || 'Could not reach server',
+        type: 'error',
+      });
+    }
+  }
+}
+window.executeBulkAction = executeBulkAction;
+
+async function openBulkDeleteModal() {
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
+  const ids = Array.from(window.selectedMonitorIds);
+
+  const modal = document.getElementById('bulk-delete-modal');
+  const countEl = document.getElementById('bulk-delete-count');
+  const logsCountEl = document.getElementById('bulk-delete-logs-count');
+  if (countEl) countEl.textContent = String(ids.length);
+  if (logsCountEl) logsCountEl.textContent = '...';
+
+  if (modal) {
+    modal.classList.remove('hidden');
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/monitors/bulk-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_ids: ids }),
+    });
+    if (res.ok) {
+      const stats = await res.json();
+      if (logsCountEl) logsCountEl.textContent = String(stats.check_logs_count || 0);
+    } else {
+      if (logsCountEl) logsCountEl.textContent = 'all historical';
+    }
+  } catch (_) {
+    if (logsCountEl) logsCountEl.textContent = 'all historical';
+  }
+}
+window.openBulkDeleteModal = openBulkDeleteModal;
+
+function closeBulkDeleteModal() {
+  const modal = document.getElementById('bulk-delete-modal');
+  if (modal) {
+    modal.classList.add('hidden');
+  }
+}
+window.closeBulkDeleteModal = closeBulkDeleteModal;
+
+async function confirmBulkDelete() {
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
+  const ids = Array.from(window.selectedMonitorIds);
+
+  const confirmBtn = document.getElementById('confirm-bulk-delete-btn');
+  const originalText = confirmBtn ? confirmBtn.innerHTML : '';
+  if (confirmBtn) {
+    confirmBtn.disabled = true;
+    confirmBtn.innerHTML = '<span>Deleting...</span>';
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/monitors/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ monitor_ids: ids }),
+    });
+
+    if (res.ok) {
+      const data = await res.json();
+      window.allMonitors = (window.allMonitors || []).filter(
+        (m) => !window.selectedMonitorIds.has(m.id)
+      );
+      window.selectedMonitorIds.clear();
+      closeBulkDeleteModal();
+      updateBulkActionBarUI();
+      renderMonitors();
+
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Monitors Deleted',
+          message: data.message || `Permanently removed ${ids.length} monitors`,
+          type: 'success',
+        });
+      }
+    } else {
+      const err = await res.json().catch(() => ({}));
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Delete Failed',
+          message: err.error || 'Failed to delete selected monitors',
+          type: 'error',
+        });
+      }
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Network Error',
+        message: err.message || 'Could not reach server',
+        type: 'error',
+      });
+    }
+  } finally {
+    if (confirmBtn) {
+      confirmBtn.disabled = false;
+      confirmBtn.innerHTML = originalText;
+    }
+  }
+}
+window.confirmBulkDelete = confirmBulkDelete;
+
+function showMoreMonitors() {
+  monitorDisplayLimit += MONITORS_PAGE_SIZE;
+  renderMonitors();
+}
+window.showMoreMonitors = showMoreMonitors;
+
+function updateSingleMonitorCardDOM(m) {
+  const isGrid = window.currentViewMode === 'grid';
+  const el = document.getElementById(isGrid ? `monitor-card-${m.id}` : `monitor-row-${m.id}`);
+  if (!el) return false;
+
+  const live = statusMap[m.id];
+  const isUp = live ? live.current_status === 'UP' : true;
+  const isPaused = m.is_active === 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
+
+  let statusColor = '#30d158';
+  let statusLabel = 'OPERATIONAL';
+
+  if (isPaused) {
+    statusColor = '#8e8e93';
+    statusLabel = 'PAUSED';
+  } else if (live && live.current_status === 'MAINTENANCE') {
+    statusColor = '#c084fc';
+    statusLabel = 'MAINTENANCE';
+  } else if (!isUp) {
+    statusColor = '#ff453a';
+    statusLabel = 'DOWN';
+  } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
+    statusColor = '#ffd60a';
+    statusLabel = 'DEGRADED';
+  }
+
+  // Selection styling
+  if (isSelected) {
+    el.classList.add('ring-2', 'ring-emerald-500/50', 'border-emerald-500/40', 'bg-emerald-500/[0.04]');
+  } else {
+    el.classList.remove('ring-2', 'ring-emerald-500/50', 'border-emerald-500/40', 'bg-emerald-500/[0.04]');
+  }
+
+  // Checkbox
+  const cb = el.querySelector('input.monitor-select-cb');
+  if (cb) {
+    cb.checked = isSelected;
+    if (isSelected) {
+      cb.classList.add('opacity-100', 'ring-2', 'ring-emerald-500/50');
+      cb.classList.remove('opacity-0', 'opacity-70');
+    } else if (anySelected) {
+      cb.classList.add('opacity-70');
+      cb.classList.remove('opacity-0', 'opacity-100', 'ring-2', 'ring-emerald-500/50');
+    } else {
+      cb.classList.add('opacity-0');
+      cb.classList.remove('opacity-70', 'opacity-100', 'ring-2', 'ring-emerald-500/50');
+    }
+  }
+
+  // Status dot
+  const dotSpan = el.querySelector('span[data-status-dot]');
+  if (dotSpan) {
+    dotSpan.title = statusLabel;
+    const dots = dotSpan.querySelectorAll('span');
+    dots.forEach((d) => {
+      d.style.backgroundColor = statusColor;
+    });
+  }
+
+  // Metrics
+  const latencyText = live && live.last_latency_ms !== null && live.last_latency_ms !== undefined ? `${live.last_latency_ms} ms` : '—';
+  const uptimeText = live && live.uptime_24h !== undefined ? `${live.uptime_24h.toFixed(1)}%` : '100%';
+
+  const latencyEl = el.querySelector('[data-metric="latency"]');
+  if (latencyEl && latencyEl.textContent !== latencyText) {
+    latencyEl.textContent = latencyText;
+  }
+
+  const uptimeEl = el.querySelector('[data-metric="uptime"]');
+  if (uptimeEl && uptimeEl.textContent !== uptimeText) {
+    uptimeEl.textContent = uptimeText;
+  }
+
+  return true;
+}
+
+function renderMonitors(forceRebuild = false) {
   const container = document.getElementById('monitors-container');
   if (!container) return;
 
   const searchInput = document.getElementById('search-input');
   const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+  const isSearching = query.length > 0;
 
   const filtered = window.allMonitors.filter(
     (m) =>
       m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
   );
+
+  const sorted = sortMonitors(filtered);
 
   const countBadge = document.getElementById('monitors-count-badge');
   if (countBadge) countBadge.innerText = `${filtered.length} target${filtered.length === 1 ? '' : 's'}`;
@@ -261,9 +800,12 @@ function renderMonitors() {
   const paginationContainer = document.getElementById('monitors-pagination-container');
   const pageInfo = document.getElementById('monitors-page-info');
   const paginationControls = document.getElementById('monitors-pagination-controls');
+  const showMoreContainer = document.getElementById('monitors-pagination');
 
   if (filtered.length === 0) {
+    if (paginationContainer) paginationContainer.classList.add('hidden');
     container.className = 'w-full';
+    container.dataset.renderedKey = '';
     batchInsertHTML(
       container,
       `
@@ -283,7 +825,7 @@ function renderMonitors() {
   // Calculate pagination bounds
   const totalItems = filtered.length;
   const isAll = window.monitorsPageSize === 'all';
-  const pageSize = isAll ? totalItems : window.monitorsPageSize;
+  const pageSize = isAll ? totalItems : (window.monitorsPageSize || 12);
   const totalPages = isAll ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
 
   // Clamp current page
@@ -297,8 +839,26 @@ function renderMonitors() {
   const currentPage = window.monitorsCurrentPage;
   const startIndex = isAll ? 0 : (currentPage - 1) * pageSize;
   const endIndex = isAll ? totalItems : Math.min(startIndex + pageSize, totalItems);
-  const pageItems = filtered.slice(startIndex, endIndex);
+  const pageItems = isSearching ? sorted : sorted.slice(startIndex, endIndex);
 
+  const currentKey = `${window.currentViewMode}:${pageItems.map((m) => m.id).join(',')}`;
+
+  if (!forceRebuild && container.dataset.renderedKey === currentKey) {
+    // Perform targeted in-place DOM updates without re-creating DOM tree
+    let allUpdated = true;
+    for (const m of pageItems) {
+      if (!updateSingleMonitorCardDOM(m)) {
+        allUpdated = false;
+        break;
+      }
+    }
+    if (allUpdated) {
+      updateBulkActionBarUI();
+      return;
+    }
+  }
+
+  container.dataset.renderedKey = currentKey;
   if (window.currentViewMode === 'grid') {
     container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
     batchInsertHTML(container, pageItems.map((m) => renderMonitorCard(m)).join(''));
@@ -376,41 +936,29 @@ function renderMonitors() {
       }
     }
   }
+
+  if (showMoreContainer) {
+    showMoreContainer.classList.add('hidden');
+  }
+
+  updateBulkActionBarUI();
 }
 
-// ── Domain & SSL Expiration Badges ──────────────────────────────────────────
+// ── Protocol Badge Component ───────────────────────────────────────────────
 
-function renderDomainExpiryBadge(m) {
-  if (!m.check_domain_expiry || m.domain_days_remaining === null || m.domain_days_remaining === undefined) {
-    return '';
+function renderProtocolBadge(type) {
+  const t = (type || 'http').toUpperCase();
+  let badgeStyle = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+  if (t === 'TCP') {
+    badgeStyle = 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+  } else if (t === 'DNS') {
+    badgeStyle = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+  } else if (t === 'PING') {
+    badgeStyle = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
   }
-  const days = m.domain_days_remaining;
-  const warningDays = m.domain_warning_days || 30;
-
-  if (days <= 0) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/20" title="Domain registration has expired">🔴 Domain Expired</span>`;
-  } else if (days <= warningDays) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20" title="Domain registration expiring soon (${days} days remaining)">⚠️ ${days}d domain left</span>`;
-  } else {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-white/60 border-black/5 dark:border-white/10" title="Domain registration healthy (${days} days remaining)">🌐 ${days}d domain left</span>`;
-  }
+  return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border ${badgeStyle} shrink-0">${t}</span>`;
 }
-
-function renderSslExpiryBadge(m) {
-  if (!m.check_ssl || m.ssl_days_remaining === null || m.ssl_days_remaining === undefined) {
-    return '';
-  }
-  const days = m.ssl_days_remaining;
-  const warningDays = m.ssl_warning_days || 30;
-
-  if (days <= 0) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-600 dark:text-rose-400 border-rose-500/20" title="TLS/SSL certificate has expired">🔴 SSL Expired</span>`;
-  } else if (days <= warningDays) {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-600 dark:text-amber-400 border-amber-500/20" title="TLS/SSL certificate expiring soon (${days} days remaining)">🔒 ${days}d SSL left</span>`;
-  } else {
-    return `<span class="px-2 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-white/60 border-black/5 dark:border-white/10" title="TLS/SSL certificate healthy (${days} days remaining)">🔒 ${days}d SSL left</span>`;
-  }
-}
+window.renderProtocolBadge = renderProtocolBadge;
 
 // ── Single Monitor Card (Grid View) ──────────────────────────────────────────
 
@@ -418,26 +966,23 @@ function renderMonitorCard(m) {
   const live = statusMap[m.id];
   const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
 
   let statusColor = '#30d158'; // Status Green
-  let statusBadgeBg = 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20';
   let statusLabel = 'OPERATIONAL';
 
   if (isPaused) {
     statusColor = '#8e8e93'; // Neutral Gray
-    statusBadgeBg = 'bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20';
     statusLabel = 'PAUSED';
   } else if (live && live.current_status === 'MAINTENANCE') {
     statusColor = '#c084fc'; // Maintenance Purple
-    statusBadgeBg = 'bg-purple-500/15 text-purple-700 dark:text-purple-400 border border-purple-500/20';
     statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
     statusColor = '#ff453a'; // Outage Red
-    statusBadgeBg = 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
     statusLabel = 'DOWN';
   } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
     statusColor = '#ffd60a'; // Degraded Yellow
-    statusBadgeBg = 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20';
     statusLabel = 'DEGRADED';
   }
 
@@ -453,26 +998,24 @@ function renderMonitorCard(m) {
   const barsHtml = renderUptimeTickBars(logs);
 
   return `
-    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer">
-      <!-- Card Header -->
-      <div class="flex items-start justify-between gap-3">
-        <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
-            <span class="relative flex h-2.5 w-2.5">
-              ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full bg-[${statusColor}] opacity-75"></span>` : ''}
-              <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
-            </span>
-            <h3 class="font-semibold text-neutral-900 dark:text-white text-sm sm:text-base truncate tracking-tight">${escapeHtml(m.name)}</h3>
-          </div>
-          <p class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}</p>
-        </div>
-
-        <div class="flex items-center gap-1.5 shrink-0">
-          ${renderSslExpiryBadge(m)}
-          ${renderDomainExpiryBadge(m)}
-          <span class="px-2 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider ${statusBadgeBg}">
-            ${statusLabel}
+    <div id="monitor-card-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
+      <!-- Card Header: Left-Aligned Status Dot, Title & Target URL with Right Selection Checkbox -->
+      <div class="flex items-start justify-between gap-3 min-w-0">
+        <div class="flex items-start gap-2.5 min-w-0 flex-1">
+          <span data-status-dot="true" class="relative flex h-2.5 w-2.5 mt-1.5 shrink-0" title="${statusLabel}">
+            ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
+            <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
           </span>
+          <div class="min-w-0 flex-1">
+            <div class="flex items-center gap-2">
+              <h3 class="font-semibold text-neutral-900 dark:text-white text-sm sm:text-base truncate tracking-tight leading-snug">${escapeHtml(m.name)}</h3>
+              ${renderProtocolBadge(m.check_type)}
+            </div>
+            <p class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</p>
+          </div>
+        </div>
+        <div class="shrink-0 pt-0.5" onclick="event.stopPropagation()">
+          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? 'checked' : ''} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? 'opacity-100 ring-2 ring-emerald-500/50' : (anySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100')}" title="Select monitor" />
         </div>
       </div>
 
@@ -480,11 +1023,11 @@ function renderMonitorCard(m) {
       <div class="grid grid-cols-3 gap-2 py-2 border-y border-black/5 dark:border-white/5 text-center">
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Latency</div>
-          <div class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${latencyText}</div>
+          <div data-metric="latency" class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${latencyText}</div>
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">24h Uptime</div>
-          <div class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${uptimeText}</div>
+          <div data-metric="uptime" class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${uptimeText}</div>
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Interval</div>
@@ -521,7 +1064,13 @@ function renderMonitorCard(m) {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
           </button>
-          <button data-action="edit-monitor" data-id="${m.id}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
+          <button data-action="clone-monitor" data-id="${m.id}" onclick="cloneMonitor('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition flex items-center gap-1" title="Clone Target">
+            <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+            <span>Clone</span>
+          </button>
+          <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
             Edit
           </button>
           <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
@@ -544,26 +1093,23 @@ function renderMonitorListRow(m) {
   const live = statusMap[m.id];
   const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
 
   let statusColor = '#30d158';
-  let statusBadgeBg = 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20';
   let statusLabel = 'UP';
 
   if (isPaused) {
     statusColor = '#8e8e93';
-    statusBadgeBg = 'bg-neutral-500/15 text-neutral-600 dark:text-neutral-400 border border-neutral-500/20';
     statusLabel = 'PAUSED';
   } else if (live && live.current_status === 'MAINTENANCE') {
     statusColor = '#c084fc';
-    statusBadgeBg = 'bg-purple-500/15 text-purple-700 dark:text-purple-400 border border-purple-500/20';
     statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
     statusColor = '#ff453a';
-    statusBadgeBg = 'bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20';
     statusLabel = 'DOWN';
   } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
     statusColor = '#ffd60a';
-    statusBadgeBg = 'bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20';
     statusLabel = 'DEGRADED';
   }
 
@@ -573,25 +1119,27 @@ function renderMonitorListRow(m) {
       : '—';
 
   return `
-    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer">
-      <div class="flex items-center gap-3 min-w-0">
-        <span class="relative flex h-2.5 w-2.5 shrink-0">
+    <div id="monitor-row-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
+      <div class="flex items-center gap-2.5 min-w-0 flex-1">
+        <div class="shrink-0" onclick="event.stopPropagation()">
+          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? 'checked' : ''} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? 'opacity-100 ring-2 ring-emerald-500/50' : (anySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100')}" title="Select monitor" />
+        </div>
+        <span data-status-dot="true" class="relative flex h-2.5 w-2.5 shrink-0" title="${statusLabel}">
+          ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
         </span>
-        <div class="min-w-0">
+        <div class="min-w-0 flex-1">
           <div class="flex items-center gap-2">
-            <span class="font-semibold text-neutral-900 dark:text-white text-sm truncate">${escapeHtml(m.name)}</span>
-            <span class="px-2 py-0.5 rounded-full text-[10px] font-medium border uppercase ${statusBadgeBg}">${statusLabel}</span>
-            ${renderSslExpiryBadge(m)}
-            ${renderDomainExpiryBadge(m)}
+            <span class="font-semibold text-neutral-900 dark:text-white text-sm truncate tracking-tight">${escapeHtml(m.name)}</span>
+            ${renderProtocolBadge(m.check_type)}
           </div>
-          <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono">${escapeHtml(m.url)}</div>
+          <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</div>
         </div>
       </div>
 
-      <div class="flex items-center justify-between sm:justify-end gap-4 font-mono text-xs">
+      <div class="flex items-center justify-between sm:justify-end gap-4 font-mono text-xs shrink-0">
         <div class="text-right">
-          <span class="text-neutral-900 dark:text-white font-medium">${latencyText}</span>
+          <span data-metric="latency" class="text-neutral-900 dark:text-white font-medium">${latencyText}</span>
           <span class="text-neutral-500 dark:text-white/40 text-[10px] ml-1">(${m.check_interval_secs}s)</span>
         </div>
 
@@ -604,9 +1152,15 @@ function renderMonitorListRow(m) {
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
           </button>
-          <button data-action="edit-monitor" data-id="${m.id}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
-          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
-          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 rounded-lg transition">✕</button>
+          <button data-action="clone-monitor" data-id="${m.id}" onclick="cloneMonitor('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition flex items-center gap-1" title="Clone Target">
+            <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M8 16H6a2 2 0 01-2-2V6a2 2 0 012-2h8a2 2 0 012 2v2m-6 12h8a2 2 0 002-2v-8a2 2 0 00-2-2h-8a2 2 0 00-2 2v8a2 2 0 002 2z"/>
+            </svg>
+            <span class="hidden sm:inline">Clone</span>
+          </button>
+          <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Edit</button>
+          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 font-medium transition">Logs</button>
+          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 rounded-lg transition">✕</button>
         </div>
       </div>
     </div>
@@ -806,10 +1360,22 @@ function setViewMode(mode) {
   renderMonitors();
 }
 
-function filterMonitors() {
+let searchDebounceTimer = null;
+function filterMonitors(immediate = false) {
   window.monitorsCurrentPage = 1;
-  renderMonitors();
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
+  if (immediate) {
+    renderMonitors();
+    return;
+  }
+  searchDebounceTimer = setTimeout(() => {
+    renderMonitors();
+  }, 150);
 }
+window.filterMonitors = filterMonitors;
 
 // ── Global Helper Utilities ──────────────────────────────────────────────────
 
@@ -1264,7 +1830,7 @@ let currentDetailMonitorId = null;
 
 async function openMonitorDetailModal(id) {
   currentDetailMonitorId = id;
-  const modal = document.getElementById('monitor-detail-modal');
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (!modal) return;
 
   modal.classList.remove('hidden');
@@ -1311,7 +1877,7 @@ async function openMonitorDetailModal(id) {
 }
 
 function closeMonitorDetailModal() {
-  const modal = document.getElementById('monitor-detail-modal');
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (modal) {
     modal.classList.add('hidden');
   }
@@ -1374,8 +1940,8 @@ function renderMonitorDetailData(data) {
   const statusBadge = document.getElementById('detail-modal-status-badge');
 
   if (nameEl) nameEl.textContent = m.name || 'Monitor';
-  if (urlEl) urlEl.textContent = m.url || '';
-  if (methodEl) methodEl.textContent = m.method || 'GET';
+  if (urlEl) urlEl.textContent = m.url ? (m.port ? `${m.url}:${m.port}` : m.url) : '';
+  if (methodEl) methodEl.textContent = (m.check_type || m.method || 'HTTP').toUpperCase();
 
   if (statusBadge) {
     const isPaused = !m.is_active;
@@ -1595,6 +2161,183 @@ async function triggerDetailPing() {
   }
 }
 
+// ── Clone & Delete Monitor Logic ─────────────────────────────────────────────
+
+async function cloneMonitor(id) {
+  let monitor = (window.allMonitors || []).find((m) => m.id === id);
+  let channelIds = [];
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/channels`);
+    if (res && res.ok) {
+      channelIds = await res.json();
+    }
+  } catch (_) {}
+
+  if (!monitor) {
+    try {
+      const fetchFn = window.apiFetch || window.fetch;
+      const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/details`);
+      if (res && res.ok) {
+        const details = await res.json();
+        monitor = details.monitor;
+      }
+    } catch (_) {}
+  }
+
+  if (!monitor) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: 'Target monitor not found', type: 'error' });
+    }
+    return;
+  }
+
+  if (typeof closeMonitorDetailModal === 'function') {
+    closeMonitorDetailModal();
+  }
+
+  if (typeof window.openCloneMonitorModal === 'function') {
+    window.openCloneMonitorModal(monitor, channelIds);
+  }
+}
+window.cloneMonitor = cloneMonitor;
+
+function triggerDetailClone() {
+  if (!currentDetailMonitorId) return;
+  cloneMonitor(currentDetailMonitorId);
+}
+window.triggerDetailClone = triggerDetailClone;
+
+function triggerDetailDelete() {
+  if (!currentDetailMonitorId) return;
+  const nameEl = document.getElementById('detail-modal-name');
+  const monitor = (window.allMonitors || []).find((m) => m.id === currentDetailMonitorId);
+  const name = (nameEl && nameEl.textContent && nameEl.textContent !== 'Monitor Details' && nameEl.textContent !== 'Loading monitor telemetry...')
+    ? nameEl.textContent
+    : (monitor ? monitor.name : 'Target');
+  openSingleDeleteModal(currentDetailMonitorId, name);
+}
+window.triggerDetailDelete = triggerDetailDelete;
+
+function openSingleDeleteModal(id, name) {
+  const modal = document.getElementById('single-delete-modal');
+  const idEl = document.getElementById('single-delete-id');
+  const nameEl = document.getElementById('single-delete-name');
+  if (!modal) {
+    if (confirm(`Are you sure you want to delete monitor "${name}"?`)) {
+      confirmSingleDeleteDirect(id, name);
+    }
+    return;
+  }
+
+  if (idEl) idEl.value = id;
+  if (nameEl) nameEl.textContent = name || 'Monitor Target';
+
+  modal.classList.remove('hidden');
+}
+window.openSingleDeleteModal = openSingleDeleteModal;
+
+function closeSingleDeleteModal() {
+  const modal = document.getElementById('single-delete-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeSingleDeleteModal = closeSingleDeleteModal;
+
+async function confirmSingleDelete() {
+  const id = document.getElementById('single-delete-id')?.value;
+  const name = document.getElementById('single-delete-name')?.textContent || 'Target';
+  if (!id) return;
+
+  const btn = document.getElementById('confirm-single-delete-btn');
+  const originalText = btn ? btn.innerHTML : 'Delete Monitor';
+  if (btn) {
+    btn.disabled = true;
+    btn.innerHTML = '<span>Deleting...</span>';
+  }
+
+  try {
+    const fetchFn = window.apiFetch || window.fetch;
+    const res = await fetchFn(`/api/v1/monitors/${encodeURIComponent(id)}`, {
+      method: 'DELETE',
+    });
+
+    if (res && res.ok) {
+      closeSingleDeleteModal();
+      closeMonitorDetailModal();
+
+      // Dynamic in-memory purge & DOM re-render without full page reload
+      window.allMonitors = (window.allMonitors || []).filter((m) => m.id !== id);
+      if (typeof statusMap !== 'undefined' && statusMap[id]) delete statusMap[id];
+      if (typeof logsCache !== 'undefined' && logsCache[id]) delete logsCache[id];
+      if (window.selectedMonitorIds) {
+        window.selectedMonitorIds.delete(id);
+      }
+
+      renderMonitors();
+      updateBulkActionBarUI();
+
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Target Removed',
+          message: `Target "${name}" removed successfully`,
+          type: 'success',
+        });
+      }
+    } else if (res && res.status !== 401 && res.status !== 429) {
+      const err = await res.json().catch(() => ({}));
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Delete Failed',
+          message: err.error || 'Failed to delete monitor',
+          type: 'error',
+        });
+      }
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Network Error',
+        message: err.message || 'Error deleting monitor',
+        type: 'error',
+      });
+    }
+  } finally {
+    if (btn) {
+      btn.disabled = false;
+      btn.innerHTML = originalText;
+    }
+  }
+}
+window.confirmSingleDelete = confirmSingleDelete;
+
+function deleteMonitor(id, name) {
+  openSingleDeleteModal(id, name);
+}
+window.deleteMonitor = deleteMonitor;
+
+// ── Progressive Disclosure for Status Page SEO Settings ──────────────────────
+
+function syncStatusPageIndexingVisibility(isAllowed) {
+  const container = document.getElementById('sp-seo-details');
+  if (!container) return;
+  if (isAllowed) {
+    container.classList.remove('hidden');
+  } else {
+    container.classList.add('hidden');
+  }
+}
+window.syncStatusPageIndexingVisibility = syncStatusPageIndexingVisibility;
+
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'sp-allow-indexing') {
+    syncStatusPageIndexingVisibility(e.target.checked);
+    if (typeof window.updateStatusPageSeoPreview === 'function') {
+      window.updateStatusPageSeoPreview();
+    }
+  }
+});
+
 // ── Centralized Event Delegation ─────────────────────────────────────────────
 
 document.addEventListener('click', (e) => {
@@ -1629,6 +2372,11 @@ document.addEventListener('click', (e) => {
       const id = target.dataset.id;
       const name = target.dataset.name;
       openBadgeModal(id, name);
+      break;
+    }
+    case 'clone-monitor': {
+      const id = target.dataset.id;
+      if (id) cloneMonitor(id);
       break;
     }
     case 'edit-monitor': {
@@ -1753,7 +2501,7 @@ document.addEventListener('keydown', (e) => {
     if (passwordModal && !passwordModal.classList.contains('hidden')) {
       closePasswordModal();
     }
-    const detailModal = document.getElementById('monitor-detail-modal');
+    const detailModal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
     if (detailModal && !detailModal.classList.contains('hidden')) {
       closeMonitorDetailModal();
     }
@@ -2034,8 +2782,38 @@ function renderChannelCard(channel) {
 
   const masked = maskUrl(channel.url);
 
+  const botCustomizationBadge = (typeLower === 'discord' && (channel.bot_name || channel.avatar_url))
+    ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
+        ${channel.avatar_url ? `<img src="${escapeHtml(channel.avatar_url)}" alt="Bot Avatar" class="w-3.5 h-3.5 rounded-full object-cover">` : `<svg class="w-3.5 h-3.5 text-[#5865F2]" fill="currentColor" viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>`}
+        <span class="truncate font-mono">${escapeHtml(channel.bot_name || 'KeepUp Monitor')}</span>
+      </div>`
+    : '';
+
+  const telegramTopicBadge = (typeLower === 'telegram' && (channel.telegram_chat_id || channel.telegram_thread_id))
+    ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
+        <svg class="w-3.5 h-3.5 text-[#24A1DE]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.52 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
+        <span class="truncate font-mono">${escapeHtml(channel.telegram_chat_id || '')}${channel.telegram_thread_id ? ` • Topic #${escapeHtml(channel.telegram_thread_id)}` : ''}</span>
+      </div>`
+    : '';
+
+  const warningBadge = channel.last_error
+    ? `<div class="flex items-start gap-1.5 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1.5" title="${escapeHtml(channel.last_error)}">
+        <svg class="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <div class="min-w-0">
+          <div class="font-semibold text-amber-400">Delivery Warning</div>
+          <div class="truncate text-amber-300/80 font-mono text-[10px]">${escapeHtml(channel.last_error)}</div>
+        </div>
+      </div>`
+    : '';
+
+  const cardBorderClass = channel.last_error
+    ? 'border-amber-500/35 hover:border-amber-500/55 shadow-[0_0_15px_rgba(245,158,11,0.08)]'
+    : 'hover:border-white/20';
+
   return `
-    <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20 flex flex-col justify-between space-y-4" id="channel-card-${channel.id}">
+    <div class="glass-card rounded-2xl p-5 shadow-xl transition flex flex-col justify-between space-y-4 ${cardBorderClass}" id="channel-card-${channel.id}">
       <div class="space-y-2">
         <div class="flex items-start justify-between gap-2">
           <div class="space-y-1 min-w-0">
@@ -2063,6 +2841,9 @@ function renderChannelCard(channel) {
         <div class="font-mono text-xs text-white/50 truncate select-all bg-black/30 border border-white/5 rounded-xl px-2.5 py-1.5" title="${escapeHtml(channel.url)}">
           ${escapeHtml(masked)}
         </div>
+        ${botCustomizationBadge}
+        ${telegramTopicBadge}
+        ${warningBadge}
       </div>
 
       <div class="pt-2 border-t border-white/5 flex items-center justify-between">
@@ -2171,6 +2952,7 @@ async function testNotificationChannel(id, name, btn) {
         <span>Test</span>
       `;
     }
+    await loadNotificationChannels(false);
   }
 }
 window.testNotificationChannel = testNotificationChannel;
@@ -2207,15 +2989,136 @@ async function deleteNotificationChannel(id, name) {
 }
 window.deleteNotificationChannel = deleteNotificationChannel;
 
+function syncChannelTypeCustomization(type) {
+  const discordContainer = document.getElementById('channel-discord-customization');
+  const telegramContainer = document.getElementById('channel-telegram-customization');
+  const urlContainer = document.getElementById('channel-form-url-container');
+  const urlInput = document.getElementById('channel-form-url');
+
+  const cType = (type || '').toLowerCase();
+  const isDiscord = cType === 'discord';
+  const isTelegram = cType === 'telegram';
+
+  if (discordContainer) {
+    if (isDiscord) {
+      discordContainer.classList.remove('hidden');
+    } else {
+      discordContainer.classList.add('hidden');
+    }
+  }
+
+  if (telegramContainer) {
+    if (isTelegram) {
+      telegramContainer.classList.remove('hidden');
+    } else {
+      telegramContainer.classList.add('hidden');
+    }
+  }
+
+  if (urlContainer && urlInput) {
+    if (isTelegram) {
+      urlContainer.classList.add('hidden');
+      urlInput.removeAttribute('required');
+      if (!urlInput.value || urlInput.value.includes('discord') || urlInput.value.includes('slack')) {
+        urlInput.value = 'https://api.telegram.org';
+      }
+    } else {
+      urlContainer.classList.remove('hidden');
+      urlInput.setAttribute('required', 'required');
+      if (urlInput.value === 'https://api.telegram.org') {
+        urlInput.value = '';
+      }
+    }
+  }
+}
+window.syncChannelTypeCustomization = syncChannelTypeCustomization;
+
+function toggleTelegramTokenVisibility() {
+  const tokenInput = document.getElementById('channel-form-telegram-token');
+  const eyeIcon = document.getElementById('telegram-token-eye-icon');
+  if (!tokenInput) return;
+  if (tokenInput.type === 'password') {
+    tokenInput.type = 'text';
+    if (eyeIcon) {
+      eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />`;
+    }
+  } else {
+    tokenInput.type = 'password';
+    if (eyeIcon) {
+      eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />`;
+    }
+  }
+}
+window.toggleTelegramTokenVisibility = toggleTelegramTokenVisibility;
+
+function updateDiscordAvatarPreview() {
+  const avatarInput = document.getElementById('channel-form-avatar-url');
+  const previewImg = document.getElementById('channel-avatar-preview-img');
+  const placeholder = document.getElementById('channel-avatar-preview-placeholder');
+  if (!avatarInput || !previewImg || !placeholder) return;
+
+  const url = avatarInput.value.trim();
+  if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+    previewImg.onload = () => {
+      previewImg.classList.remove('hidden');
+      placeholder.classList.add('hidden');
+    };
+    previewImg.onerror = () => {
+      previewImg.classList.add('hidden');
+      placeholder.classList.remove('hidden');
+    };
+    previewImg.src = url;
+  } else {
+    previewImg.src = '';
+    previewImg.classList.add('hidden');
+    placeholder.classList.remove('hidden');
+  }
+}
+window.updateDiscordAvatarPreview = updateDiscordAvatarPreview;
+
+async function testCurrentChannelModal(btn) {
+  const idEl = document.getElementById('channel-form-id');
+  const nameEl = document.getElementById('channel-form-name');
+  const id = idEl ? idEl.value.trim() : '';
+  const name = nameEl ? nameEl.value.trim() : 'Channel';
+
+  if (!id) {
+    showToast({
+      title: 'Save Required',
+      message: 'Please save the channel before testing',
+      type: 'info',
+    });
+    return;
+  }
+
+  await testNotificationChannel(id, name, btn);
+}
+window.testCurrentChannelModal = testCurrentChannelModal;
+
 function openCreateChannelModal(isInline = false) {
   isChannelModalInline = isInline;
   const modal = document.getElementById('channel-modal');
   const title = document.getElementById('channel-modal-title');
   const form = document.getElementById('channel-form');
   const idEl = document.getElementById('channel-form-id');
+  const botNameEl = document.getElementById('channel-form-bot-name');
+  const avatarUrlEl = document.getElementById('channel-form-avatar-url');
+  const telegramTokenEl = document.getElementById('channel-form-telegram-token');
+  const telegramChatEl = document.getElementById('channel-form-telegram-chat');
+  const telegramThreadEl = document.getElementById('channel-form-telegram-thread');
+  const testBtn = document.getElementById('channel-modal-test-btn');
 
   if (title) title.innerText = 'Add Notification Channel';
   if (idEl) idEl.value = '';
+  if (botNameEl) botNameEl.value = '';
+  if (avatarUrlEl) avatarUrlEl.value = '';
+  if (telegramTokenEl) {
+    telegramTokenEl.value = '';
+    telegramTokenEl.type = 'password';
+  }
+  if (telegramChatEl) telegramChatEl.value = '';
+  if (telegramThreadEl) telegramThreadEl.value = '';
+  if (testBtn) testBtn.classList.add('hidden');
   if (form) form.reset();
 
   const typeEl = document.getElementById('channel-form-type');
@@ -2225,6 +3128,9 @@ function openCreateChannelModal(isInline = false) {
   if (notifyResolveEl) notifyResolveEl.checked = true;
   const tmplEl = document.getElementById('channel-form-template');
   if (tmplEl) tmplEl.value = '';
+
+  syncChannelTypeCustomization('discord');
+  updateDiscordAvatarPreview();
 
   if (modal) modal.classList.remove('hidden');
 }
@@ -2239,6 +3145,12 @@ function openEditChannelModal(id) {
   const typeEl = document.getElementById('channel-form-type');
   const urlEl = document.getElementById('channel-form-url');
   const defaultEl = document.getElementById('channel-form-default');
+  const botNameEl = document.getElementById('channel-form-bot-name');
+  const avatarUrlEl = document.getElementById('channel-form-avatar-url');
+  const telegramTokenEl = document.getElementById('channel-form-telegram-token');
+  const telegramChatEl = document.getElementById('channel-form-telegram-chat');
+  const telegramThreadEl = document.getElementById('channel-form-telegram-thread');
+  const testBtn = document.getElementById('channel-modal-test-btn');
 
   const channel = (window.cachedChannels || []).find((c) => c.id === id);
   if (!channel) return;
@@ -2246,9 +3158,22 @@ function openEditChannelModal(id) {
   if (title) title.innerText = 'Edit Notification Channel';
   if (idEl) idEl.value = channel.id;
   if (nameEl) nameEl.value = channel.name;
-  if (typeEl) typeEl.value = (channel.type || 'discord').toLowerCase();
+  const cType = (channel.type || 'discord').toLowerCase();
+  if (typeEl) typeEl.value = cType;
   if (urlEl) urlEl.value = channel.url;
   if (defaultEl) defaultEl.checked = channel.is_default;
+  if (botNameEl) botNameEl.value = channel.bot_name || '';
+  if (avatarUrlEl) avatarUrlEl.value = channel.avatar_url || '';
+  if (telegramTokenEl) {
+    telegramTokenEl.value = channel.telegram_bot_token || '';
+    telegramTokenEl.type = 'password';
+  }
+  if (telegramChatEl) telegramChatEl.value = channel.telegram_chat_id || '';
+  if (telegramThreadEl) telegramThreadEl.value = channel.telegram_thread_id || '';
+  if (testBtn) testBtn.classList.remove('hidden');
+
+  syncChannelTypeCustomization(cType);
+  updateDiscordAvatarPreview();
 
   const notifyResolveEl = document.getElementById('channel-form-notify-resolve');
   if (notifyResolveEl) notifyResolveEl.checked = channel.notify_on_resolve !== false;
@@ -2274,18 +3199,44 @@ async function submitChannelForm(e) {
   const id = document.getElementById('channel-form-id')?.value?.trim();
   const name = document.getElementById('channel-form-name')?.value?.trim();
   const type = document.getElementById('channel-form-type')?.value?.trim();
-  const url = document.getElementById('channel-form-url')?.value?.trim();
+  let url = document.getElementById('channel-form-url')?.value?.trim() || '';
   const is_default = document.getElementById('channel-form-default')?.checked || false;
   const notify_on_resolve = document.getElementById('channel-form-notify-resolve') ? document.getElementById('channel-form-notify-resolve').checked : true;
   const custom_template = document.getElementById('channel-form-template')?.value?.trim() || null;
+  const bot_name = document.getElementById('channel-form-bot-name')?.value?.trim() || null;
+  const avatar_url = document.getElementById('channel-form-avatar-url')?.value?.trim() || null;
+  const telegram_bot_token = document.getElementById('channel-form-telegram-token')?.value?.trim() || null;
+  const telegram_chat_id = document.getElementById('channel-form-telegram-chat')?.value?.trim() || null;
+  const telegram_thread_id = document.getElementById('channel-form-telegram-thread')?.value?.trim() || null;
 
   const saveBtn = document.getElementById('save-channel-btn');
   const originalText = saveBtn ? saveBtn.innerText : 'Save Channel';
 
-  if (!name || !url) {
+  if (!name) {
     showToast({
       title: 'Validation Error',
-      message: 'Name and URL are required',
+      message: 'Channel name is required',
+      type: 'error',
+    });
+    return;
+  }
+
+  if (type === 'telegram') {
+    if (!telegram_bot_token || !telegram_chat_id) {
+      showToast({
+        title: 'Validation Error',
+        message: 'Bot API Token and Chat ID are required for Telegram',
+        type: 'error',
+      });
+      return;
+    }
+    if (!url) {
+      url = 'https://api.telegram.org';
+    }
+  } else if (!url) {
+    showToast({
+      title: 'Validation Error',
+      message: 'Endpoint URL is required',
       type: 'error',
     });
     return;
@@ -2303,7 +3254,19 @@ async function submitChannelForm(e) {
     const res = await apiFetch(endpoint, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, type, url, is_default, notify_on_resolve, custom_template }),
+      body: JSON.stringify({
+        name,
+        type,
+        url,
+        is_default,
+        notify_on_resolve,
+        custom_template,
+        bot_name,
+        avatar_url,
+        telegram_bot_token,
+        telegram_chat_id,
+        telegram_thread_id,
+      }),
     });
 
     if (res && res.ok) {
@@ -2801,7 +3764,7 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
-  const detailBackdrop = document.getElementById('monitor-detail-modal');
+  const detailBackdrop = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (detailBackdrop) {
     detailBackdrop.addEventListener('click', (e) => {
       if (e.target === detailBackdrop) {
@@ -2837,6 +3800,15 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const bulkDeleteBackdrop = document.getElementById('bulk-delete-modal');
+  if (bulkDeleteBackdrop) {
+    bulkDeleteBackdrop.addEventListener('click', (e) => {
+      if (e.target === bulkDeleteBackdrop) {
+        closeBulkDeleteModal();
+      }
+    });
+  }
+
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
       const menu = document.getElementById('nav-dropdown-menu');
@@ -2846,17 +3818,36 @@ document.addEventListener('DOMContentLoaded', () => {
       if (wasMenuOpen && btn) {
         btn.focus();
       }
+      const bulkDeleteModal = document.getElementById('bulk-delete-modal');
+      if (bulkDeleteModal && !bulkDeleteModal.classList.contains('hidden')) {
+        closeBulkDeleteModal();
+        return;
+      }
+      if (window.selectedMonitorIds && window.selectedMonitorIds.size > 0) {
+        clearMonitorSelection();
+        return;
+      }
       const channelModal = document.getElementById('channel-modal');
       if (channelModal && !channelModal.classList.contains('hidden')) {
         closeChannelModal();
+        return;
       }
       const incModal = document.getElementById('incident-modal');
       if (incModal && !incModal.classList.contains('hidden')) {
         closeIncidentModal();
+        return;
       }
       const upModal = document.getElementById('incident-update-modal');
       if (upModal && !upModal.classList.contains('hidden')) {
         closeIncidentUpdateModal();
+        return;
+      }
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      const searchInput = document.getElementById('search-input');
+      if (searchInput) {
+        e.preventDefault();
+        searchInput.focus();
+        searchInput.select();
       }
     }
   });
@@ -2887,6 +3878,7 @@ document.addEventListener('DOMContentLoaded', () => {
   }
 
   if (!isAuthOrStatusPage) {
+    initSortingControls();
     setViewMode(window.currentViewMode);
     loadNavUserProfile();
     fetchDashboardData(true);

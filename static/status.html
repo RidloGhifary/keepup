@@ -273,6 +273,9 @@
       border: 1px solid var(--card-border);
       box-shadow: var(--card-shadow);
       transition: background 0.25s ease, border-color 0.25s ease, box-shadow 0.25s ease;
+      transform: translateZ(0);
+      will-change: transform;
+      contain: layout style;
     }
     .glass-card:hover {
       border-color: var(--card-hover-border);
@@ -314,10 +317,25 @@
       color: var(--text-primary) !important;
       box-shadow: 0 20px 40px rgba(0, 0, 0, 0.6) !important;
     }
+    #monitor-detail-modal-card thead,
+    #monitor-detail-modal-card thead tr,
+    #monitor-detail-modal-card thead th {
+      background-color: #0b0b0c !important;
+      position: sticky;
+      top: 0;
+      z-index: 10;
+    }
     [data-theme="light"] #monitor-detail-modal-card {
       background: #ffffff !important;
       border-color: rgba(0, 0, 0, 0.12) !important;
       color: #1d1d1f !important;
+    }
+    [data-theme="light"] #monitor-detail-modal-card thead,
+    [data-theme="light"] #monitor-detail-modal-card thead tr,
+    [data-theme="light"] #monitor-detail-modal-card thead th {
+      background-color: #ffffff !important;
+      border-color: rgba(0, 0, 0, 0.1) !important;
+      color: #6e6e73 !important;
     }
     [data-theme="light"] #monitor-detail-modal {
       background-color: rgba(0, 0, 0, 0.35) !important;
@@ -567,7 +585,7 @@
   </footer>
 
   <!-- ── 11. Monitor Detail View Modal / Drawer ─────────────────────────────── -->
-  <div id="monitor-detail-modal" class="fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 hidden">
+  <div id="monitor-detail-modal" data-modal="status-log-modal" class="fixed inset-0 bg-black/70 backdrop-blur-md z-50 flex items-center justify-center p-3 sm:p-4 hidden">
     <div id="monitor-detail-modal-card" class="w-full max-w-3xl bg-zinc-950 border border-white/10 rounded-2xl shadow-2xl overflow-hidden max-h-[92vh] flex flex-col relative text-white">
       
       <!-- Modal Header -->
@@ -639,21 +657,21 @@
         </div>
 
         <!-- Recent Check Logs History Table -->
-        <div class="space-y-2.5">
+        <div id="recent-check-logs" class="space-y-2.5">
           <div class="flex items-center justify-between">
             <span class="text-[11px] font-mono uppercase tracking-wider text-neutral-400">Recent Check Logs (50 most recent)</span>
             <span id="detail-logs-count" class="text-[10px] font-mono text-neutral-500">0 logs</span>
           </div>
 
-          <div class="bg-black/40 border border-white/10 rounded-xl overflow-hidden">
-            <div class="overflow-x-auto max-h-64 overflow-y-auto">
+          <div class="bg-black/40 border border-white/10 rounded-xl overflow-hidden shadow-inner">
+            <div class="overflow-x-auto overflow-y-auto max-h-[60vh] relative">
               <table class="w-full text-left border-collapse text-xs">
-                <thead class="bg-white/5 border-b border-white/10 sticky top-0 text-[10px] font-mono uppercase tracking-wider text-neutral-400">
-                  <tr>
-                    <th class="py-2.5 px-3">Timestamp</th>
-                    <th class="py-2.5 px-3">HTTP Status</th>
-                    <th class="py-2.5 px-3">Response Time</th>
-                    <th class="py-2.5 px-3">Result / Error</th>
+                <thead class="sticky top-0 z-10 bg-zinc-950 border-b border-white/10 text-[10px] font-mono uppercase tracking-wider text-neutral-400">
+                  <tr class="bg-zinc-950">
+                    <th class="py-2.5 px-3 bg-zinc-950 border-b border-white/10 font-semibold sticky top-0 z-10">Timestamp</th>
+                    <th class="py-2.5 px-3 bg-zinc-950 border-b border-white/10 font-semibold sticky top-0 z-10">HTTP Status</th>
+                    <th class="py-2.5 px-3 bg-zinc-950 border-b border-white/10 font-semibold sticky top-0 z-10">Response Time</th>
+                    <th class="py-2.5 px-3 bg-zinc-950 border-b border-white/10 font-semibold sticky top-0 z-10">Result / Error</th>
                   </tr>
                 </thead>
                 <tbody id="detail-logs-tbody" class="divide-y divide-white/5 font-mono">

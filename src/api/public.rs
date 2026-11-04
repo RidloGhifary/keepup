@@ -1,14 +1,69 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::db::monitors::{DailyUptime, HourlyLatency};
 use crate::error::AppError;
 use crate::AppState;
+
+fn default_true() -> bool {
+    true
+}
+
+// ── In-Memory TTL Status Cache ──────────────────────────────────────────────
+
+/// Thread-safe in-memory TTL cache for public status queries.
+#[derive(Clone)]
+pub struct PublicStatusCache {
+    entries: Arc<RwLock<HashMap<String, (Instant, PublicStatus)>>>,
+    ttl: Duration,
+}
+
+impl Default for PublicStatusCache {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(10))
+    }
+}
+
+impl PublicStatusCache {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(HashMap::new())),
+            ttl,
+        }
+    }
+
+    pub async fn get(&self, slug: &str) -> Option<PublicStatus> {
+        let read = self.entries.read().await;
+        if let Some((inserted_at, status)) = read.get(slug) {
+            if inserted_at.elapsed() < self.ttl {
+                return Some(status.clone());
+            }
+        }
+        None
+    }
+
+    pub async fn set(&self, slug: &str, status: PublicStatus) {
+        let mut write = self.entries.write().await;
+        write.insert(slug.to_string(), (Instant::now(), status));
+    }
+
+    pub async fn invalidate(&self, slug: Option<&str>) {
+        let mut write = self.entries.write().await;
+        if let Some(s) = slug {
+            write.remove(s);
+        } else {
+            write.clear();
+        }
+    }
+}
 
 // ── Response types ───────────────────────────────────────────────────────────
 
@@ -68,6 +123,21 @@ pub struct PublicStatus {
     pub groups: Vec<MonitorGroup>,
     /// Per-monitor summaries (flat list for backward compatibility).
     pub monitors: Vec<PublicMonitor>,
+    /// Whether search engine indexing is permitted.
+    #[serde(default = "default_true")]
+    pub allow_indexing: bool,
+    /// Optional custom SEO title tag override.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_title: Option<String>,
+    /// Optional custom meta description for search engine snippet previews.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub meta_description: Option<String>,
+    /// Optional URL for OpenGraph and Twitter social card preview thumbnails.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub og_image_url: Option<String>,
+    /// Optional custom canonical URL header and tag.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub canonical_url: Option<String>,
 }
 
 /// Summary of a single public monitor.
@@ -88,6 +158,12 @@ pub struct PublicMonitor {
     pub latency_24h: Vec<HourlyLatency>,
     /// 24-hour response time percentiles (P50, P95, P99) and average.
     pub latency: crate::db::checks::LatencyPercentiles,
+    #[serde(default = "default_check_type")]
+    pub check_type: String,
+}
+
+fn default_check_type() -> String {
+    "http".to_string()
 }
 
 // ── Row helpers for sqlx ─────────────────────────────────────────────────────
@@ -97,6 +173,8 @@ struct MonitorIdName {
     id: String,
     name: String,
     url: String,
+    #[sqlx(default)]
+    check_type: String,
 }
 
 #[derive(sqlx::FromRow)]
@@ -119,6 +197,8 @@ struct AssignedMonitorRow {
     group_name: String,
     #[allow(dead_code)]
     display_order: i64,
+    #[sqlx(default)]
+    check_type: String,
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -128,17 +208,34 @@ pub async fn get_public_status_impl(
     state: &AppState,
     slug: &str,
 ) -> Result<PublicStatus, AppError> {
+    if let Some(cached) = state.status_cache.get(slug).await {
+        return Ok(cached);
+    }
+
     let is_default = slug.eq_ignore_ascii_case("default");
     let page = crate::db::status_pages::get_status_page(&state.db, slug).await?;
 
-    let (title, description) = match (is_default, page) {
+    let (title, description, allow_indexing, meta_title, meta_description, og_image_url, canonical_url) = match (is_default, page) {
         (_, Some(p)) if p.is_public == 0 => {
             return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
         }
-        (_, Some(p)) => (p.title, p.description),
+        (_, Some(p)) => (
+            p.title,
+            p.description,
+            p.allow_indexing,
+            p.meta_title,
+            p.meta_description,
+            p.og_image_url,
+            p.canonical_url,
+        ),
         (true, None) => (
             "System Status".to_string(),
             Some("Current status and real-time performance of public services".to_string()),
+            true,
+            None,
+            None,
+            None,
+            None,
         ),
         (false, None) => {
             return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
@@ -156,7 +253,8 @@ pub async fn get_public_status_impl(
         r#"
         SELECT 
             m.id, m.name, m.url, 
-            spm.group_name, spm.display_order
+            spm.group_name, spm.display_order,
+            m.check_type
         FROM status_page_monitors spm
         INNER JOIN monitors m ON m.id = spm.monitor_id
         WHERE LOWER(spm.status_page_slug) = LOWER(?)
@@ -170,7 +268,7 @@ pub async fn get_public_status_impl(
 
     if total_assigned_count == 0 && is_default {
         let all_monitors = sqlx::query_as::<_, MonitorIdName>(
-            "SELECT id, name, url FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
+            "SELECT id, name, url, check_type FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
         )
         .fetch_all(&state.db)
         .await?;
@@ -184,6 +282,7 @@ pub async fn get_public_status_impl(
                 url: m.url,
                 group_name: "Services".to_string(),
                 display_order: i as i64,
+                check_type: m.check_type,
             })
             .collect();
     }
@@ -253,6 +352,7 @@ pub async fn get_public_status_impl(
             uptime_history,
             latency_24h,
             latency,
+            check_type: m.check_type.clone(),
         };
 
         public_monitors.push(pub_m.clone());
@@ -297,7 +397,7 @@ pub async fn get_public_status_impl(
     .await
     .unwrap_or_default();
 
-    Ok(PublicStatus {
+    let public_status = PublicStatus {
         title,
         description,
         status,
@@ -307,52 +407,102 @@ pub async fn get_public_status_impl(
         incidents,
         groups,
         monitors: public_monitors,
-    })
+        allow_indexing,
+        meta_title,
+        meta_description,
+        og_image_url,
+        canonical_url,
+    };
+
+    state.status_cache.set(slug, public_status.clone()).await;
+
+    Ok(public_status)
 }
 
 /// `GET /api/public/status` — aggregated health for the default status page with 5s cache.
 pub async fn public_status(
     State(state): State<Arc<AppState>>,
-) -> Result<Json<PublicStatus>, AppError> {
-    let cache_key = "default".to_string();
-    {
-        let cache = state.status_cache.read().await;
-        if let Some((inst, ref cached)) = cache.get(&cache_key) {
-            if inst.elapsed() < std::time::Duration::from_secs(5) {
-                return Ok(Json(cached.clone()));
-            }
+) -> Result<impl IntoResponse, AppError> {
+    let status = get_public_status_impl(&state, "default").await?;
+    let robots_val = if status.allow_indexing {
+        "index, follow"
+    } else {
+        "noindex, nofollow"
+    };
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::HeaderName::from_static("x-robots-tag"),
+        axum::http::HeaderValue::from_static(robots_val),
+    );
+    if let Some(ref canon) = status.canonical_url {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\"")) {
+            headers.insert(axum::http::header::LINK, val);
         }
     }
 
-    let status = get_public_status_impl(&state, "default").await?;
-    {
-        let mut cache = state.status_cache.write().await;
-        cache.insert(cache_key, (std::time::Instant::now(), status.clone()));
-    }
-    Ok(Json(status))
+    Ok((headers, Json(status)))
 }
 
 /// `GET /api/public/status/:slug` — aggregated health for a custom status page with 5s cache.
 pub async fn public_status_by_slug(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
-) -> Result<Json<PublicStatus>, AppError> {
-    let cache_key = slug.to_lowercase();
-    {
-        let cache = state.status_cache.read().await;
-        if let Some((inst, ref cached)) = cache.get(&cache_key) {
-            if inst.elapsed() < std::time::Duration::from_secs(5) {
-                return Ok(Json(cached.clone()));
-            }
+) -> Result<impl IntoResponse, AppError> {
+    let status = get_public_status_impl(&state, &slug).await?;
+    let robots_val = if status.allow_indexing {
+        "index, follow"
+    } else {
+        "noindex, nofollow"
+    };
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::HeaderName::from_static("x-robots-tag"),
+        axum::http::HeaderValue::from_static(robots_val),
+    );
+    if let Some(ref canon) = status.canonical_url {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\"")) {
+            headers.insert(axum::http::header::LINK, val);
         }
     }
 
-    let status = get_public_status_impl(&state, &slug).await?;
-    {
-        let mut cache = state.status_cache.write().await;
-        cache.insert(cache_key, (std::time::Instant::now(), status.clone()));
+    Ok((headers, Json(status)))
+}
+
+/// `GET /robots.txt` — Dynamic robots engine inspecting status pages and guarding internal routes.
+pub async fn robots_txt(State(state): State<Arc<AppState>>) -> impl IntoResponse {
+    let pages = crate::db::status_pages::list_status_pages(&state.db)
+        .await
+        .unwrap_or_default();
+
+    let mut body = String::from("User-agent: *\nDisallow: /admin\nDisallow: /admin/\nDisallow: /api/admin/\nDisallow: /api/\n");
+
+    let default_page = pages.iter().find(|p| p.slug == "default");
+    let default_indexed = default_page.map(|p| p.allow_indexing).unwrap_or(true);
+
+    if default_indexed {
+        body.push_str("Allow: /status\nAllow: /status/\nAllow: /status/default\n");
+    } else {
+        body.push_str("Disallow: /status\nDisallow: /status/\nDisallow: /status/default\n");
     }
-    Ok(Json(status))
+
+    for page in pages.iter().filter(|p| p.slug != "default") {
+        if page.allow_indexing {
+            body.push_str(&format!("Allow: /status/{}\n", page.slug));
+        } else {
+            body.push_str(&format!("Disallow: /status/{}\n", page.slug));
+        }
+    }
+
+    let mut headers = axum::http::HeaderMap::new();
+    headers.insert(
+        axum::http::header::CONTENT_TYPE,
+        axum::http::HeaderValue::from_static("text/plain; charset=utf-8"),
+    );
+
+    (headers, body)
+}
 }
 
 pub use public_status as get_default_status;
@@ -369,6 +519,8 @@ pub fn public_routes() -> axum::Router<Arc<AppState>> {
         .route("/status", axum::routing::get(get_default_status))
         // Custom status page by slug
         .route("/status/:slug", axum::routing::get(get_status_by_slug))
+        // Dynamic robots.txt
+        .route("/robots.txt", axum::routing::get(robots_txt))
 }
 
 // ── SVG Status Badge ─────────────────────────────────────────────────────────
@@ -1109,6 +1261,11 @@ mod tests {
             Some("Dashboard telemetry"),
             true,
             None,
+            true,
+            None,
+            None,
+            None,
+            None,
         ).await.unwrap();
 
         crate::db::status_pages::update_status_page(
@@ -1124,6 +1281,11 @@ mod tests {
                     display_order: 1,
                 }
             ]),
+            true,
+            None,
+            None,
+            None,
+            None,
         ).await.unwrap();
 
         let custom_status = get_public_status_impl(&state, "dashboards").await.unwrap();
@@ -1161,6 +1323,11 @@ mod tests {
             Some("Health status of internal dashboards"),
             true,
             None,
+            true,
+            None,
+            None,
+            None,
+            None,
         ).await.unwrap();
 
         // 3. Assign 2 monitors with group label "Internal Dashboards"
@@ -1182,6 +1349,11 @@ mod tests {
                     display_order: 2,
                 },
             ]),
+            true,
+            None,
+            None,
+            None,
+            None,
         ).await.unwrap();
 
         // 4. Test API via Router GET /api/public/status/dashboard
@@ -1390,6 +1562,11 @@ mod tests {
                     display_order: 2,
                 },
             ]),
+            true,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1480,6 +1657,11 @@ mod tests {
                     display_order: 2,
                 },
             ]),
+            true,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1590,10 +1772,7 @@ mod tests {
         let state = AppState::new_for_test(pool.clone(), config);
 
         sqlx::query(
-            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES \
-             ('m-pub-unassigned', 'Public Unassigned', 'https://pub.example.com', 1, 1), \
-             ('m-priv-assigned', 'Private Assigned', 'https://priv.example.com', 0, 1), \
-             ('m-paused-assigned', 'Paused Assigned', 'https://paused.example.com', 1, 0)",
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES              ('m-pub-unassigned', 'Public Unassigned', 'https://pub.example.com', 1, 1),              ('m-priv-assigned', 'Private Assigned', 'https://priv.example.com', 0, 1),              ('m-paused-assigned', 'Paused Assigned', 'https://paused.example.com', 1, 0)",
         )
         .execute(&pool)
         .await
@@ -1673,9 +1852,7 @@ mod tests {
         let state_a = AppState::new_for_test(pool_a.clone(), cfg_a);
 
         sqlx::query(
-            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES \
-             ('m-pub', 'Core API', 'https://api.example.com', 1, 1), \
-             ('m-priv', 'Secret DB', 'https://db.internal', 0, 1)",
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES              ('m-pub', 'Core API', 'https://api.example.com', 1, 1),              ('m-priv', 'Secret DB', 'https://db.internal', 0, 1)",
         )
         .execute(&pool_a)
         .await
@@ -1776,5 +1953,188 @@ mod tests {
             "83.33% 24h uptime must render Degraded Performance or Partial System Outage, got {}",
             status_b.status
         );
+    }
+
+    #[tokio::test]
+    async fn test_seo_and_robots_visibility() {
+        use tower::ServiceExt;
+
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let state = AppState::new_for_test(pool.clone(), config);
+
+        // 1. Create a status page with allow_indexing = true and custom SEO tags
+        crate::db::status_pages::create_status_page(
+            &pool,
+            "seo-public",
+            "Public Service Status",
+            Some("Public status overview"),
+            true,
+            None,
+            true,
+            Some("Custom SEO Title | Acme Inc"),
+            Some("Acme Inc system health and uptime."),
+            Some("https://example.com/og-banner.png"),
+            Some("https://status.example.com/status/seo-public"),
+        )
+        .await
+        .unwrap();
+
+        // 2. Create a status page with allow_indexing = false
+        crate::db::status_pages::create_status_page(
+            &pool,
+            "seo-private",
+            "Internal Service Status",
+            Some("Internal private telemetry"),
+            true,
+            None,
+            false,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        // 3. Test /robots.txt endpoint
+        let app = axum::Router::new()
+            .route("/robots.txt", axum::routing::get(robots_txt))
+            .merge(crate::api::router(state.clone()))
+            .with_state(state.clone());
+
+        let req_robots = axum::http::Request::builder()
+            .method("GET")
+            .uri("/robots.txt")
+            .body(axum::body::Body::empty())
+            .unwrap();
+
+        let res_robots = app.clone().oneshot(req_robots).await.unwrap();
+        assert_eq!(res_robots.status(), StatusCode::OK);
+        assert_eq!(
+            res_robots.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            "text/plain; charset=utf-8"
+        );
+        let robots_bytes = axum::body::to_bytes(res_robots.into_body(), 1024 * 16).await.unwrap();
+        let robots_txt = String::from_utf8_lossy(&robots_bytes);
+        assert!(robots_txt.contains("User-agent: *"));
+        assert!(robots_txt.contains("Disallow: /admin/"));
+        assert!(robots_txt.contains("Disallow: /api/admin/"));
+        assert!(robots_txt.contains("Disallow: /api/"));
+        assert!(robots_txt.contains("Allow: /status/seo-public"));
+        assert!(robots_txt.contains("Disallow: /status/seo-private"));
+
+        // 4. Test public status API headers for indexed page
+        let req_indexed = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status/seo-public")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res_indexed = app.clone().oneshot(req_indexed).await.unwrap();
+        assert_eq!(res_indexed.status(), StatusCode::OK);
+        assert_eq!(
+            res_indexed.headers().get("x-robots-tag").unwrap(),
+            "index, follow"
+        );
+        assert_eq!(
+            res_indexed.headers().get(axum::http::header::LINK).unwrap(),
+            "<https://status.example.com/status/seo-public>; rel="canonical""
+        );
+
+        // 5. Test public status API headers for non-indexed page
+        let req_noindex = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/public/status/seo-private")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res_noindex = app.clone().oneshot(req_noindex).await.unwrap();
+        assert_eq!(res_noindex.status(), StatusCode::OK);
+        assert_eq!(
+            res_noindex.headers().get("x-robots-tag").unwrap(),
+            "noindex, nofollow"
+        );
+
+        // 6. Test Admin / Internal API route has noindex, nofollow, noarchive
+        let req_auth = axum::http::Request::builder()
+            .method("GET")
+            .uri("/api/auth/me")
+            .body(axum::body::Body::empty())
+            .unwrap();
+        let res_auth = app.clone().oneshot(req_auth).await.unwrap();
+        assert_eq!(
+            res_auth.headers().get("x-robots-tag").unwrap(),
+            "noindex, nofollow, noarchive"
+        );
+
+        // 7. Test UI status_page_handler HTML tag injection
+        let uri_seo = axum::http::Uri::from_static("/status/seo-public");
+        let html_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_seo).await;
+        assert_eq!(html_res.status(), StatusCode::OK);
+        assert_eq!(
+            html_res.headers().get("x-robots-tag").unwrap(),
+            "index, follow"
+        );
+        assert_eq!(
+            html_res.headers().get(axum::http::header::LINK).unwrap(),
+            "<https://status.example.com/status/seo-public>; rel="canonical""
+        );
+        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64).await.unwrap();
+        let html = String::from_utf8_lossy(&html_bytes);
+        assert!(html.contains("<title>Custom SEO Title | Acme Inc</title>"));
+        assert!(html.contains(r#"<meta name="description" content="Acme Inc system health and uptime.">"#));
+        assert!(html.contains(r#"<meta name="robots" content="index, follow">"#));
+        assert!(html.contains(r#"<meta property="og:title" content="Custom SEO Title | Acme Inc">"#));
+        assert!(html.contains(r#"<meta property="og:image" content="https://example.com/og-banner.png">"#));
+        assert!(html.contains(r#"<meta name="twitter:image" content="https://example.com/og-banner.png">"#));
+        assert!(html.contains(r#"<link rel="canonical" href="https://status.example.com/status/seo-public">"#));
+    }
+
+    #[tokio::test]
+    async fn test_public_status_cache_ttl_and_invalidation() {
+        let cache = PublicStatusCache::new(Duration::from_millis(50));
+        let dummy_status = PublicStatus {
+            title: "Test Status".to_string(),
+            description: None,
+            status: "All Systems Operational".to_string(),
+            status_page_theme: None,
+            custom_logo_url: None,
+            maintenance_windows: vec![],
+            incidents: vec![],
+            groups: vec![],
+            monitors: vec![],
+            allow_indexing: true,
+            meta_title: None,
+            meta_description: None,
+            og_image_url: None,
+            canonical_url: None,
+        };
+
+        // Cache miss initially
+        assert!(cache.get("default").await.is_none());
+
+        // Cache hit after set
+        cache.set("default", dummy_status.clone()).await;
+        let cached = cache.get("default").await;
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().title, "Test Status");
+
+        // Explicit slug invalidation
+        cache.invalidate(Some("default")).await;
+        assert!(cache.get("default").await.is_none());
+
+        // Set again and test clear all
+        cache.set("default", dummy_status.clone()).await;
+        cache.set("other", dummy_status.clone()).await;
+        assert!(cache.get("default").await.is_some());
+        assert!(cache.get("other").await.is_some());
+        cache.invalidate(None).await;
+        assert!(cache.get("default").await.is_none());
+        assert!(cache.get("other").await.is_none());
+
+        // Test TTL expiration
+        cache.set("expiring", dummy_status).await;
+        assert!(cache.get("expiring").await.is_some());
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(cache.get("expiring").await.is_none());
     }
 }

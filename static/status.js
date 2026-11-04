@@ -448,16 +448,26 @@ async function loadStatusData() {
     statusData = data;
 
     // 1. Update Page Title & Description dynamically if provided
+    const effectiveTitle = data.meta_title || (data.title ? `${data.title} — KeepUp Status` : null);
+    if (effectiveTitle) {
+      document.title = effectiveTitle;
+    }
     if (data.title) {
       const titleEl = document.getElementById('page-title');
       if (titleEl) titleEl.textContent = data.title;
       const badgeEl = document.getElementById('status-page-badge');
       if (badgeEl) badgeEl.textContent = data.title.toUpperCase();
-      document.title = `${data.title} — KeepUp Status`;
     }
     if (data.description) {
       const descEl = document.getElementById('page-description') || document.getElementById('hero-status-desc');
       if (descEl) descEl.textContent = data.description;
+    }
+    const effectiveMetaDesc = data.meta_description || data.description;
+    if (effectiveMetaDesc) {
+      let metaDescEl = document.querySelector('meta[name="description"]');
+      if (metaDescEl) {
+        metaDescEl.content = effectiveMetaDesc;
+      }
     }
 
     // Update Custom Brand Logo if provided
@@ -545,11 +555,12 @@ function renderOverallHero(data) {
   const heroDesc = document.getElementById('page-description') || document.getElementById('hero-status-desc');
   const pageBadge = document.getElementById('status-page-badge');
 
-  if (data.title) {
-    document.title = `${data.title} — KeepUp Status`;
-    if (pageBadge) {
-      pageBadge.textContent = data.title.toUpperCase();
-    }
+  const heroStatusTitle = data.meta_title || (data.title ? `${data.title} — KeepUp Status` : null);
+  if (heroStatusTitle) {
+    document.title = heroStatusTitle;
+  }
+  if (data.title && pageBadge) {
+    pageBadge.textContent = data.title.toUpperCase();
   }
 
   if (!heroCard || !heroTitle) return;
@@ -674,6 +685,29 @@ function renderMonitorsList(monitors, groups) {
   batchInsertHTML(container, html);
 }
 
+// ── Protocol Badge Component ───────────────────────────────────────────────
+
+function renderProtocolBadge(type) {
+  const t = (type || 'http').toUpperCase();
+  let badgeStyle = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+  if (t === 'TCP') {
+    badgeStyle = 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+  } else if (t === 'DNS') {
+    badgeStyle = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+  } else if (t === 'PING') {
+    badgeStyle = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+  }
+  return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border ${badgeStyle} shrink-0">${t}</span>`;
+}
+
+function formatProbeLabel(type) {
+  const t = (type || 'http').toLowerCase();
+  if (t === 'tcp') return 'TCP Port Probe';
+  if (t === 'dns') return 'DNS Record Probe';
+  if (t === 'ping') return 'ICMP Ping Probe';
+  return 'Global HTTP Probe';
+}
+
 // ── Single Public Service Card with 7-Day Interactive Uptime Bar ────────────
 
 function renderServiceCard(m) {
@@ -704,12 +738,6 @@ function renderServiceCard(m) {
       ? `${m.last_latency_ms} ms`
       : '—';
 
-  const uptimePct =
-    typeof m.uptime_24h === 'number' ? m.uptime_24h.toFixed(2) : '100.00';
-
-  // Generate 7-Day Interactive Glassmorphic Pills
-  const barsHtml = generate7DayBars(m);
-
   // Generate 24-Hour Hourly Latency Breakdown Bars
   const latencyBarsHtml = generate24hLatencyBars(m);
   const avgLatencyText = getAverageLatencyText(m);
@@ -723,8 +751,11 @@ function renderServiceCard(m) {
             <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusDotColor}"></span>
           </span>
           <div>
-            <h3 class="font-semibold text-white text-base tracking-tight truncate">${escapeHtml(m.name)}</h3>
-            <span class="text-[11px] text-white/40 font-mono">Component • Global HTTP Probe</span>
+            <div class="flex items-center gap-2">
+              <h3 class="font-semibold text-white text-base tracking-tight truncate">${escapeHtml(m.name)}</h3>
+              ${renderProtocolBadge(m.check_type)}
+            </div>
+            <span class="text-[11px] text-white/40 font-mono">Component • ${formatProbeLabel(m.check_type)}</span>
           </div>
         </div>
 
@@ -736,31 +767,14 @@ function renderServiceCard(m) {
         </div>
       </div>
 
-      <!-- 7-Day Interactive Uptime Bar -->
-      <div class="space-y-2 pt-1">
-        <div class="flex items-center justify-between text-xs text-white/60 font-mono">
-          <span>7-Day Uptime History</span>
-          <span class="text-white font-semibold">${uptimePct}% uptime</span>
-        </div>
-
-        <!-- 7 Bars Container -->
-        <div class="flex items-center gap-1.5 sm:gap-2.5 h-11 w-full p-1.5 bg-black/5 dark:bg-black/40 rounded-xl border border-black/5 dark:border-white/5">
-          ${barsHtml}
-        </div>
-
-        <!-- Timeline Boundaries -->
-        <div class="flex items-center justify-between text-[11px] text-white/40 font-mono pt-0.5">
-          <span>7 days ago</span>
-          <span>Current latency: <strong class="text-white/80 font-mono">${latencyText}</strong></span>
-          <span>Today</span>
-        </div>
-      </div>
-
       <!-- 24-Hour Latency Breakdown Chart -->
       <div class="space-y-2 pt-2 border-t border-black/5 dark:border-white/5">
         <div class="flex items-center justify-between text-xs text-white/60 font-mono">
           <span>24-Hour Latency Breakdown</span>
-          <span class="text-white/60 font-mono text-[11px]">24h Avg: <strong class="text-white/80 font-mono">${avgLatencyText}</strong></span>
+          <div class="flex items-center gap-3 text-white/60 font-mono text-[11px]">
+            <span>Current: <strong class="text-white/80 font-mono">${latencyText}</strong></span>
+            <span>24h Avg: <strong class="text-white/80 font-mono">${avgLatencyText}</strong></span>
+          </div>
         </div>
 
         <!-- 24 Bars Container -->
@@ -1199,7 +1213,7 @@ let currentDetailMonitorId = null;
 
 async function openMonitorDetailModal(id) {
   currentDetailMonitorId = id;
-  const modal = document.getElementById('monitor-detail-modal');
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (!modal) return;
 
   modal.classList.remove('hidden');
@@ -1246,7 +1260,7 @@ async function openMonitorDetailModal(id) {
 }
 
 function closeMonitorDetailModal() {
-  const modal = document.getElementById('monitor-detail-modal');
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (modal) {
     modal.classList.add('hidden');
   }
@@ -1309,8 +1323,8 @@ function renderMonitorDetailData(data) {
   const statusBadge = document.getElementById('detail-modal-status-badge');
 
   if (nameEl) nameEl.textContent = m.name || 'Monitor';
-  if (urlEl) urlEl.textContent = m.url || '';
-  if (methodEl) methodEl.textContent = m.method || 'GET';
+  if (urlEl) urlEl.textContent = m.url ? (m.port ? `${m.url}:${m.port}` : m.url) : '';
+  if (methodEl) methodEl.textContent = (m.check_type || m.method || 'HTTP').toUpperCase();
 
   if (statusBadge) {
     const isPaused = !m.is_active;
@@ -1447,7 +1461,7 @@ document.addEventListener('click', (e) => {
 // Escape key listener for detail modal
 document.addEventListener('keydown', (e) => {
   if (e.key === 'Escape') {
-    const detailModal = document.getElementById('monitor-detail-modal');
+    const detailModal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
     if (detailModal && !detailModal.classList.contains('hidden')) {
       closeMonitorDetailModal();
     }
@@ -1457,7 +1471,7 @@ document.addEventListener('keydown', (e) => {
 // ── DOM Initialization ───────────────────────────────────────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
-  const detailBackdrop = document.getElementById('monitor-detail-modal');
+  const detailBackdrop = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (detailBackdrop) {
     detailBackdrop.addEventListener('click', (e) => {
       if (e.target === detailBackdrop) {

@@ -36,6 +36,14 @@ pub struct CreateMonitor {
     pub ssl_warning_days: i32,
     #[serde(default)]
     pub channel_ids: Option<Vec<String>>,
+    #[serde(default = "default_check_type")]
+    pub check_type: String,
+    #[serde(default)]
+    pub port: Option<i32>,
+    #[serde(default = "default_dns_record_type")]
+    pub dns_record_type: Option<String>,
+    #[serde(default)]
+    pub dns_expected_value: Option<String>,
     #[serde(default = "default_http_method")]
     pub http_method: String,
     #[serde(default = "default_expected_status")]
@@ -50,8 +58,6 @@ pub struct CreateMonitor {
     pub json_expected: Option<String>,
     #[serde(default)]
     pub degraded_latency_ms: Option<i64>,
-    #[serde(default = "default_dns_record_type")]
-    pub dns_record_type: String,
     #[serde(default)]
     pub dns_expected: Option<String>,
     #[serde(default)]
@@ -60,6 +66,9 @@ pub struct CreateMonitor {
     pub grace_secs: i32,
 }
 
+fn default_check_type() -> String {
+    "http".to_string()
+}
 fn default_interval() -> i32 {
     60
 }
@@ -81,8 +90,8 @@ fn default_http_method() -> String {
 fn default_expected_status() -> String {
     "200-299".to_string()
 }
-fn default_dns_record_type() -> String {
-    "A".to_string()
+fn default_dns_record_type() -> Option<String> {
+    Some("A".to_string())
 }
 fn default_grace_secs() -> i32 {
     60
@@ -94,20 +103,44 @@ impl CreateMonitor {
         if name.is_empty() {
             return Err(AppError::BadRequest("Monitor name cannot be empty".to_string()));
         }
+        let check_type = self.check_type.trim().to_lowercase();
+        if check_type != "http" && check_type != "tcp" && check_type != "dns" && check_type != "ping" && check_type != "push" {
+            return Err(AppError::BadRequest(format!(
+                "Invalid check_type '{check_type}'. Allowed: http, tcp, dns, ping, push"
+            )));
+        }
         let url = self.url.trim();
         if url.is_empty() {
-            return Err(AppError::BadRequest("Monitor URL cannot be empty".to_string()));
+            return Err(AppError::BadRequest("Target URL/host cannot be empty".to_string()));
         }
-        if !url.starts_with("http://")
-            && !url.starts_with("https://")
-            && !url.starts_with("tcp://")
-            && !url.starts_with("dns://")
-            && !url.starts_with("push://")
-        {
+        if check_type == "http" && !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(AppError::BadRequest(
+                "HTTP Monitor URL must start with http:// or https://".to_string(),
+            ));
+        }
+        if check_type == "push" && !url.starts_with("push://") {
+            return Err(AppError::BadRequest(
+                "Push monitor target must start with push://".to_string(),
+            ));
+        }
+        if check_type != "http" && check_type != "push" && url.contains("://") && !url.starts_with("tcp://") && !url.starts_with("dns://") {
             return Err(AppError::BadRequest(
                 "Unsupported URL scheme: must start with http://, https://, tcp://, dns://, or push://"
                     .to_string(),
             ));
+        }
+        if let Some(port) = self.port {
+            if !(1..=65535).contains(&port) {
+                return Err(AppError::BadRequest("TCP port must be between 1 and 65535".to_string()));
+            }
+        }
+        if let Some(ref rtype) = self.dns_record_type {
+            let rt = rtype.trim().to_uppercase();
+            if rt != "A" && rt != "AAAA" && rt != "CNAME" && rt != "TXT" && rt != "MX" {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid dns_record_type '{rtype}'. Allowed: A, AAAA, CNAME, TXT, MX"
+                )));
+            }
         }
         if !(5..=86400).contains(&self.check_interval_secs) {
             return Err(AppError::BadRequest(
@@ -183,6 +216,10 @@ pub async fn create(
         None
     };
 
+    let dns_record_type = body.dns_record_type.clone().unwrap_or_else(|| "A".to_string());
+    let dns_expected = body.dns_expected.clone().or_else(|| body.dns_expected_value.clone());
+    let dns_expected_value = body.dns_expected_value.clone().or_else(|| body.dns_expected.clone());
+
     let mut tx = state.db.begin().await?;
 
     sqlx::query(
@@ -191,8 +228,9 @@ pub async fn create(
                                check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
                                http_method, expected_status, request_headers, body_keyword, \
                                json_pointer, json_expected, degraded_latency_ms, push_token, \
-                               grace_secs, dns_record_type, dns_expected, resend_interval_mins) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               grace_secs, dns_record_type, dns_expected, resend_interval_mins, \
+                               check_type, port, dns_expected_value) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&body.name)
@@ -215,9 +253,12 @@ pub async fn create(
     .bind(body.degraded_latency_ms)
     .bind(&push_token)
     .bind(body.grace_secs)
-    .bind(&body.dns_record_type)
-    .bind(&body.dns_expected)
+    .bind(&dns_record_type)
+    .bind(&dns_expected)
     .bind(body.resend_interval_mins)
+    .bind(&body.check_type)
+    .bind(body.port)
+    .bind(&dns_expected_value)
     .execute(&mut *tx)
     .await?;
 

@@ -32,8 +32,10 @@ pub struct Config {
     pub trust_proxy_headers: bool,
     /// Explicit CORS allowed origins (`CORS_ALLOWED_ORIGINS`, comma-separated, default: empty).
     pub cors_allowed_origins: Vec<String>,
-    /// Days to retain `check_logs` history before automatic pruning (`KEEPUP_RETENTION_DAYS`, default: 90).
+    /// Days to retain `check_logs` history before automatic pruning (`KEEPUP_RETENTION_DAYS` / `DATA_RETENTION_DAYS`, default: 90).
     pub retention_days: u32,
+    /// Alias for `retention_days` for upstream compatibility.
+    pub data_retention_days: u32,
     /// Optional custom logo URL for public status pages (`CUSTOM_LOGO_URL`).
     pub custom_logo_url: Option<String>,
     /// Optional bearer token protecting `GET /metrics` (`METRICS_BEARER_TOKEN`).
@@ -54,6 +56,7 @@ impl Default for Config {
             trust_proxy_headers: false,
             cors_allowed_origins: vec![],
             retention_days: 90,
+            data_retention_days: 90,
             custom_logo_url: None,
             metrics_bearer_token: None,
         }
@@ -121,6 +124,7 @@ impl Config {
             .unwrap_or_default();
 
         let retention_days = env::var("KEEPUP_RETENTION_DAYS")
+            .or_else(|_| env::var("DATA_RETENTION_DAYS"))
             .ok()
             .and_then(|v| v.parse::<u32>().ok())
             .filter(|&d| d > 0)
@@ -148,6 +152,7 @@ impl Config {
             trust_proxy_headers,
             cors_allowed_origins,
             retention_days,
+            data_retention_days: retention_days,
             custom_logo_url,
             metrics_bearer_token,
         }

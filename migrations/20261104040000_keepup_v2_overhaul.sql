@@ -46,7 +46,6 @@ ALTER TABLE monitors ADD COLUMN json_expected TEXT;
 ALTER TABLE monitors ADD COLUMN degraded_latency_ms INTEGER;
 ALTER TABLE monitors ADD COLUMN push_token TEXT;
 ALTER TABLE monitors ADD COLUMN grace_secs INTEGER NOT NULL DEFAULT 60;
-ALTER TABLE monitors ADD COLUMN dns_record_type TEXT NOT NULL DEFAULT 'A';
 ALTER TABLE monitors ADD COLUMN dns_expected TEXT;
 ALTER TABLE monitors ADD COLUMN resend_interval_mins INTEGER NOT NULL DEFAULT 0;
 ALTER TABLE monitors ADD COLUMN last_alerted_at DATETIME;

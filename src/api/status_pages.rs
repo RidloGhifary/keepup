@@ -36,6 +36,11 @@ pub async fn get_status_page(
         is_public: page.is_public == 1,
         created_at: page.created_at,
         monitors,
+        allow_indexing: page.allow_indexing,
+        meta_title: page.meta_title,
+        meta_description: page.meta_description,
+        og_image_url: page.og_image_url,
+        canonical_url: page.canonical_url,
     }))
 }
 
@@ -61,8 +66,15 @@ pub async fn create_status_page(
         payload.description.as_deref(),
         payload.is_public,
         monitor_assignments,
+        payload.allow_indexing,
+        payload.meta_title.as_deref(),
+        payload.meta_description.as_deref(),
+        payload.og_image_url.as_deref(),
+        payload.canonical_url.as_deref(),
     )
     .await?;
+
+    state.status_cache.invalidate(None).await;
 
     Ok((StatusCode::CREATED, Json(page)))
 }
@@ -90,8 +102,15 @@ pub async fn update_status_page(
         payload.description.as_deref(),
         payload.is_public,
         monitor_assignments,
+        payload.allow_indexing,
+        payload.meta_title.as_deref(),
+        payload.meta_description.as_deref(),
+        payload.og_image_url.as_deref(),
+        payload.canonical_url.as_deref(),
     )
     .await?;
+
+    state.status_cache.invalidate(None).await;
 
     Ok(Json(detail))
 }
@@ -102,5 +121,6 @@ pub async fn delete_status_page(
     Path(slug): Path<String>,
 ) -> Result<StatusCode, AppError> {
     status_pages::delete_status_page(&state.db, &slug).await?;
+    state.status_cache.invalidate(None).await;
     Ok(StatusCode::NO_CONTENT)
 }

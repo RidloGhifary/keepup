@@ -39,6 +39,7 @@ pub async fn create_maintenance(
     Json(payload): Json<CreateMaintenanceDto>,
 ) -> Result<(StatusCode, Json<MaintenanceWindowWithMonitors>), AppError> {
     let created = maintenance::create_maintenance_window(&state.db, payload).await?;
+    state.status_cache.invalidate(None).await;
     Ok((StatusCode::CREATED, Json(created)))
 }
 
@@ -51,6 +52,7 @@ pub async fn update_maintenance(
     Json(payload): Json<UpdateMaintenanceDto>,
 ) -> Result<Json<MaintenanceWindowWithMonitors>, AppError> {
     let updated = maintenance::update_maintenance_window(&state.db, &id, payload).await?;
+    state.status_cache.invalidate(None).await;
     Ok(Json(updated))
 }
 
@@ -62,6 +64,7 @@ pub async fn delete_maintenance(
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
     maintenance::delete_maintenance_window(&state.db, &id).await?;
+    state.status_cache.invalidate(None).await;
     Ok(StatusCode::NO_CONTENT)
 }
 

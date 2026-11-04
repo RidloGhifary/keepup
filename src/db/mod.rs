@@ -11,13 +11,12 @@ use std::str::FromStr;
 use std::time::Duration;
 use tracing::info;
 
-/// Initialise the SQLite connection pool with WAL mode, foreign keys, busy timeout,
-/// bounded page cache, and `0600` file permissions on Unix.
-pub async fn init_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+/// Build optimized SQLite connection options with WAL, NORMAL sync, generous cache,
+/// memory-mapped I/O, memory temp store, and busy timeouts.
+pub fn build_connect_options(database_url: &str) -> Result<SqliteConnectOptions, sqlx::Error> {
     let is_memory = database_url == ":memory:" || database_url == "sqlite::memory:";
 
     if !is_memory {
-        // Ensure the parent directory exists so SQLite can create the file.
         if let Some(parent) = std::path::Path::new(database_url).parent() {
             if !parent.as_os_str().is_empty() {
                 std::fs::create_dir_all(parent).ok();
@@ -31,22 +30,39 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
         format!("sqlite://{database_url}")
     };
 
-    let mut connect_options = SqliteConnectOptions::from_str(&uri)?
+    let mut opts = SqliteConnectOptions::from_str(&uri)?
         .create_if_missing(true)
-        .busy_timeout(Duration::from_secs(5))
+        .busy_timeout(Duration::from_millis(5000))
         .foreign_keys(true)
-        .pragma("cache_size", "-16000")
+        .pragma("cache_size", "-64000") // 64 MB page cache
+        .pragma("mmap_size", "268435456") // 256 MB memory-mapped I/O
+        .pragma("temp_store", "2") // Memory temp store
         .log_statements(tracing::log::LevelFilter::Debug);
 
     if !is_memory {
-        connect_options = connect_options
+        opts = opts
             .journal_mode(sqlx::sqlite::SqliteJournalMode::Wal)
             .synchronous(sqlx::sqlite::SqliteSynchronous::Normal);
     }
 
-    let max_conns = if is_memory { 1 } else { 8 };
-    let pool = SqlitePoolOptions::new()
-        .max_connections(max_conns)
+    Ok(opts)
+}
+
+/// Initialise dual connection pools:
+/// - `read_pool`: 10 connections for concurrent public status queries & dashboard reads.
+/// - `write_pool`: 1 dedicated connection for probe telemetry writes and mutations (guaranteeing zero write-write contention).
+pub async fn init_pools(database_url: &str) -> Result<(SqlitePool, SqlitePool), sqlx::Error> {
+    let is_memory = database_url == ":memory:" || database_url == "sqlite::memory:";
+    let connect_options = build_connect_options(database_url)?;
+
+    let read_conns = if is_memory { 1 } else { 10 };
+    let read_pool = SqlitePoolOptions::new()
+        .max_connections(read_conns)
+        .connect_with(connect_options.clone())
+        .await?;
+
+    let write_pool = SqlitePoolOptions::new()
+        .max_connections(1)
         .connect_with(connect_options)
         .await?;
 
@@ -64,8 +80,14 @@ pub async fn init_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
         }
     }
 
-    info!("SQLite pool initialised (WAL + foreign_keys=ON)");
-    Ok(pool)
+    info!("SQLite dual pools initialised (WAL mode, read: {read_conns} conns, write: 1 conn)");
+    Ok((read_pool, write_pool))
+}
+
+/// Initialise the SQLite connection pool with optimized PRAGMAs.
+pub async fn init_pool(database_url: &str) -> Result<SqlitePool, sqlx::Error> {
+    let (read_pool, _) = init_pools(database_url).await?;
+    Ok(read_pool)
 }
 
 /// Run embedded sqlx migrations against the given pool.

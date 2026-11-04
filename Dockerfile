@@ -19,7 +19,7 @@ RUN cargo build --release --bin keepup
 FROM alpine:3.21 AS runtime
 
 RUN apk upgrade --no-cache && \
-    apk add --no-cache ca-certificates tzdata sqlite-libs && \
+    apk add --no-cache ca-certificates tzdata && \
     addgroup -S keepup && adduser -S keepup -G keepup && \
     mkdir -p /data /app && \
     chown keepup:keepup /data && \

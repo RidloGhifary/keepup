@@ -492,6 +492,47 @@ pub async fn get_recent_check_logs(
     Ok(logs)
 }
 
+/// Purge historical check logs older than `retention_days` in chunks of `batch_size`.
+/// Chunked batch deletion prevents holding an exclusive write lock for extended periods,
+/// eliminating query bottlenecks while preventing database bloat over time.
+pub async fn purge_historical_check_logs(
+    pool: &SqlitePool,
+    retention_days: u32,
+    batch_size: u32,
+) -> Result<u64, sqlx::Error> {
+    let mut total_deleted = 0u64;
+    let bsize = batch_size.max(100) as i64;
+
+    loop {
+        let result = sqlx::query(
+            r#"
+            DELETE FROM check_logs
+            WHERE id IN (
+                SELECT id FROM check_logs
+                WHERE COALESCE(created_at, checked_at) < datetime('now', '-' || ? || ' days')
+                LIMIT ?
+            )
+            "#,
+        )
+        .bind(retention_days)
+        .bind(bsize)
+        .execute(pool)
+        .await?;
+
+        let affected = result.rows_affected();
+        total_deleted += affected;
+
+        if affected == 0 {
+            break;
+        }
+
+        // Yield slightly between chunks to allow other concurrent queries
+        tokio::time::sleep(std::time::Duration::from_millis(25)).await;
+    }
+
+    Ok(total_deleted)
+}
+
 #[cfg(test)]
 pub mod tests {
     use super::*;
@@ -677,5 +718,46 @@ pub mod tests {
         assert_eq!(logs.len(), 4);
         assert_eq!(logs[0].response_time_ms, Some(25));
         assert!(logs[0].is_up);
+    }
+
+    #[tokio::test]
+    async fn test_purge_historical_check_logs_retention() {
+        let pool = setup_test_db().await;
+
+        // Insert monitor
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, check_interval_secs) VALUES ('m-ret', 'Ret Test', 'https://example.com', 60)"
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Insert 5 old logs (older than 90 days)
+        for _ in 0..5 {
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, checked_at, created_at)
+                 VALUES ('m-ret', 200, 20, 1, datetime('now', '-95 days'), datetime('now', '-95 days'))"
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        // Insert 3 recent logs (recent 1 day)
+        for _ in 0..3 {
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, checked_at, created_at)
+                 VALUES ('m-ret', 200, 20, 1, datetime('now', '-1 day'), datetime('now', '-1 day'))"
+            )
+            .execute(&pool)
+            .await
+            .unwrap();
+        }
+
+        let purged = purge_historical_check_logs(&pool, 90, 2).await.unwrap();
+        assert_eq!(purged, 5);
+
+        let remaining = get_recent_check_logs(&pool, "m-ret", 50).await.unwrap();
+        assert_eq!(remaining.len(), 3);
     }
 }

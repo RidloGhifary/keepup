@@ -12,10 +12,33 @@ pub mod status_pages;
 
 use std::sync::Arc;
 
+use axum::http::{HeaderName, HeaderValue};
+use axum::middleware::Next;
+use axum::response::Response;
 use axum::routing::{get, post, put};
 use axum::Router;
 
 use crate::AppState;
+
+/// Middleware to inject `X-Robots-Tag: noindex, nofollow, noarchive` into all administrative
+/// and internal API responses while leaving public telemetry and status routes to manage their own visibility.
+async fn admin_robots_middleware(
+    req: axum::extract::Request,
+    next: Next,
+) -> Response {
+    let path = req.uri().path().to_string();
+    let mut res = next.run(req).await;
+    let is_public = path.starts_with("/api/public")
+        || path.starts_with("/api/v1/public")
+        || path.contains("/badge/");
+    if !is_public {
+        res.headers_mut().insert(
+            HeaderName::from_static("x-robots-tag"),
+            HeaderValue::from_static("noindex, nofollow, noarchive"),
+        );
+    }
+    res
+}
 
 /// Build a single shared API sub-router that is mounted identically at `/api` and `/api/v1`.
 fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
@@ -57,6 +80,8 @@ fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .put(admin::update_monitor)
                 .delete(monitors::delete),
         )
+        .route("/monitors/:id/clone", post(admin::clone_monitor))
+        .route("/admin/monitors/:id/clone", post(admin::clone_monitor))
         .route("/monitors/:id/logs", get(logs::by_monitor))
         .route(
             "/status-pages",
@@ -100,6 +125,18 @@ fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         )
         .route("/admin/monitors/:id/ping", post(admin::ping_monitor))
         .route("/monitors/:id/ping", post(admin::ping_monitor))
+        .route("/admin/monitors/pause-all", post(admin::pause_all_monitors))
+        .route("/monitors/pause-all", post(admin::pause_all_monitors))
+        .route("/admin/monitors/resume-all", post(admin::resume_all_monitors))
+        .route("/monitors/resume-all", post(admin::resume_all_monitors))
+        .route("/admin/monitors/bulk-pause", post(admin::bulk_pause_monitors))
+        .route("/monitors/bulk-pause", post(admin::bulk_pause_monitors))
+        .route("/admin/monitors/bulk-resume", post(admin::bulk_resume_monitors))
+        .route("/monitors/bulk-resume", post(admin::bulk_resume_monitors))
+        .route("/admin/monitors/bulk-delete", post(admin::bulk_delete_monitors))
+        .route("/monitors/bulk-delete", post(admin::bulk_delete_monitors))
+        .route("/admin/monitors/bulk-preview", post(admin::bulk_preview_monitors))
+        .route("/monitors/bulk-preview", post(admin::bulk_preview_monitors))
         .route("/admin/assets/expiry", get(admin::get_asset_expiry))
         .route("/assets/expiry", get(admin::get_asset_expiry))
         .route(
@@ -202,4 +239,5 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
         .nest("/api", build_v1_router(state.clone()))
         .nest("/api/v1", build_v1_router(state))
+        .layer(axum::middleware::from_fn(admin_robots_middleware))
 }

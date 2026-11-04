@@ -9,13 +9,15 @@ homepage = "https://github.com/RidloGhifary/keepup"
 
 [dependencies]
 # Async Runtime & Web Framework
-tokio = { version = "1.38", features = ["rt-multi-thread", "macros", "net", "time", "sync", "signal", "fs", "io-util"] }
+tokio = { version = "1.38", features = ["full"] }
 tokio-stream = { version = "0.1", features = ["sync"] }
-axum = { version = "0.7", features = ["macros"] }
-tower-http = { version = "0.5", features = ["cors", "compression-gzip", "set-header"] }
+axum = { version = "0.7", features = ["ws", "macros"] }
+tower-http = { version = "0.5", features = ["cors", "trace", "compression-full", "set-header"] }
+tower = { version = "0.5", features = ["util"] }
 
 # Database
 sqlx = { version = "0.8", features = ["runtime-tokio-rustls", "sqlite", "chrono", "migrate"] }
+libsqlite3-sys = { version = "0.30", features = ["bundled"] }
 
 # TLS & Certificates
 tokio-rustls = "0.26"
@@ -51,6 +53,10 @@ tower_governor = "0.4"
 governor = "0.6"
 sha2 = "0.10"
 hex = "0.4"
+
+# DNS & Ping Probes
+hickory-resolver = "0.26"
+surge-ping = "0.9"
 
 [dev-dependencies]
 tower = { version = "0.5", features = ["util"] }

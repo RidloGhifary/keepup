@@ -111,6 +111,54 @@ function validateUrlInput(input) {
 }
 window.validateUrlInput = validateUrlInput;
 
+function handleMonitorTypeChange(type) {
+  const t = (type || 'http').toLowerCase();
+  const urlLabel = document.getElementById('m-url-label');
+  const urlInput = document.getElementById('m-url');
+  const urlIndicator = document.getElementById('url-validation-indicator');
+  const urlDesc = document.getElementById('m-url-desc');
+  const tcpFields = document.getElementById('m-tcp-fields');
+  const dnsFields = document.getElementById('m-dns-fields');
+  const httpSecurityOptions = document.getElementById('m-http-security-options');
+
+  if (t === 'tcp') {
+    if (urlLabel) urlLabel.textContent = 'Host / IP Address';
+    if (urlInput) urlInput.placeholder = 'e.g. db.example.com or 192.168.1.100';
+    if (urlIndicator) urlIndicator.classList.add('hidden');
+    if (urlDesc) urlDesc.textContent = 'Target hostname or IP address without protocol';
+    if (tcpFields) tcpFields.classList.remove('hidden');
+    if (dnsFields) dnsFields.classList.add('hidden');
+    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+  } else if (t === 'dns') {
+    if (urlLabel) urlLabel.textContent = 'Domain / Hostname';
+    if (urlInput) urlInput.placeholder = 'e.g. example.com or one.one.one.one';
+    if (urlIndicator) urlIndicator.classList.add('hidden');
+    if (urlDesc) urlDesc.textContent = 'Target domain name to resolve via DNS queries';
+    if (tcpFields) tcpFields.classList.add('hidden');
+    if (dnsFields) dnsFields.classList.remove('hidden');
+    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+  } else if (t === 'ping') {
+    if (urlLabel) urlLabel.textContent = 'Target Host / IP Address';
+    if (urlInput) urlInput.placeholder = 'e.g. 8.8.8.8 or router.local';
+    if (urlIndicator) urlIndicator.classList.add('hidden');
+    if (urlDesc) urlDesc.textContent = 'Target host or IPv4/IPv6 address to probe via ICMP ping';
+    if (tcpFields) tcpFields.classList.add('hidden');
+    if (dnsFields) dnsFields.classList.add('hidden');
+    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+  } else {
+    // http
+    if (urlLabel) urlLabel.textContent = 'Target URL';
+    if (urlInput) urlInput.placeholder = 'https://api.example.com/health';
+    if (urlIndicator) urlIndicator.classList.remove('hidden');
+    if (urlDesc) urlDesc.textContent = 'Accepts standard HTTPS or HTTP endpoints with custom ports';
+    if (tcpFields) tcpFields.classList.add('hidden');
+    if (dnsFields) dnsFields.classList.add('hidden');
+    if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
+    if (urlInput) validateUrlInput(urlInput);
+  }
+}
+window.handleMonitorTypeChange = handleMonitorTypeChange;
+
 // ── Open Modals with Dynamic Data ────────────────────────────────────────────
 
 function onProbeTypeChange() {
@@ -185,8 +233,20 @@ function openEditMonitorModal(data) {
     if (submitBtn) submitBtn.innerText = 'Save Changes';
 
     document.getElementById('edit-monitor-id').value = monitor.id;
+    const typeSelect = document.getElementById('m-type');
+    const checkType = monitor.check_type || 'http';
+    if (typeSelect) typeSelect.value = checkType;
+    handleMonitorTypeChange(checkType);
+
     document.getElementById('m-name').value = monitor.name;
     document.getElementById('m-url').value = monitor.url;
+    const portEl = document.getElementById('m-port');
+    if (portEl) portEl.value = monitor.port || '';
+    const dnsTypeEl = document.getElementById('m-dns-record-type');
+    if (dnsTypeEl) dnsTypeEl.value = monitor.dns_record_type || 'A';
+    const dnsExpEl = document.getElementById('m-dns-expected-value');
+    if (dnsExpEl) dnsExpEl.value = monitor.dns_expected_value || '';
+
     document.getElementById('m-interval').value = monitor.check_interval_secs;
     document.getElementById('m-timeout').value = monitor.timeout_secs;
     document.getElementById('m-retries').value = monitor.max_retries;
@@ -274,6 +334,16 @@ function openEditMonitorModal(data) {
     document.getElementById('edit-monitor-id').value = '';
     const form = document.getElementById('monitor-form');
     if (form) form.reset();
+    const typeSelect = document.getElementById('m-type');
+    if (typeSelect) typeSelect.value = 'http';
+    handleMonitorTypeChange('http');
+    const portEl = document.getElementById('m-port');
+    if (portEl) portEl.value = '';
+    const dnsTypeEl = document.getElementById('m-dns-record-type');
+    if (dnsTypeEl) dnsTypeEl.value = 'A';
+    const dnsExpEl = document.getElementById('m-dns-expected-value');
+    if (dnsExpEl) dnsExpEl.value = '';
+
     document.getElementById('m-interval').value = 60;
     document.getElementById('m-timeout').value = 5;
     document.getElementById('m-retries').value = 3;
@@ -334,6 +404,83 @@ function openEditMonitorModal(data) {
 
   showModal();
 }
+
+function openCloneMonitorModal(monitor, channelIds = []) {
+  if (!monitor) return;
+
+  const title = document.getElementById('modal-title');
+  const subtitle = document.getElementById('modal-subtitle');
+  const submitBtn = document.getElementById('save-monitor-btn');
+
+  if (title) title.innerText = `Clone Monitor: ${monitor.name || 'Target'}`;
+  if (subtitle) subtitle.innerText = `Creating an independent replica pre-configured from ${monitor.name || 'target'}`;
+  if (submitBtn) submitBtn.innerText = 'Create Monitor';
+
+  // Crucial: Clear edit ID so submitting creates a brand new monitor
+  const idEl = document.getElementById('edit-monitor-id');
+  if (idEl) idEl.value = '';
+
+  const nameEl = document.getElementById('m-name');
+  if (nameEl) nameEl.value = monitor.name ? `${monitor.name} (Copy)` : 'New Monitor (Copy)';
+
+  const typeSelect = document.getElementById('m-type');
+  const checkType = monitor.check_type || 'http';
+  if (typeSelect) typeSelect.value = checkType;
+  handleMonitorTypeChange(checkType);
+
+  const urlEl = document.getElementById('m-url');
+  if (urlEl) urlEl.value = monitor.url || '';
+
+  const portEl = document.getElementById('m-port');
+  if (portEl) portEl.value = monitor.port || '';
+
+  const dnsTypeEl = document.getElementById('m-dns-record-type');
+  if (dnsTypeEl) dnsTypeEl.value = monitor.dns_record_type || 'A';
+
+  const dnsExpEl = document.getElementById('m-dns-expected-value');
+  if (dnsExpEl) dnsExpEl.value = monitor.dns_expected_value || '';
+
+  const intervalEl = document.getElementById('m-interval');
+  if (intervalEl) intervalEl.value = monitor.check_interval_secs || 60;
+
+  const timeoutEl = document.getElementById('m-timeout');
+  if (timeoutEl) timeoutEl.value = monitor.timeout_secs || 5;
+
+  const retriesEl = document.getElementById('m-retries');
+  if (retriesEl) retriesEl.value = monitor.max_retries || 3;
+
+  const activeEl = document.getElementById('m-active');
+  if (activeEl) activeEl.checked = monitor.is_active === 1 || monitor.is_active === true;
+
+  const publicEl = document.getElementById('m-public');
+  if (publicEl) publicEl.checked = monitor.is_public === 1 || monitor.is_public === true;
+
+  const domainExpiryEl = document.getElementById('m-domain-expiry');
+  const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
+  if (domainExpiryEl) {
+    domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
+    toggleDomainWarningInput();
+  }
+  if (domainWarningDaysEl) {
+    domainWarningDaysEl.value = monitor.domain_warning_days || 30;
+  }
+
+  const sslEl = document.getElementById('m-ssl');
+  const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
+  if (sslEl) {
+    sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
+    toggleSslWarningInput();
+  }
+  if (sslWarningDaysEl) {
+    sslWarningDaysEl.value = monitor.ssl_warning_days || 30;
+  }
+
+  if (urlEl) validateUrlInput(urlEl);
+
+  loadMonitorChannelsChecklist(channelIds);
+  showModal();
+}
+window.openCloneMonitorModal = openCloneMonitorModal;
 
 function openEditWebhookModal(data) {
   const webhookModal = document.getElementById('webhook-modal');
@@ -528,10 +675,23 @@ async function handleMonitorSubmit(e) {
   const channelCheckboxes = document.querySelectorAll('input[name="monitor-channel"]:checked');
   const channel_ids = Array.from(channelCheckboxes).map((cb) => cb.value);
 
-  const probeType = document.getElementById('m-probe-type')?.value || 'http';
+  const check_type = document.getElementById('m-probe-type')?.value || document.getElementById('m-type')?.value || 'http';
   let url = document.getElementById('m-url')?.value?.trim() || '';
-  if (probeType === 'push' && !url.startsWith('push://')) {
+  if (check_type === 'push' && !url.startsWith('push://')) {
     url = 'push://heartbeat';
+  }
+
+  let port = null;
+  if (check_type === 'tcp') {
+    const pVal = parseInt(document.getElementById('m-port')?.value || '');
+    port = isNaN(pVal) ? null : pVal;
+  }
+  let dns_record_type = null;
+  let dns_expected_value = null;
+  if (check_type === 'dns') {
+    dns_record_type = document.getElementById('m-dns-record-type')?.value || 'A';
+    const expVal = document.getElementById('m-dns-expected')?.value?.trim() || document.getElementById('m-dns-expected-value')?.value?.trim() || '';
+    dns_expected_value = expVal ? expVal : null;
   }
 
   const degradedLatencyVal = document.getElementById('m-degraded-latency')?.value?.trim();
@@ -545,11 +705,16 @@ async function handleMonitorSubmit(e) {
     max_retries: parseInt(document.getElementById('m-retries')?.value || '3'),
     is_active: document.getElementById('m-active') ? document.getElementById('m-active').checked : true,
     is_public: document.getElementById('m-public') ? document.getElementById('m-public').checked : true,
-    check_domain_expiry: domainExpiryEl ? domainExpiryEl.checked : false,
+    check_domain_expiry: check_type === 'http' && domainExpiryEl ? domainExpiryEl.checked : false,
     domain_warning_days: domainWarningDaysEl ? parseInt(domainWarningDaysEl.value || '30') : 30,
-    check_ssl: sslEl ? sslEl.checked : false,
+    check_ssl: check_type === 'http' && sslEl ? sslEl.checked : false,
     ssl_warning_days: sslWarningDaysEl ? parseInt(sslWarningDaysEl.value || '30') : 30,
     channel_ids,
+    check_type,
+    port,
+    dns_record_type: dns_record_type || 'A',
+    dns_expected_value,
+    dns_expected: dns_expected_value,
     http_method: document.getElementById('m-http-method')?.value || 'GET',
     expected_status: document.getElementById('m-expected-status')?.value?.trim() || '200-299',
     request_headers: document.getElementById('m-request-headers')?.value?.trim() || null,
@@ -557,8 +722,6 @@ async function handleMonitorSubmit(e) {
     json_pointer: document.getElementById('m-json-pointer')?.value?.trim() || null,
     json_expected: document.getElementById('m-json-expected')?.value?.trim() || null,
     degraded_latency_ms,
-    dns_record_type: document.getElementById('m-dns-record-type')?.value || 'A',
-    dns_expected: document.getElementById('m-dns-expected')?.value?.trim() || null,
     resend_interval_mins: parseInt(document.getElementById('m-resend-interval')?.value || '0'),
     grace_secs: parseInt(document.getElementById('m-grace-secs')?.value || '60'),
   };
@@ -1044,12 +1207,111 @@ function renderStatusPagesList(pages) {
     .join('');
 }
 
+function updateStatusPageSeoPreview() {
+  const isPublicEl = document.getElementById('sp-is-public');
+  const allowIndexingEl = document.getElementById('sp-allow-indexing');
+  const slugEl = document.getElementById('sp-slug');
+  const titleEl = document.getElementById('sp-title');
+  const descEl = document.getElementById('sp-desc');
+  const metaTitleEl = document.getElementById('sp-meta-title');
+  const metaDescEl = document.getElementById('sp-meta-desc');
+  const ogImageEl = document.getElementById('sp-og-image');
+  const canonicalUrlEl = document.getElementById('sp-canonical-url');
+
+  const metaTitleCountEl = document.getElementById('sp-meta-title-count');
+  const metaDescCountEl = document.getElementById('sp-meta-desc-count');
+  const previewUrlEl = document.getElementById('sp-preview-url');
+  const previewTitleEl = document.getElementById('sp-preview-title');
+  const previewDescEl = document.getElementById('sp-preview-desc');
+  const noindexBadgeEl = document.getElementById('sp-preview-noindex-badge');
+  const previewOgImgEl = document.getElementById('sp-preview-og-img');
+  const previewOgPlaceholderEl = document.getElementById('sp-preview-og-placeholder');
+  const previewSocialDomainEl = document.getElementById('sp-preview-social-domain');
+  const previewSocialTitleEl = document.getElementById('sp-preview-social-title');
+  const previewSocialDescEl = document.getElementById('sp-preview-social-desc');
+
+  const metaTitleVal = metaTitleEl ? metaTitleEl.value : '';
+  const metaDescVal = metaDescEl ? metaDescEl.value : '';
+  if (metaTitleCountEl) metaTitleCountEl.textContent = `${metaTitleVal.length} / 60`;
+  if (metaDescCountEl) metaDescCountEl.textContent = `${metaDescVal.length} / 160`;
+
+  const fallbackTitle = (titleEl && titleEl.value.trim()) || 'KeepUp — Status & Dashboard';
+  const effectiveTitle = (metaTitleVal && metaTitleVal.trim()) || fallbackTitle;
+
+  const fallbackDesc = (descEl && descEl.value.trim()) || 'Real-time system status and service health telemetry powered by KeepUp.';
+  const effectiveDesc = (metaDescVal && metaDescVal.trim()) || fallbackDesc;
+
+  const slug = (slugEl && slugEl.value.trim().toLowerCase()) || 'default';
+  const host = window.location.host || 'status.example.com';
+  const protocol = window.location.protocol || 'https:';
+  const defaultUrl = slug === 'default'
+    ? `${protocol}//${host}/status`
+    : `${protocol}//${host}/status/${encodeURIComponent(slug)}`;
+  const canonicalVal = (canonicalUrlEl && canonicalUrlEl.value.trim()) || '';
+  const effectiveUrl = canonicalVal || defaultUrl;
+
+  let displayDomain = host;
+  try {
+    const parsed = new URL(effectiveUrl);
+    displayDomain = parsed.hostname;
+  } catch (_) {}
+
+  if (previewUrlEl) previewUrlEl.textContent = effectiveUrl;
+  if (previewTitleEl) previewTitleEl.textContent = effectiveTitle;
+  if (previewDescEl) previewDescEl.textContent = effectiveDesc;
+
+  if (previewSocialDomainEl) previewSocialDomainEl.textContent = displayDomain;
+  if (previewSocialTitleEl) previewSocialTitleEl.textContent = effectiveTitle;
+  if (previewSocialDescEl) previewSocialDescEl.textContent = effectiveDesc;
+
+  const isIndexingAllowed = allowIndexingEl ? allowIndexingEl.checked : true;
+  if (typeof syncStatusPageIndexingVisibility === 'function') {
+    syncStatusPageIndexingVisibility(isIndexingAllowed);
+  } else {
+    const seoDetailsEl = document.getElementById('sp-seo-details');
+    if (seoDetailsEl) {
+      if (isIndexingAllowed) {
+        seoDetailsEl.classList.remove('hidden');
+      } else {
+        seoDetailsEl.classList.add('hidden');
+      }
+    }
+  }
+
+  if (noindexBadgeEl) {
+    if (isIndexingAllowed) {
+      noindexBadgeEl.classList.add('hidden');
+    } else {
+      noindexBadgeEl.classList.remove('hidden');
+    }
+  }
+
+  const ogImageUrl = ogImageEl ? ogImageEl.value.trim() : '';
+  if (previewOgImgEl && previewOgPlaceholderEl) {
+    if (ogImageUrl) {
+      previewOgImgEl.src = ogImageUrl;
+      previewOgImgEl.classList.remove('hidden');
+      previewOgPlaceholderEl.classList.add('hidden');
+    } else {
+      previewOgImgEl.src = '';
+      previewOgImgEl.classList.add('hidden');
+      previewOgPlaceholderEl.classList.remove('hidden');
+    }
+  }
+}
+window.updateStatusPageSeoPreview = updateStatusPageSeoPreview;
+
 function openCreateStatusPageForm() {
   const isEditEl = document.getElementById('sp-is-edit');
   const slugEl = document.getElementById('sp-slug');
   const titleEl = document.getElementById('sp-title');
   const descEl = document.getElementById('sp-desc');
   const isPublicEl = document.getElementById('sp-is-public');
+  const allowIndexingEl = document.getElementById('sp-allow-indexing');
+  const metaTitleEl = document.getElementById('sp-meta-title');
+  const metaDescEl = document.getElementById('sp-meta-desc');
+  const ogImageEl = document.getElementById('sp-og-image');
+  const canonicalUrlEl = document.getElementById('sp-canonical-url');
   const submitBtn = document.getElementById('sp-submit-btn');
 
   if (isEditEl) isEditEl.value = 'false';
@@ -1060,9 +1322,18 @@ function openCreateStatusPageForm() {
   if (titleEl) titleEl.value = '';
   if (descEl) descEl.value = '';
   if (isPublicEl) isPublicEl.checked = true;
+  if (allowIndexingEl) allowIndexingEl.checked = true;
+  if (typeof syncStatusPageIndexingVisibility === 'function') {
+    syncStatusPageIndexingVisibility(true);
+  }
+  if (metaTitleEl) metaTitleEl.value = '';
+  if (metaDescEl) metaDescEl.value = '';
+  if (ogImageEl) ogImageEl.value = '';
+  if (canonicalUrlEl) canonicalUrlEl.value = '';
   if (submitBtn) submitBtn.innerText = 'Create Status Page';
 
   populateMonitorsChecklist([]);
+  updateStatusPageSeoPreview();
   switchStatusPageTab('form');
 }
 
@@ -1072,6 +1343,11 @@ async function openEditStatusPageForm(slug) {
   const titleEl = document.getElementById('sp-title');
   const descEl = document.getElementById('sp-desc');
   const isPublicEl = document.getElementById('sp-is-public');
+  const allowIndexingEl = document.getElementById('sp-allow-indexing');
+  const metaTitleEl = document.getElementById('sp-meta-title');
+  const metaDescEl = document.getElementById('sp-meta-desc');
+  const ogImageEl = document.getElementById('sp-og-image');
+  const canonicalUrlEl = document.getElementById('sp-canonical-url');
   const submitBtn = document.getElementById('sp-submit-btn');
 
   try {
@@ -1090,9 +1366,19 @@ async function openEditStatusPageForm(slug) {
     if (titleEl) titleEl.value = page.title;
     if (descEl) descEl.value = page.description || '';
     if (isPublicEl) isPublicEl.checked = page.is_public !== false;
+    const isIndexing = page.allow_indexing !== false;
+    if (allowIndexingEl) allowIndexingEl.checked = isIndexing;
+    if (typeof syncStatusPageIndexingVisibility === 'function') {
+      syncStatusPageIndexingVisibility(isIndexing);
+    }
+    if (metaTitleEl) metaTitleEl.value = page.meta_title || '';
+    if (metaDescEl) metaDescEl.value = page.meta_description || '';
+    if (ogImageEl) ogImageEl.value = page.og_image_url || '';
+    if (canonicalUrlEl) canonicalUrlEl.value = page.canonical_url || '';
     if (submitBtn) submitBtn.innerText = 'Save Changes';
 
     populateMonitorsChecklist(page.monitors || []);
+    updateStatusPageSeoPreview();
     switchStatusPageTab('form');
   } catch (err) {
     if (window.showToast) window.showToast('Network error loading status page', 'error');
@@ -1152,6 +1438,21 @@ async function handleStatusPageSubmit(event) {
   const title = document.getElementById('sp-title').value.trim();
   const description = document.getElementById('sp-desc').value.trim() || null;
   const isPublic = document.getElementById('sp-is-public').checked;
+  const allowIndexing = document.getElementById('sp-allow-indexing')
+    ? document.getElementById('sp-allow-indexing').checked
+    : true;
+  const metaTitle = document.getElementById('sp-meta-title')
+    ? (document.getElementById('sp-meta-title').value.trim() || null)
+    : null;
+  const metaDescription = document.getElementById('sp-meta-desc')
+    ? (document.getElementById('sp-meta-desc').value.trim() || null)
+    : null;
+  const ogImageUrl = document.getElementById('sp-og-image')
+    ? (document.getElementById('sp-og-image').value.trim() || null)
+    : null;
+  const canonicalUrl = document.getElementById('sp-canonical-url')
+    ? (document.getElementById('sp-canonical-url').value.trim() || null)
+    : null;
 
   if (!slug) {
     if (window.showToast) window.showToast('Please enter a valid page slug', 'warning');
@@ -1196,6 +1497,11 @@ async function handleStatusPageSubmit(event) {
           description,
           is_public: isPublic,
           monitors,
+          allow_indexing: allowIndexing,
+          meta_title: metaTitle,
+          meta_description: metaDescription,
+          og_image_url: ogImageUrl,
+          canonical_url: canonicalUrl,
         }),
       });
 
@@ -1214,6 +1520,11 @@ async function handleStatusPageSubmit(event) {
           description,
           is_public: isPublic,
           monitors,
+          allow_indexing: allowIndexing,
+          meta_title: metaTitle,
+          meta_description: metaDescription,
+          og_image_url: ogImageUrl,
+          canonical_url: canonicalUrl,
         }),
       });
 
@@ -1715,6 +2026,10 @@ document.addEventListener('DOMContentLoaded', () => {
       const badgeModal = document.getElementById('badge-modal');
       if (badgeModal && !badgeModal.classList.contains('hidden') && typeof closeBadgeModal === 'function') {
         closeBadgeModal();
+      }
+      const singleDelModal = document.getElementById('single-delete-modal');
+      if (singleDelModal && !singleDelModal.classList.contains('hidden') && typeof closeSingleDeleteModal === 'function') {
+        closeSingleDeleteModal();
       }
     }
   });

@@ -1,4 +1,4 @@
-use std::collections::HashSet;
+use std::collections::{HashMap, HashSet};
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -44,6 +44,14 @@ pub struct Monitor {
     pub last_ssl_alert_days: Option<i32>,
     pub ssl_last_checked_at: Option<String>,
     #[sqlx(default)]
+    pub check_type: String,
+    #[sqlx(default)]
+    pub port: Option<i32>,
+    #[sqlx(default)]
+    pub dns_record_type: Option<String>,
+    #[sqlx(default)]
+    pub dns_expected_value: Option<String>,
+    #[sqlx(default)]
     pub http_method: String,
     #[sqlx(default)]
     pub expected_status: String,
@@ -57,8 +65,6 @@ pub struct Monitor {
     pub json_expected: Option<String>,
     #[sqlx(default)]
     pub degraded_latency_ms: Option<i64>,
-    #[sqlx(default)]
-    pub dns_record_type: String,
     #[sqlx(default)]
     pub dns_expected: Option<String>,
     #[sqlx(default)]
@@ -160,13 +166,35 @@ pub async fn run_scheduler(
 ) {
     info!("Health-check scheduler started with bounded concurrency (32 workers)");
 
-    let pool = state.db.clone();
+    let read_pool = state.db.clone();
+    let write_pool = state.write_db.clone();
     let client = state.http_client.clone();
     let allow_private = state.config.allow_private_targets;
     let retention_days = state.config.retention_days;
 
     // Prune check logs on startup and periodically every 1 hour
-    let _ = prune_old_check_logs(&pool, retention_days).await;
+    let _ = prune_old_check_logs(&write_pool, retention_days).await;
+
+    // Spawn 12-hour background retention purge task
+    let purge_pool = write_pool.clone();
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(12 * 3600));
+        loop {
+            interval.tick().await;
+            tracing::info!(retention_days, "Running scheduled historical check_logs retention purge");
+            match crate::db::checks::purge_historical_check_logs(&purge_pool, retention_days, 500).await {
+                Ok(deleted) if deleted > 0 => {
+                    tracing::info!(deleted, "Historical check_logs retention purge complete");
+                }
+                Ok(_) => {
+                    tracing::debug!("Historical check_logs retention purge: no expired records found");
+                }
+                Err(e) => {
+                    tracing::error!("Historical check_logs retention purge failed: {e}");
+                }
+            }
+        }
+    });
 
     let semaphore = Arc::new(tokio::sync::Semaphore::new(32));
     let in_flight = Arc::new(tokio::sync::Mutex::new(HashSet::new()));
@@ -178,7 +206,7 @@ pub async fn run_scheduler(
     loop {
         tokio::select! {
             _ = prune_tick.tick() => {
-                let pool_prune = pool.clone();
+                let pool_prune = write_pool.clone();
                 tokio::spawn(async move {
                     if let Err(e) = prune_old_check_logs(&pool_prune, retention_days).await {
                         error!("Periodic log pruning error: {e}");
@@ -188,13 +216,17 @@ pub async fn run_scheduler(
             _ = tick.tick() => {
                 check_push_deadlines(&state).await;
 
-                let monitors = match fetch_due_monitors(&pool).await {
+                let monitors = match fetch_due_monitors(&read_pool).await {
                     Ok(m) => m,
                     Err(e) => {
                         error!("Failed to query due monitors: {e}");
                         continue;
                     }
                 };
+
+                if monitors.is_empty() {
+                    continue;
+                }
 
                 for monitor in monitors {
                     let mut flight = in_flight.lock().await;
@@ -208,7 +240,7 @@ pub async fn run_scheduler(
                         Err(_) => break,
                     };
 
-                    let pool_task = pool.clone();
+                    let pool_task = write_pool.clone();
                     let client_task = client.clone();
                     let state_task = state.clone();
                     let in_flight_task = in_flight.clone();
@@ -290,7 +322,8 @@ pub async fn run_scheduler(
                 match reload_res {
                     Ok(monitor_id) => {
                         info!(monitor_id = %monitor_id, "Reload signal received; re-arming monitor check immediately");
-                        if let Ok(Some(monitor)) = fetch_monitor_by_id(&pool, &monitor_id).await {
+                        state.invalidate_status_cache().await;
+                        if let Ok(Some(monitor)) = fetch_monitor_by_id(&read_pool, &monitor_id).await {
                             let mut flight = in_flight.lock().await;
                             if !flight.insert(monitor.id.clone()) {
                                 continue;
@@ -302,7 +335,7 @@ pub async fn run_scheduler(
                                 Err(_) => break,
                             };
 
-                            let pool_task = pool.clone();
+                            let pool_task = write_pool.clone();
                             let client_task = client.clone();
                             let state_task = state.clone();
                             let in_flight_task = in_flight.clone();
@@ -382,16 +415,25 @@ pub async fn execute_probe(
     monitor: &Monitor,
     allow_private: bool,
 ) -> CheckResult {
-    if monitor.url.starts_with("tcp://") {
-        crate::checker::tcp::ping_tcp(&monitor.url, monitor.timeout_secs as u64, allow_private).await
-    } else if monitor.url.starts_with("dns://") {
+    let check_type_str = if monitor.check_type.is_empty() {
+        "http"
+    } else {
+        &monitor.check_type
+    };
+
+    if check_type_str == "tcp" || monitor.url.starts_with("tcp://") {
+        crate::checker::tcp::ping_tcp_checked(&monitor.url, monitor.port, monitor.timeout_secs as u64, allow_private).await
+    } else if check_type_str == "dns" || monitor.url.starts_with("dns://") {
+        let expected = monitor.dns_expected.as_deref().or(monitor.dns_expected_value.as_deref());
         crate::checker::dns::ping_dns(
             &monitor.url,
-            Some(&monitor.dns_record_type),
-            monitor.dns_expected.as_deref(),
+            monitor.dns_record_type.as_deref().or(Some("A")),
+            expected,
             monitor.timeout_secs as u64,
         )
         .await
+    } else if check_type_str == "ping" || monitor.url.starts_with("ping://") {
+        crate::checker::ping::ping_icmp(&monitor.url, monitor.timeout_secs as u64).await
     } else {
         let probe_cfg = crate::checker::http::HttpProbeConfig {
             url: &monitor.url,
@@ -427,7 +469,9 @@ pub async fn run_check_and_evaluate(
     let mut domain_days: Option<i32> = monitor.domain_days_remaining;
     let mut domain_expires: Option<String> = monitor.domain_expires_at.clone();
 
-    if should_check_domain(monitor) {
+let is_http = monitor.check_type.is_empty() || monitor.check_type == "http";
+
+    if is_http && should_check_domain(monitor) {
         match crate::checker::domain::check_domain_expiration(client, &monitor.url).await {
             Ok(info) => {
                 domain_days = Some(info.days_remaining as i32);
@@ -441,6 +485,17 @@ pub async fn run_check_and_evaluate(
                 .await
                 {
                     error!(monitor_id = %monitor.id, "Failed to update domain expiry in DB: {e}");
+                }
+            }
+            Err(e) => {
+                warn!(monitor = %monitor.name, "RDAP domain expiration check failed: {e}");
+            }
+        }
+    } else if let Some(ref exp_str) = monitor.domain_expires_at {
+        if let Ok((_, remaining)) = crate::checker::domain::calculate_days_remaining(exp_str, Utc::now()) {
+            domain_days = Some(remaining as i32);
+        }
+    }
                 }
             }
             Err(e) => {
@@ -513,7 +568,7 @@ pub async fn run_check_and_evaluate(
     let mut ssl_days: Option<i32> = monitor.ssl_days_remaining;
     let mut _ssl_expires: Option<String> = monitor.ssl_expires_at.clone();
 
-    if should_check_ssl(monitor) {
+    if is_http && should_check_ssl(monitor) {
         match crate::checker::tls::check_ssl_expiration(&monitor.url, 10, allow_private).await {
             Ok(info) => {
                 ssl_days = Some(info.days_remaining as i32);
@@ -532,6 +587,10 @@ pub async fn run_check_and_evaluate(
             Err(e) => {
                 warn!(monitor = %monitor.name, "TLS/SSL certificate check failed: {e}");
             }
+        }
+    } else if let Some(ref exp_str) = monitor.ssl_expires_at {
+        if let Ok((_, remaining)) = crate::checker::domain::calculate_days_remaining(exp_str, Utc::now()) {
+            ssl_days = Some(remaining as i32);
         }
     } else if let Some(ref exp_str) = monitor.ssl_expires_at {
         if let Ok((_, remaining)) = crate::checker::domain::calculate_days_remaining(exp_str, Utc::now()) {
@@ -595,7 +654,7 @@ pub async fn run_check_and_evaluate(
         }
     }
 
-    let result = execute_probe(client, monitor, allow_private).await;
+let result = execute_probe(client, monitor, allow_private).await;
 
     if in_maintenance {
         // Persist check log with is_up = true (no SLA penalty) and error_msg = "MAINTENANCE"
@@ -866,8 +925,9 @@ pub async fn fetch_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Option<M
                m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
                m.last_domain_alert_days, m.domain_last_checked_at,
                m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.last_ssl_alert_days, m.ssl_last_checked_at,
+               m.check_type, m.port, m.dns_record_type, m.dns_expected_value,
                m.http_method, m.expected_status, m.request_headers, m.body_keyword, m.json_pointer, m.json_expected,
-               m.degraded_latency_ms, m.dns_record_type, m.dns_expected,
+               m.degraded_latency_ms, m.dns_expected,
                m.resend_interval_mins, m.last_alerted_at
         FROM   monitors m
         WHERE  m.id = ? AND m.is_active = 1
@@ -887,8 +947,9 @@ pub async fn fetch_due_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, sqlx:
                m.check_domain_expiry, m.domain_warning_days, m.domain_expires_at, m.domain_days_remaining,
                m.last_domain_alert_days, m.domain_last_checked_at,
                m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.last_ssl_alert_days, m.ssl_last_checked_at,
+               m.check_type, m.port, m.dns_record_type, m.dns_expected_value,
                m.http_method, m.expected_status, m.request_headers, m.body_keyword, m.json_pointer, m.json_expected,
-               m.degraded_latency_ms, m.dns_record_type, m.dns_expected,
+               m.degraded_latency_ms, m.dns_expected,
                m.resend_interval_mins, m.last_alerted_at
         FROM   monitors m
         WHERE  m.is_active = 1
@@ -1153,6 +1214,10 @@ mod tests {
             ssl_days_remaining: None,
             last_ssl_alert_days: None,
             ssl_last_checked_at: None,
+            check_type: "http".to_string(),
+            port: None,
+            dns_record_type: None,
+            dns_expected_value: None,
             http_method: "GET".to_string(),
             expected_status: "200-299".to_string(),
             request_headers: None,
@@ -1160,7 +1225,6 @@ mod tests {
             json_pointer: None,
             json_expected: None,
             degraded_latency_ms: None,
-            dns_record_type: "A".to_string(),
             dns_expected: None,
             resend_interval_mins: 0,
             last_alerted_at: None,
