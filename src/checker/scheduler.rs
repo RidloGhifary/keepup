@@ -1,4 +1,5 @@
 use std::collections::HashMap;
+use std::sync::Arc;
 use std::time::Duration;
 
 use chrono::Utc;
@@ -84,21 +85,48 @@ impl Default for MonitorState {
 /// Also listens on `reload_rx` broadcast channel to re-arm monitor checks
 /// immediately upon edit/update.
 pub async fn run_scheduler(
-    pool: SqlitePool,
+    read_pool: SqlitePool,
+    write_pool: SqlitePool,
     client: Client,
     mut reload_rx: tokio::sync::broadcast::Receiver<String>,
+    retention_days: u32,
+    status_cache: crate::api::public::PublicStatusCache,
 ) {
     info!("Health-check scheduler started");
+
+    // Spawn 12-hour background retention purge task
+    let purge_pool = write_pool.clone();
+    tokio::spawn(async move {
+        let mut interval = time::interval(Duration::from_secs(12 * 3600));
+        loop {
+            interval.tick().await;
+            tracing::info!(retention_days, "Running scheduled historical check_logs retention purge");
+            match crate::db::checks::purge_historical_check_logs(&purge_pool, retention_days, 500).await {
+                Ok(deleted) if deleted > 0 => {
+                    tracing::info!(deleted, "Historical check_logs retention purge complete");
+                }
+                Ok(_) => {
+                    tracing::debug!("Historical check_logs retention purge: no expired records found");
+                }
+                Err(e) => {
+                    tracing::error!("Historical check_logs retention purge failed: {e}");
+                }
+            }
+        }
+    });
 
     // In-memory map: monitor_id → live state.
     let mut states: HashMap<String, MonitorState> = HashMap::new();
 
     let mut tick = time::interval(Duration::from_secs(1));
 
+    // Semaphore to enforce bounded concurrency for check execution (max 25 concurrent probes)
+    let probe_semaphore = Arc::new(tokio::sync::Semaphore::new(25));
+
     loop {
         tokio::select! {
             _ = tick.tick() => {
-                let monitors = match fetch_due_monitors(&pool).await {
+                let monitors = match fetch_due_monitors(&read_pool).await {
                     Ok(m) => m,
                     Err(e) => {
                         error!("Failed to query due monitors: {e}");
@@ -106,8 +134,15 @@ pub async fn run_scheduler(
                     }
                 };
 
+                if monitors.is_empty() {
+                    continue;
+                }
+
+                let mut join_set = tokio::task::JoinSet::new();
+
                 for monitor in monitors {
-                    let pool = pool.clone();
+                    let sem = probe_semaphore.clone();
+                    let write_pool = write_pool.clone();
                     let client = client.clone();
 
                     let state = states
@@ -127,17 +162,37 @@ pub async fn run_scheduler(
                         })
                         .clone();
 
-                    let (new_state, alert) =
-                        run_check_and_evaluate(&pool, &client, &monitor, &state).await;
+                    join_set.spawn(async move {
+                        let _permit = sem.acquire_owned().await.ok();
+                        let (new_state, alert) =
+                            run_check_and_evaluate(&write_pool, &client, &monitor, &state).await;
+                        (monitor.id, new_state, alert)
+                    });
+                }
 
-                    states.insert(monitor.id.clone(), new_state);
+                while let Some(res) = join_set.join_next().await {
+                    match res {
+                        Ok((monitor_id, new_state, alert)) => {
+                            let prev_status = states.get(&monitor_id).map(|s| s.status.clone());
+                            let status_changed = prev_status.as_deref() != Some(&new_state.status);
 
-                    if let Some(payload) = alert {
-                        let pool = pool.clone();
-                        let client = client.clone();
-                        tokio::spawn(async move {
-                            crate::alerting::dispatch_alerts(&pool, &client, &payload).await;
-                        });
+                            states.insert(monitor_id, new_state);
+
+                            if status_changed {
+                                status_cache.invalidate(None).await;
+                            }
+
+                            if let Some(payload) = alert {
+                                let write_pool = write_pool.clone();
+                                let client = client.clone();
+                                tokio::spawn(async move {
+                                    crate::alerting::dispatch_alerts(&write_pool, &client, &payload).await;
+                                });
+                            }
+                        }
+                        Err(e) => {
+                            error!("Error in concurrent monitor probe task: {e}");
+                        }
                     }
                 }
             }
@@ -145,8 +200,9 @@ pub async fn run_scheduler(
                 match reload_res {
                     Ok(monitor_id) => {
                         info!(monitor_id = %monitor_id, "Reload signal received; re-arming monitor check immediately");
-                        if let Ok(Some(monitor)) = fetch_monitor_by_id(&pool, &monitor_id).await {
-                            let pool = pool.clone();
+                        status_cache.invalidate(None).await;
+                        if let Ok(Some(monitor)) = fetch_monitor_by_id(&read_pool, &monitor_id).await {
+                            let write_pool = write_pool.clone();
                             let client = client.clone();
 
                             let state = states
@@ -167,15 +223,22 @@ pub async fn run_scheduler(
                                 .clone();
 
                             let (new_state, alert) =
-                                run_check_and_evaluate(&pool, &client, &monitor, &state).await;
+                                run_check_and_evaluate(&write_pool, &client, &monitor, &state).await;
+
+                            let prev_status = states.get(&monitor.id).map(|s| s.status.clone());
+                            let status_changed = prev_status.as_deref() != Some(&new_state.status);
 
                             states.insert(monitor.id.clone(), new_state);
 
+                            if status_changed {
+                                status_cache.invalidate(None).await;
+                            }
+
                             if let Some(payload) = alert {
-                                let pool = pool.clone();
+                                let write_pool = write_pool.clone();
                                 let client = client.clone();
                                 tokio::spawn(async move {
-                                    crate::alerting::dispatch_alerts(&pool, &client, &payload).await;
+                                    crate::alerting::dispatch_alerts(&write_pool, &client, &payload).await;
                                 });
                             }
                         }

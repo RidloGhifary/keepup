@@ -1114,6 +1114,19 @@ function updateStatusPageSeoPreview() {
   if (previewSocialDescEl) previewSocialDescEl.textContent = effectiveDesc;
 
   const isIndexingAllowed = allowIndexingEl ? allowIndexingEl.checked : true;
+  if (typeof syncStatusPageIndexingVisibility === 'function') {
+    syncStatusPageIndexingVisibility(isIndexingAllowed);
+  } else {
+    const seoDetailsEl = document.getElementById('sp-seo-details');
+    if (seoDetailsEl) {
+      if (isIndexingAllowed) {
+        seoDetailsEl.classList.remove('hidden');
+      } else {
+        seoDetailsEl.classList.add('hidden');
+      }
+    }
+  }
+
   if (noindexBadgeEl) {
     if (isIndexingAllowed) {
       noindexBadgeEl.classList.add('hidden');
@@ -1135,6 +1148,7 @@ function updateStatusPageSeoPreview() {
     }
   }
 }
+window.updateStatusPageSeoPreview = updateStatusPageSeoPreview;
 
 function openCreateStatusPageForm() {
   const isEditEl = document.getElementById('sp-is-edit');
@@ -1158,6 +1172,9 @@ function openCreateStatusPageForm() {
   if (descEl) descEl.value = '';
   if (isPublicEl) isPublicEl.checked = true;
   if (allowIndexingEl) allowIndexingEl.checked = true;
+  if (typeof syncStatusPageIndexingVisibility === 'function') {
+    syncStatusPageIndexingVisibility(true);
+  }
   if (metaTitleEl) metaTitleEl.value = '';
   if (metaDescEl) metaDescEl.value = '';
   if (ogImageEl) ogImageEl.value = '';
@@ -1198,7 +1215,11 @@ async function openEditStatusPageForm(slug) {
     if (titleEl) titleEl.value = page.title;
     if (descEl) descEl.value = page.description || '';
     if (isPublicEl) isPublicEl.checked = page.is_public !== false;
-    if (allowIndexingEl) allowIndexingEl.checked = page.allow_indexing !== false;
+    const isIndexing = page.allow_indexing !== false;
+    if (allowIndexingEl) allowIndexingEl.checked = isIndexing;
+    if (typeof syncStatusPageIndexingVisibility === 'function') {
+      syncStatusPageIndexingVisibility(isIndexing);
+    }
     if (metaTitleEl) metaTitleEl.value = page.meta_title || '';
     if (metaDescEl) metaDescEl.value = page.meta_description || '';
     if (ogImageEl) ogImageEl.value = page.og_image_url || '';

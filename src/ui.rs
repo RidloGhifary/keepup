@@ -23,6 +23,18 @@ fn escape_html(s: &str) -> String {
         .replace('>', "&gt;")
 }
 
+/// Helper to determine the Cache-Control policy based on file extension.
+fn cache_control_for(path: &str) -> &'static str {
+    let ext = path.rsplit('.').next().unwrap_or("");
+    match ext {
+        "html" | "htm" => "no-cache, must-revalidate",
+        "css" | "js" | "png" | "jpg" | "jpeg" | "svg" | "ico" => {
+            "public, max-age=86400, stale-while-revalidate=3600"
+        }
+        _ => "public, max-age=3600",
+    }
+}
+
 /// Direct handler for public status pages (e.g. `/status` and `/status/*path`).
 pub async fn status_page_handler(State(state): State<Arc<AppState>>, uri: Uri) -> Response {
     let raw_path = uri.path();
@@ -33,6 +45,10 @@ pub async fn status_page_handler(State(state): State<Arc<AppState>>, uri: Uri) -
             return Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, HeaderValue::from_static(mime_type))
+                .header(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static(cache_control_for(sub)),
+                )
                 .body(Body::from(file.data))
                 .unwrap_or_else(|_| StatusCode::INTERNAL_SERVER_ERROR.into_response());
         }
@@ -157,6 +173,10 @@ pub async fn status_page_handler(State(state): State<Arc<AppState>>, uri: Uri) -
                     HeaderValue::from_static("text/html; charset=utf-8"),
                 )
                 .header(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static("no-cache, must-revalidate"),
+                )
+                .header(
                     HeaderName::from_static("x-robots-tag"),
                     HeaderValue::from_static(robots_directive),
                 );
@@ -237,6 +257,10 @@ pub async fn static_handler(
             Response::builder()
                 .status(StatusCode::OK)
                 .header(header::CONTENT_TYPE, HeaderValue::from_static(mime_type))
+                .header(
+                    header::CACHE_CONTROL,
+                    HeaderValue::from_static(cache_control_for(target_file)),
+                )
                 .header(
                     HeaderName::from_static("x-robots-tag"),
                     HeaderValue::from_static("noindex, nofollow, noarchive"),

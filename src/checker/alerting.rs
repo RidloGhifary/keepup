@@ -2,23 +2,53 @@ use serde_json::{json, Value};
 use crate::notifier::AlertPayload;
 
 /// Status colors used for Discord rich embeds.
-pub const COLOR_STATUS_GREEN: u32 = 0x30D158; // #30D158
-pub const COLOR_STATUS_RED: u32 = 0xFF453A;   // #FF453A
-pub const COLOR_STATUS_AMBER: u32 = 0xFFD60A; // #FFD60A
+pub const COLOR_STATUS_GREEN: u32 = 0x30D158; // #30D158 (Emerald Green)
+pub const COLOR_STATUS_RED: u32 = 0xFF453A;   // #FF453A (Rose Red)
+pub const COLOR_STATUS_AMBER: u32 = 0xFFD60A; // #FFD60A (Amber Yellow)
+
+pub const DEFAULT_BOT_NAME: &str = "KeepUp Monitor";
+pub const DEFAULT_AVATAR_URL: &str = "https://raw.githubusercontent.com/RidloGhifary/keepup/main/static/icon-512.png";
 
 /// Formats the built-in default Discord rich embed notification.
-///
-/// Features status colors (#30D158 Green for UP, #FF453A Red for DOWN, #FFD60A Amber for DOMAIN_EXPIRING_SOON),
-/// service name, target URL, latency in ms, HTTP status code, and timestamp.
 pub fn format_discord_default(payload: &AlertPayload) -> Value {
+    format_discord_payload(payload, None, None)
+}
+
+/// Formats a Discord rich embed notification with optional custom bot display name and profile avatar.
+///
+/// Features dynamic state colors:
+/// - Emerald Green (#30D158) for UP / RESOLVED transitions
+/// - Rose Red (#FF453A) for DOWN incidents
+/// - Amber Yellow (#FFD60A) for DEGRADED performance and domain expiration warnings
+pub fn format_discord_payload(
+    payload: &AlertPayload,
+    bot_name: Option<&str>,
+    avatar_url: Option<&str>,
+) -> Value {
+    let username = bot_name
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_BOT_NAME);
+    let avatar = avatar_url
+        .map(str::trim)
+        .filter(|s| !s.is_empty())
+        .unwrap_or(DEFAULT_AVATAR_URL);
+
     if payload.new_status == "UP" && payload.old_status == "DOWN" {
-        return format_discord_recovery(payload);
+        let mut res = format_discord_recovery(payload);
+        if let Some(obj) = res.as_object_mut() {
+            obj.insert("username".to_string(), json!(username));
+            obj.insert("avatar_url".to_string(), json!(avatar));
+        }
+        return res;
     }
 
     let is_domain_alert = payload.new_status == "DOMAIN_EXPIRING_SOON";
     let is_up = payload.new_status.to_uppercase() == "UP";
+    let is_degraded = payload.new_status.to_uppercase() == "DEGRADED";
     let is_maint = payload.new_status.to_uppercase() == "MAINTENANCE";
-    let color = if is_domain_alert {
+
+    let color = if is_domain_alert || is_degraded {
         COLOR_STATUS_AMBER
     } else if is_up {
         COLOR_STATUS_GREEN
@@ -27,7 +57,8 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
     } else {
         COLOR_STATUS_RED
     };
-    let icon = if is_domain_alert {
+
+    let icon = if is_domain_alert || is_degraded {
         "⚠️"
     } else if is_up {
         "🟢"
@@ -36,8 +67,11 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
     } else {
         "🔴"
     };
+
     let title = if is_domain_alert {
         format!("⚠️ {} Domain Registration Expiring Soon", payload.monitor_name)
+    } else if is_degraded {
+        format!("⚠️ {} performance is degraded", payload.monitor_name)
     } else {
         format!("{icon} {} is {}", payload.monitor_name, payload.new_status)
     };
@@ -78,6 +112,8 @@ pub fn format_discord_default(payload: &AlertPayload) -> Value {
     }
 
     json!({
+        "username": username,
+        "avatar_url": avatar,
         "embeds": [{
             "title": title,
             "color": color,
@@ -117,6 +153,8 @@ pub fn format_discord_recovery(payload: &AlertPayload) -> Value {
     ];
 
     json!({
+        "username": DEFAULT_BOT_NAME,
+        "avatar_url": DEFAULT_AVATAR_URL,
         "embeds": [{
             "title": title,
             "color": color,
@@ -449,6 +487,27 @@ mod tests {
         let down = sample_payload(false);
         let discord_down = format_discord_default(&down);
         assert_eq!(discord_down["embeds"][0]["color"], COLOR_STATUS_RED);
+        assert_eq!(discord_down["username"], DEFAULT_BOT_NAME);
+        assert_eq!(discord_down["avatar_url"], DEFAULT_AVATAR_URL);
+
+        // Test DEGRADED status returns AMBER yellow
+        let mut degraded = sample_payload(false);
+        degraded.new_status = "DEGRADED".to_string();
+        degraded.old_status = "UP".to_string();
+        let discord_degraded = format_discord_default(&degraded);
+        assert_eq!(discord_degraded["embeds"][0]["color"], COLOR_STATUS_AMBER);
+        let deg_title = discord_degraded["embeds"][0]["title"].as_str().unwrap();
+        assert!(deg_title.contains("degraded"));
+
+        // Test custom bot name and profile avatar
+        let custom_discord = format_discord_payload(
+            &degraded,
+            Some("KeepUp Sentinel"),
+            Some("https://example.com/custom-avatar.png"),
+        );
+        assert_eq!(custom_discord["username"], "KeepUp Sentinel");
+        assert_eq!(custom_discord["avatar_url"], "https://example.com/custom-avatar.png");
+        assert_eq!(custom_discord["embeds"][0]["color"], COLOR_STATUS_AMBER);
     }
 
     #[test]

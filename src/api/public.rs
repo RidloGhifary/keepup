@@ -1,10 +1,13 @@
+use std::collections::HashMap;
 use std::sync::Arc;
+use std::time::{Duration, Instant};
 
 use axum::extract::{Path, Query, State};
 use axum::http::{header, StatusCode};
 use axum::response::IntoResponse;
 use axum::Json;
 use serde::{Deserialize, Serialize};
+use tokio::sync::RwLock;
 
 use crate::db::monitors::{
     get_24h_latency_history, get_7day_uptime_history, DailyUptime, HourlyLatency,
@@ -14,6 +17,54 @@ use crate::AppState;
 
 fn default_true() -> bool {
     true
+}
+
+// ── In-Memory TTL Status Cache ──────────────────────────────────────────────
+
+/// Thread-safe in-memory TTL cache for public status queries.
+#[derive(Clone)]
+pub struct PublicStatusCache {
+    entries: Arc<RwLock<HashMap<String, (Instant, PublicStatus)>>>,
+    ttl: Duration,
+}
+
+impl Default for PublicStatusCache {
+    fn default() -> Self {
+        Self::new(Duration::from_secs(10))
+    }
+}
+
+impl PublicStatusCache {
+    pub fn new(ttl: Duration) -> Self {
+        Self {
+            entries: Arc::new(RwLock::new(HashMap::new())),
+            ttl,
+        }
+    }
+
+    pub async fn get(&self, slug: &str) -> Option<PublicStatus> {
+        let read = self.entries.read().await;
+        if let Some((inserted_at, status)) = read.get(slug) {
+            if inserted_at.elapsed() < self.ttl {
+                return Some(status.clone());
+            }
+        }
+        None
+    }
+
+    pub async fn set(&self, slug: &str, status: PublicStatus) {
+        let mut write = self.entries.write().await;
+        write.insert(slug.to_string(), (Instant::now(), status));
+    }
+
+    pub async fn invalidate(&self, slug: Option<&str>) {
+        let mut write = self.entries.write().await;
+        if let Some(s) = slug {
+            write.remove(s);
+        } else {
+            write.clear();
+        }
+    }
 }
 
 // ── Response types ───────────────────────────────────────────────────────────
@@ -129,6 +180,10 @@ pub async fn get_public_status_impl(
     state: &AppState,
     slug: &str,
 ) -> Result<PublicStatus, AppError> {
+    if let Some(cached) = state.status_cache.get(slug).await {
+        return Ok(cached);
+    }
+
     let (title, description, allow_indexing, meta_title, meta_description, og_image_url, canonical_url) = if slug == "default" {
         if let Some(page) = crate::db::status_pages::get_status_page(&state.db, "default").await? {
             (
@@ -316,7 +371,7 @@ pub async fn get_public_status_impl(
         .or_else(|_| std::env::var("KEEPUP_THEME"))
         .ok();
 
-    Ok(PublicStatus {
+    let public_status = PublicStatus {
         title,
         description,
         status,
@@ -329,7 +384,11 @@ pub async fn get_public_status_impl(
         meta_description,
         og_image_url,
         canonical_url,
-    })
+    };
+
+    state.status_cache.set(slug, public_status.clone()).await;
+
+    Ok(public_status)
 }
 
 /// `GET /api/public/status` — aggregated health for the default status page.
@@ -895,9 +954,11 @@ mod tests {
         let (reload_tx, _) = tokio::sync::broadcast::channel::<String>(10);
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config: crate::config::Config::from_env(),
             http_client: reqwest::Client::new(),
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // 1. Insert active public monitor
@@ -1152,9 +1213,11 @@ mod tests {
 
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config,
             http_client,
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // Seed 3 monitors: m1 (public), m2 (public), m3 (private)
@@ -1236,9 +1299,11 @@ mod tests {
 
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config,
             http_client,
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // 1. Seed monitors
@@ -1336,9 +1401,11 @@ mod tests {
 
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config,
             http_client,
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // 1. Seed monitors
@@ -1408,9 +1475,11 @@ mod tests {
 
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config,
             http_client,
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // 1. Seed active public monitor
@@ -1469,9 +1538,11 @@ mod tests {
 
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config,
             http_client,
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // 1. Seed 2 monitors
@@ -1578,9 +1649,11 @@ mod tests {
         let (reload_tx, _) = tokio::sync::broadcast::channel(16);
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config,
             http_client: reqwest::Client::new(),
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // 1. Insert DRI and Rekadigi monitors
@@ -1702,9 +1775,11 @@ mod tests {
         let (reload_tx, _) = tokio::sync::broadcast::channel(16);
         let state = Arc::new(AppState {
             db: pool.clone(),
+            write_db: pool.clone(),
             config,
             http_client: reqwest::Client::new(),
             reload_tx,
+            status_cache: PublicStatusCache::default(),
         });
 
         // 1. Create a status page with allow_indexing = true and custom SEO tags
@@ -1831,5 +1906,52 @@ mod tests {
         assert!(html.contains(r#"<meta property="og:image" content="https://example.com/og-banner.png">"#));
         assert!(html.contains(r#"<meta name="twitter:image" content="https://example.com/og-banner.png">"#));
         assert!(html.contains(r#"<link rel="canonical" href="https://status.example.com/status/seo-public">"#));
+    }
+
+    #[tokio::test]
+    async fn test_public_status_cache_ttl_and_invalidation() {
+        let cache = PublicStatusCache::new(Duration::from_millis(50));
+        let dummy_status = PublicStatus {
+            title: "Test Status".to_string(),
+            description: None,
+            status: "All Systems Operational".to_string(),
+            status_page_theme: None,
+            maintenance_windows: vec![],
+            groups: vec![],
+            monitors: vec![],
+            allow_indexing: true,
+            meta_title: None,
+            meta_description: None,
+            og_image_url: None,
+            canonical_url: None,
+        };
+
+        // Cache miss initially
+        assert!(cache.get("default").await.is_none());
+
+        // Cache hit after set
+        cache.set("default", dummy_status.clone()).await;
+        let cached = cache.get("default").await;
+        assert!(cached.is_some());
+        assert_eq!(cached.unwrap().title, "Test Status");
+
+        // Explicit slug invalidation
+        cache.invalidate(Some("default")).await;
+        assert!(cache.get("default").await.is_none());
+
+        // Set again and test clear all
+        cache.set("default", dummy_status.clone()).await;
+        cache.set("other", dummy_status.clone()).await;
+        assert!(cache.get("default").await.is_some());
+        assert!(cache.get("other").await.is_some());
+        cache.invalidate(None).await;
+        assert!(cache.get("default").await.is_none());
+        assert!(cache.get("other").await.is_none());
+
+        // Test TTL expiration
+        cache.set("expiring", dummy_status).await;
+        assert!(cache.get("expiring").await.is_some());
+        tokio::time::sleep(Duration::from_millis(60)).await;
+        assert!(cache.get("expiring").await.is_none());
     }
 }

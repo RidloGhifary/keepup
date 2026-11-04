@@ -25,9 +25,11 @@ use crate::config::Config;
 #[derive(Clone)]
 pub struct AppState {
     pub db: SqlitePool,
+    pub write_db: SqlitePool,
     pub config: Config,
     pub http_client: Client,
     pub reload_tx: tokio::sync::broadcast::Sender<String>,
+    pub status_cache: crate::api::public::PublicStatusCache,
 }
 
 #[tokio::main]
@@ -51,9 +53,9 @@ async fn main() -> anyhow::Result<()> {
     banner::print_banner(env!("CARGO_PKG_VERSION"), config.port, &config.database_url);
     info!(port = config.port, db = %config.database_url, "Starting KeepUp");
 
-    // Initialise SQLite pool (WAL mode) and run migrations.
-    let pool = db::init_pool(&config.database_url).await?;
-    db::run_migrations(&pool).await?;
+    // Initialise SQLite dual pools (read_pool: 10 conns, write_pool: 1 conn) and run migrations.
+    let (read_pool, write_pool) = db::init_pools(&config.database_url).await?;
+    db::run_migrations(&write_pool).await?;
 
     // Create broadcast channel for monitor reload notifications.
     let (reload_tx, reload_rx) = tokio::sync::broadcast::channel::<String>(100);
@@ -63,16 +65,27 @@ async fn main() -> anyhow::Result<()> {
         .user_agent("KeepUp-Monitor/1.0")
         .build()?;
 
+    let status_cache = crate::api::public::PublicStatusCache::default();
+
     // Build shared state.
     let state = Arc::new(AppState {
-        db: pool.clone(),
+        db: read_pool.clone(),
+        write_db: write_pool.clone(),
         config: config.clone(),
         http_client: http_client.clone(),
         reload_tx,
+        status_cache: status_cache.clone(),
     });
 
     // Spawn the background health-check scheduler with reload receiver.
-    tokio::spawn(checker::scheduler::run_scheduler(pool, http_client, reload_rx));
+    tokio::spawn(checker::scheduler::run_scheduler(
+        read_pool,
+        write_pool,
+        http_client,
+        reload_rx,
+        config.data_retention_days,
+        status_cache,
+    ));
 
     // Configure CORS with credentials support for localhost and local origins.
     let cors = CorsLayer::new()
@@ -107,6 +120,7 @@ async fn main() -> anyhow::Result<()> {
         .route("/badge/:id", axum::routing::get(api::public::badge))
         .merge(api::router(state.clone()))
         .fallback(ui::static_handler)
+        .layer(tower_http::compression::CompressionLayer::new())
         .layer(cors)
         .with_state(state);
 

@@ -13,6 +13,8 @@ pub struct Config {
     pub admin_password: String,
     /// Secret key used to sign and verify session JWTs.
     pub jwt_secret: String,
+    /// Days to retain check telemetry logs before automated background purge (default: 90).
+    pub data_retention_days: u32,
 }
 
 impl Config {
@@ -43,6 +45,10 @@ impl Config {
         let jwt_secret = env::var("JWT_SECRET").unwrap_or_else(|_| {
             format!("{}{}", uuid::Uuid::new_v4().simple(), uuid::Uuid::new_v4().simple())
         });
+        let data_retention_days = env::var("DATA_RETENTION_DAYS")
+            .ok()
+            .and_then(|v| v.parse().ok())
+            .unwrap_or(90);
 
         Self {
             port,
@@ -50,6 +56,7 @@ impl Config {
             admin_user,
             admin_password,
             jwt_secret,
+            data_retention_days,
         }
     }
 }

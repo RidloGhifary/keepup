@@ -653,7 +653,85 @@ function showMoreMonitors() {
 }
 window.showMoreMonitors = showMoreMonitors;
 
-function renderMonitors() {
+function updateSingleMonitorCardDOM(m) {
+  const isGrid = window.currentViewMode === 'grid';
+  const el = document.getElementById(isGrid ? `monitor-card-${m.id}` : `monitor-row-${m.id}`);
+  if (!el) return false;
+
+  const live = statusMap[m.id];
+  const isUp = live ? live.current_status === 'UP' : true;
+  const isPaused = m.is_active === 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
+
+  let statusColor = '#30d158';
+  let statusLabel = 'OPERATIONAL';
+
+  if (isPaused) {
+    statusColor = '#8e8e93';
+    statusLabel = 'PAUSED';
+  } else if (live && live.current_status === 'MAINTENANCE') {
+    statusColor = '#c084fc';
+    statusLabel = 'MAINTENANCE';
+  } else if (!isUp) {
+    statusColor = '#ff453a';
+    statusLabel = 'DOWN';
+  } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
+    statusColor = '#ffd60a';
+    statusLabel = 'DEGRADED';
+  }
+
+  // Selection styling
+  if (isSelected) {
+    el.classList.add('ring-2', 'ring-emerald-500/50', 'border-emerald-500/40', 'bg-emerald-500/[0.04]');
+  } else {
+    el.classList.remove('ring-2', 'ring-emerald-500/50', 'border-emerald-500/40', 'bg-emerald-500/[0.04]');
+  }
+
+  // Checkbox
+  const cb = el.querySelector('input.monitor-select-cb');
+  if (cb) {
+    cb.checked = isSelected;
+    if (isSelected) {
+      cb.classList.add('opacity-100', 'ring-2', 'ring-emerald-500/50');
+      cb.classList.remove('opacity-0', 'opacity-70');
+    } else if (anySelected) {
+      cb.classList.add('opacity-70');
+      cb.classList.remove('opacity-0', 'opacity-100', 'ring-2', 'ring-emerald-500/50');
+    } else {
+      cb.classList.add('opacity-0');
+      cb.classList.remove('opacity-70', 'opacity-100', 'ring-2', 'ring-emerald-500/50');
+    }
+  }
+
+  // Status dot
+  const dotSpan = el.querySelector('span[data-status-dot]');
+  if (dotSpan) {
+    dotSpan.title = statusLabel;
+    const dots = dotSpan.querySelectorAll('span');
+    dots.forEach((d) => {
+      d.style.backgroundColor = statusColor;
+    });
+  }
+
+  // Metrics
+  const latencyText = live && live.last_latency_ms !== null && live.last_latency_ms !== undefined ? `${live.last_latency_ms} ms` : '—';
+  const uptimeText = live && live.uptime_24h !== undefined ? `${live.uptime_24h.toFixed(1)}%` : '100%';
+
+  const latencyEl = el.querySelector('[data-metric="latency"]');
+  if (latencyEl && latencyEl.textContent !== latencyText) {
+    latencyEl.textContent = latencyText;
+  }
+
+  const uptimeEl = el.querySelector('[data-metric="uptime"]');
+  if (uptimeEl && uptimeEl.textContent !== uptimeText) {
+    uptimeEl.textContent = uptimeText;
+  }
+
+  return true;
+}
+
+function renderMonitors(forceRebuild = false) {
   const container = document.getElementById('monitors-container');
   if (!container) return;
 
@@ -676,6 +754,7 @@ function renderMonitors() {
   if (filtered.length === 0) {
     if (paginationContainer) paginationContainer.classList.add('hidden');
     container.className = 'w-full';
+    container.dataset.renderedKey = '';
     batchInsertHTML(
       container,
       `
@@ -693,7 +772,24 @@ function renderMonitors() {
 
   // Client-side search (⌘K) automatically bypasses pagination limits to search across all monitors
   const visible = isSearching ? sorted : sorted.slice(0, monitorDisplayLimit);
+  const currentKey = `${window.currentViewMode}:${visible.map((m) => m.id).join(',')}`;
 
+  if (!forceRebuild && container.dataset.renderedKey === currentKey) {
+    // Perform targeted in-place DOM updates without re-creating DOM tree
+    let allUpdated = true;
+    for (const m of visible) {
+      if (!updateSingleMonitorCardDOM(m)) {
+        allUpdated = false;
+        break;
+      }
+    }
+    if (allUpdated) {
+      updateBulkActionBarUI();
+      return;
+    }
+  }
+
+  container.dataset.renderedKey = currentKey;
   if (window.currentViewMode === 'grid') {
     container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
     batchInsertHTML(container, visible.map((m) => renderMonitorCard(m)).join(''));
@@ -768,11 +864,11 @@ function renderMonitorCard(m) {
   const barsHtml = renderUptimeTickBars(logs);
 
   return `
-    <div data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
+    <div id="monitor-card-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
       <!-- Card Header: Left-Aligned Status Dot, Title & Target URL with Right Selection Checkbox -->
       <div class="flex items-start justify-between gap-3 min-w-0">
         <div class="flex items-start gap-2.5 min-w-0 flex-1">
-          <span class="relative flex h-2.5 w-2.5 mt-1.5 shrink-0" title="${statusLabel}">
+          <span data-status-dot="true" class="relative flex h-2.5 w-2.5 mt-1.5 shrink-0" title="${statusLabel}">
             ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
             <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
           </span>
@@ -793,11 +889,11 @@ function renderMonitorCard(m) {
       <div class="grid grid-cols-3 gap-2 py-2 border-y border-black/5 dark:border-white/5 text-center">
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Latency</div>
-          <div class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${latencyText}</div>
+          <div data-metric="latency" class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${latencyText}</div>
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">24h Uptime</div>
-          <div class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${uptimeText}</div>
+          <div data-metric="uptime" class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${uptimeText}</div>
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Interval</div>
@@ -889,12 +985,12 @@ function renderMonitorListRow(m) {
       : '—';
 
   return `
-    <div data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
+    <div id="monitor-row-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
       <div class="flex items-center gap-2.5 min-w-0 flex-1">
         <div class="shrink-0" onclick="event.stopPropagation()">
           <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? 'checked' : ''} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? 'opacity-100 ring-2 ring-emerald-500/50' : (anySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100')}" title="Select monitor" />
         </div>
-        <span class="relative flex h-2.5 w-2.5 shrink-0" title="${statusLabel}">
+        <span data-status-dot="true" class="relative flex h-2.5 w-2.5 shrink-0" title="${statusLabel}">
           ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
         </span>
@@ -909,7 +1005,7 @@ function renderMonitorListRow(m) {
 
       <div class="flex items-center justify-between sm:justify-end gap-4 font-mono text-xs shrink-0">
         <div class="text-right">
-          <span class="text-neutral-900 dark:text-white font-medium">${latencyText}</span>
+          <span data-metric="latency" class="text-neutral-900 dark:text-white font-medium">${latencyText}</span>
           <span class="text-neutral-500 dark:text-white/40 text-[10px] ml-1">(${m.check_interval_secs}s)</span>
         </div>
 
@@ -1130,9 +1226,21 @@ function setViewMode(mode) {
   renderMonitors();
 }
 
-function filterMonitors() {
-  renderMonitors();
+let searchDebounceTimer = null;
+function filterMonitors(immediate = false) {
+  if (searchDebounceTimer) {
+    clearTimeout(searchDebounceTimer);
+    searchDebounceTimer = null;
+  }
+  if (immediate) {
+    renderMonitors();
+    return;
+  }
+  searchDebounceTimer = setTimeout(() => {
+    renderMonitors();
+  }, 150);
 }
+window.filterMonitors = filterMonitors;
 
 // ── Global Helper Utilities ──────────────────────────────────────────────────
 
@@ -2073,6 +2181,28 @@ function deleteMonitor(id, name) {
 }
 window.deleteMonitor = deleteMonitor;
 
+// ── Progressive Disclosure for Status Page SEO Settings ──────────────────────
+
+function syncStatusPageIndexingVisibility(isAllowed) {
+  const container = document.getElementById('sp-seo-details');
+  if (!container) return;
+  if (isAllowed) {
+    container.classList.remove('hidden');
+  } else {
+    container.classList.add('hidden');
+  }
+}
+window.syncStatusPageIndexingVisibility = syncStatusPageIndexingVisibility;
+
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'sp-allow-indexing') {
+    syncStatusPageIndexingVisibility(e.target.checked);
+    if (typeof window.updateStatusPageSeoPreview === 'function') {
+      window.updateStatusPageSeoPreview();
+    }
+  }
+});
+
 // ── Centralized Event Delegation ─────────────────────────────────────────────
 
 document.addEventListener('click', (e) => {
@@ -2468,8 +2598,38 @@ function renderChannelCard(channel) {
 
   const masked = maskUrl(channel.url);
 
+  const botCustomizationBadge = (typeLower === 'discord' && (channel.bot_name || channel.avatar_url))
+    ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
+        ${channel.avatar_url ? `<img src="${escapeHtml(channel.avatar_url)}" alt="Bot Avatar" class="w-3.5 h-3.5 rounded-full object-cover">` : `<svg class="w-3.5 h-3.5 text-[#5865F2]" fill="currentColor" viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>`}
+        <span class="truncate font-mono">${escapeHtml(channel.bot_name || 'KeepUp Monitor')}</span>
+      </div>`
+    : '';
+
+  const telegramTopicBadge = (typeLower === 'telegram' && (channel.telegram_chat_id || channel.telegram_thread_id))
+    ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
+        <svg class="w-3.5 h-3.5 text-[#24A1DE]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.52 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
+        <span class="truncate font-mono">${escapeHtml(channel.telegram_chat_id || '')}${channel.telegram_thread_id ? ` • Topic #${escapeHtml(channel.telegram_thread_id)}` : ''}</span>
+      </div>`
+    : '';
+
+  const warningBadge = channel.last_error
+    ? `<div class="flex items-start gap-1.5 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1.5" title="${escapeHtml(channel.last_error)}">
+        <svg class="w-3.5 h-3.5 text-amber-400 shrink-0 mt-0.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M12 9v2m0 4h.01m-6.938 4h13.856c1.54 0 2.502-1.667 1.732-3L13.732 4c-.77-1.333-2.694-1.333-3.464 0L3.34 16c-.77 1.333.192 3 1.732 3z"/>
+        </svg>
+        <div class="min-w-0">
+          <div class="font-semibold text-amber-400">Delivery Warning</div>
+          <div class="truncate text-amber-300/80 font-mono text-[10px]">${escapeHtml(channel.last_error)}</div>
+        </div>
+      </div>`
+    : '';
+
+  const cardBorderClass = channel.last_error
+    ? 'border-amber-500/35 hover:border-amber-500/55 shadow-[0_0_15px_rgba(245,158,11,0.08)]'
+    : 'hover:border-white/20';
+
   return `
-    <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20 flex flex-col justify-between space-y-4" id="channel-card-${channel.id}">
+    <div class="glass-card rounded-2xl p-5 shadow-xl transition flex flex-col justify-between space-y-4 ${cardBorderClass}" id="channel-card-${channel.id}">
       <div class="space-y-2">
         <div class="flex items-start justify-between gap-2">
           <div class="space-y-1 min-w-0">
@@ -2497,6 +2657,9 @@ function renderChannelCard(channel) {
         <div class="font-mono text-xs text-white/50 truncate select-all bg-black/30 border border-white/5 rounded-xl px-2.5 py-1.5" title="${escapeHtml(channel.url)}">
           ${escapeHtml(masked)}
         </div>
+        ${botCustomizationBadge}
+        ${telegramTopicBadge}
+        ${warningBadge}
       </div>
 
       <div class="pt-2 border-t border-white/5 flex items-center justify-between">
@@ -2605,6 +2768,7 @@ async function testNotificationChannel(id, name, btn) {
         <span>Test</span>
       `;
     }
+    await loadNotificationChannels(false);
   }
 }
 window.testNotificationChannel = testNotificationChannel;
@@ -2641,19 +2805,143 @@ async function deleteNotificationChannel(id, name) {
 }
 window.deleteNotificationChannel = deleteNotificationChannel;
 
+function syncChannelTypeCustomization(type) {
+  const discordContainer = document.getElementById('channel-discord-customization');
+  const telegramContainer = document.getElementById('channel-telegram-customization');
+  const urlContainer = document.getElementById('channel-form-url-container');
+  const urlInput = document.getElementById('channel-form-url');
+
+  const cType = (type || '').toLowerCase();
+  const isDiscord = cType === 'discord';
+  const isTelegram = cType === 'telegram';
+
+  if (discordContainer) {
+    if (isDiscord) {
+      discordContainer.classList.remove('hidden');
+    } else {
+      discordContainer.classList.add('hidden');
+    }
+  }
+
+  if (telegramContainer) {
+    if (isTelegram) {
+      telegramContainer.classList.remove('hidden');
+    } else {
+      telegramContainer.classList.add('hidden');
+    }
+  }
+
+  if (urlContainer && urlInput) {
+    if (isTelegram) {
+      urlContainer.classList.add('hidden');
+      urlInput.removeAttribute('required');
+      if (!urlInput.value || urlInput.value.includes('discord') || urlInput.value.includes('slack')) {
+        urlInput.value = 'https://api.telegram.org';
+      }
+    } else {
+      urlContainer.classList.remove('hidden');
+      urlInput.setAttribute('required', 'required');
+      if (urlInput.value === 'https://api.telegram.org') {
+        urlInput.value = '';
+      }
+    }
+  }
+}
+window.syncChannelTypeCustomization = syncChannelTypeCustomization;
+
+function toggleTelegramTokenVisibility() {
+  const tokenInput = document.getElementById('channel-form-telegram-token');
+  const eyeIcon = document.getElementById('telegram-token-eye-icon');
+  if (!tokenInput) return;
+  if (tokenInput.type === 'password') {
+    tokenInput.type = 'text';
+    if (eyeIcon) {
+      eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />`;
+    }
+  } else {
+    tokenInput.type = 'password';
+    if (eyeIcon) {
+      eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />`;
+    }
+  }
+}
+window.toggleTelegramTokenVisibility = toggleTelegramTokenVisibility;
+
+function updateDiscordAvatarPreview() {
+  const avatarInput = document.getElementById('channel-form-avatar-url');
+  const previewImg = document.getElementById('channel-avatar-preview-img');
+  const placeholder = document.getElementById('channel-avatar-preview-placeholder');
+  if (!avatarInput || !previewImg || !placeholder) return;
+
+  const url = avatarInput.value.trim();
+  if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
+    previewImg.onload = () => {
+      previewImg.classList.remove('hidden');
+      placeholder.classList.add('hidden');
+    };
+    previewImg.onerror = () => {
+      previewImg.classList.add('hidden');
+      placeholder.classList.remove('hidden');
+    };
+    previewImg.src = url;
+  } else {
+    previewImg.src = '';
+    previewImg.classList.add('hidden');
+    placeholder.classList.remove('hidden');
+  }
+}
+window.updateDiscordAvatarPreview = updateDiscordAvatarPreview;
+
+async function testCurrentChannelModal(btn) {
+  const idEl = document.getElementById('channel-form-id');
+  const nameEl = document.getElementById('channel-form-name');
+  const id = idEl ? idEl.value.trim() : '';
+  const name = nameEl ? nameEl.value.trim() : 'Channel';
+
+  if (!id) {
+    showToast({
+      title: 'Save Required',
+      message: 'Please save the channel before testing',
+      type: 'info',
+    });
+    return;
+  }
+
+  await testNotificationChannel(id, name, btn);
+}
+window.testCurrentChannelModal = testCurrentChannelModal;
+
 function openCreateChannelModal(isInline = false) {
   isChannelModalInline = isInline;
   const modal = document.getElementById('channel-modal');
   const title = document.getElementById('channel-modal-title');
   const form = document.getElementById('channel-form');
   const idEl = document.getElementById('channel-form-id');
+  const botNameEl = document.getElementById('channel-form-bot-name');
+  const avatarUrlEl = document.getElementById('channel-form-avatar-url');
+  const telegramTokenEl = document.getElementById('channel-form-telegram-token');
+  const telegramChatEl = document.getElementById('channel-form-telegram-chat');
+  const telegramThreadEl = document.getElementById('channel-form-telegram-thread');
+  const testBtn = document.getElementById('channel-modal-test-btn');
 
   if (title) title.innerText = 'Add Notification Channel';
   if (idEl) idEl.value = '';
+  if (botNameEl) botNameEl.value = '';
+  if (avatarUrlEl) avatarUrlEl.value = '';
+  if (telegramTokenEl) {
+    telegramTokenEl.value = '';
+    telegramTokenEl.type = 'password';
+  }
+  if (telegramChatEl) telegramChatEl.value = '';
+  if (telegramThreadEl) telegramThreadEl.value = '';
+  if (testBtn) testBtn.classList.add('hidden');
   if (form) form.reset();
 
   const typeEl = document.getElementById('channel-form-type');
   if (typeEl) typeEl.value = 'discord';
+
+  syncChannelTypeCustomization('discord');
+  updateDiscordAvatarPreview();
 
   if (modal) modal.classList.remove('hidden');
 }
@@ -2668,6 +2956,12 @@ function openEditChannelModal(id) {
   const typeEl = document.getElementById('channel-form-type');
   const urlEl = document.getElementById('channel-form-url');
   const defaultEl = document.getElementById('channel-form-default');
+  const botNameEl = document.getElementById('channel-form-bot-name');
+  const avatarUrlEl = document.getElementById('channel-form-avatar-url');
+  const telegramTokenEl = document.getElementById('channel-form-telegram-token');
+  const telegramChatEl = document.getElementById('channel-form-telegram-chat');
+  const telegramThreadEl = document.getElementById('channel-form-telegram-thread');
+  const testBtn = document.getElementById('channel-modal-test-btn');
 
   const channel = (window.cachedChannels || []).find((c) => c.id === id);
   if (!channel) return;
@@ -2675,9 +2969,22 @@ function openEditChannelModal(id) {
   if (title) title.innerText = 'Edit Notification Channel';
   if (idEl) idEl.value = channel.id;
   if (nameEl) nameEl.value = channel.name;
-  if (typeEl) typeEl.value = (channel.type || 'discord').toLowerCase();
+  const cType = (channel.type || 'discord').toLowerCase();
+  if (typeEl) typeEl.value = cType;
   if (urlEl) urlEl.value = channel.url;
   if (defaultEl) defaultEl.checked = channel.is_default;
+  if (botNameEl) botNameEl.value = channel.bot_name || '';
+  if (avatarUrlEl) avatarUrlEl.value = channel.avatar_url || '';
+  if (telegramTokenEl) {
+    telegramTokenEl.value = channel.telegram_bot_token || '';
+    telegramTokenEl.type = 'password';
+  }
+  if (telegramChatEl) telegramChatEl.value = channel.telegram_chat_id || '';
+  if (telegramThreadEl) telegramThreadEl.value = channel.telegram_thread_id || '';
+  if (testBtn) testBtn.classList.remove('hidden');
+
+  syncChannelTypeCustomization(cType);
+  updateDiscordAvatarPreview();
 
   if (modal) modal.classList.remove('hidden');
 }
@@ -2698,16 +3005,42 @@ async function submitChannelForm(e) {
   const id = document.getElementById('channel-form-id')?.value?.trim();
   const name = document.getElementById('channel-form-name')?.value?.trim();
   const type = document.getElementById('channel-form-type')?.value?.trim();
-  const url = document.getElementById('channel-form-url')?.value?.trim();
+  let url = document.getElementById('channel-form-url')?.value?.trim() || '';
   const is_default = document.getElementById('channel-form-default')?.checked || false;
+  const bot_name = document.getElementById('channel-form-bot-name')?.value?.trim() || null;
+  const avatar_url = document.getElementById('channel-form-avatar-url')?.value?.trim() || null;
+  const telegram_bot_token = document.getElementById('channel-form-telegram-token')?.value?.trim() || null;
+  const telegram_chat_id = document.getElementById('channel-form-telegram-chat')?.value?.trim() || null;
+  const telegram_thread_id = document.getElementById('channel-form-telegram-thread')?.value?.trim() || null;
 
   const saveBtn = document.getElementById('save-channel-btn');
   const originalText = saveBtn ? saveBtn.innerText : 'Save Channel';
 
-  if (!name || !url) {
+  if (!name) {
     showToast({
       title: 'Validation Error',
-      message: 'Name and URL are required',
+      message: 'Channel name is required',
+      type: 'error',
+    });
+    return;
+  }
+
+  if (type === 'telegram') {
+    if (!telegram_bot_token || !telegram_chat_id) {
+      showToast({
+        title: 'Validation Error',
+        message: 'Bot API Token and Chat ID are required for Telegram',
+        type: 'error',
+      });
+      return;
+    }
+    if (!url) {
+      url = 'https://api.telegram.org';
+    }
+  } else if (!url) {
+    showToast({
+      title: 'Validation Error',
+      message: 'Endpoint URL is required',
       type: 'error',
     });
     return;
@@ -2725,7 +3058,17 @@ async function submitChannelForm(e) {
     const res = await apiFetch(endpoint, {
       method,
       headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify({ name, type, url, is_default }),
+      body: JSON.stringify({
+        name,
+        type,
+        url,
+        is_default,
+        bot_name,
+        avatar_url,
+        telegram_bot_token,
+        telegram_chat_id,
+        telegram_thread_id,
+      }),
     });
 
     if (res && res.ok) {

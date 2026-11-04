@@ -203,6 +203,8 @@ pub async fn create(
     .fetch_one(&state.db)
     .await?;
 
+    state.status_cache.invalidate(None).await;
+
     Ok((StatusCode::CREATED, Json(row)))
 }
 
@@ -224,6 +226,8 @@ pub async fn delete(
         .bind(&id)
         .execute(&state.db)
         .await?;
+
+    state.status_cache.invalidate(None).await;
 
     Ok(StatusCode::NO_CONTENT)
 }

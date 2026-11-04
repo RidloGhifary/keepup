@@ -74,6 +74,8 @@ pub async fn create_status_page(
     )
     .await?;
 
+    state.status_cache.invalidate(None).await;
+
     Ok((StatusCode::CREATED, Json(page)))
 }
 
@@ -108,6 +110,8 @@ pub async fn update_status_page(
     )
     .await?;
 
+    state.status_cache.invalidate(None).await;
+
     Ok(Json(detail))
 }
 
@@ -117,5 +121,6 @@ pub async fn delete_status_page(
     Path(slug): Path<String>,
 ) -> Result<StatusCode, AppError> {
     status_pages::delete_status_page(&state.db, &slug).await?;
+    state.status_cache.invalidate(None).await;
     Ok(StatusCode::NO_CONTENT)
 }
