@@ -128,6 +128,7 @@ async function fetchDashboardData(showSpin = false) {
       });
 
       renderMonitors();
+      loadWebhooksPreview();
     } else {
       const [monitorsRes, statusRes] = await Promise.all([
         apiFetch('/api/monitors', { signal }),
@@ -147,6 +148,7 @@ async function fetchDashboardData(showSpin = false) {
       }
       await fetchRecentLogsForMonitors(window.allMonitors || [], signal);
       renderMonitors();
+      loadWebhooksPreview();
     }
   } catch (err) {
     if (err.name === 'AbortError') return;
@@ -794,51 +796,24 @@ function updateToolbarDisabledState() {
   const isDisabled = totalMonitors === 0;
 
   const masterCb = document.getElementById('master-select-cb');
-  const masterLabel = document.getElementById('master-select-label');
   if (masterCb) masterCb.disabled = isDisabled;
-  if (masterLabel) {
-    masterLabel.classList.toggle('opacity-50', isDisabled);
-    masterLabel.classList.toggle('cursor-not-allowed', isDisabled);
-    masterLabel.classList.toggle('hover:border-white/20', !isDisabled);
-  }
 
   const searchInput = document.getElementById('search-input');
-  if (searchInput) {
-    searchInput.disabled = isDisabled;
-    searchInput.classList.toggle('opacity-50', isDisabled);
-    searchInput.classList.toggle('cursor-not-allowed', isDisabled);
-    searchInput.classList.toggle('hover:border-white/20', !isDisabled);
-  }
+  if (searchInput) searchInput.disabled = isDisabled;
 
   const sortSelect = document.getElementById('sort-select');
-  if (sortSelect) {
-    sortSelect.disabled = isDisabled;
-    sortSelect.classList.toggle('opacity-50', isDisabled);
-    sortSelect.classList.toggle('cursor-not-allowed', isDisabled);
-    sortSelect.classList.toggle('hover:border-white/20', !isDisabled);
-  }
+  if (sortSelect) sortSelect.disabled = isDisabled;
 
   const sortDirBtn = document.getElementById('sort-dir-btn');
   if (sortDirBtn) {
     sortDirBtn.disabled = isDisabled;
-    sortDirBtn.classList.toggle('opacity-50', isDisabled);
-    sortDirBtn.classList.toggle('cursor-not-allowed', isDisabled);
     sortDirBtn.classList.toggle('pointer-events-none', isDisabled);
-    sortDirBtn.classList.toggle('hover:border-white/20', !isDisabled);
   }
 
   const viewGridBtn = document.getElementById('view-grid-btn');
   const viewListBtn = document.getElementById('view-list-btn');
-  if (viewGridBtn) {
-    viewGridBtn.disabled = isDisabled;
-    viewGridBtn.classList.toggle('opacity-50', isDisabled);
-    viewGridBtn.classList.toggle('cursor-not-allowed', isDisabled);
-  }
-  if (viewListBtn) {
-    viewListBtn.disabled = isDisabled;
-    viewListBtn.classList.toggle('opacity-50', isDisabled);
-    viewListBtn.classList.toggle('cursor-not-allowed', isDisabled);
-  }
+  if (viewGridBtn) viewGridBtn.disabled = isDisabled;
+  if (viewListBtn) viewListBtn.disabled = isDisabled;
 }
 window.updateToolbarDisabledState = updateToolbarDisabledState;
 
@@ -862,6 +837,11 @@ function renderMonitors(forceRebuild = false) {
   const countBadge = document.getElementById('monitors-count-badge');
   if (countBadge) countBadge.innerText = `${filtered.length} target`;
 
+  const headerAddBtn = document.getElementById('header-add-monitor-btn');
+  if (headerAddBtn) {
+    headerAddBtn.classList.toggle('hidden', filtered.length === 0);
+  }
+
   const paginationContainer = document.getElementById('monitors-pagination-container');
   const pageInfo = document.getElementById('monitors-page-info');
   const paginationControls = document.getElementById('monitors-pagination-controls');
@@ -873,8 +853,8 @@ function renderMonitors(forceRebuild = false) {
     container.dataset.renderedKey = '';
     const emptyMarkup = isSearching
       ? `
-      <div class="w-full rounded-[16px] border border-dashed border-[#33333b] bg-[#111115] py-14 px-6 flex flex-col items-center justify-center text-center">
-        <div class="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mb-4 text-[#a1a1aa]" aria-hidden="true">
+      <div class="w-full rounded-[16px] border border-dashed border-[#33333a] bg-[#111115] py-14 px-6 flex flex-col items-center justify-center text-center">
+        <div class="w-12 h-12 rounded-full bg-[#1b221e] border border-[#24312b] flex items-center justify-center mb-4 text-[#a1a1aa]" aria-hidden="true">
           <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
           </svg>
@@ -883,8 +863,8 @@ function renderMonitors(forceRebuild = false) {
         <p class="text-sm text-[#a1a1aa] max-w-sm mx-auto mt-1 leading-relaxed">
           Coba periksa ejaan atau gunakan kata kunci pencarian yang lain.
         </p>
-        <button type="button" onclick="document.getElementById('search-input').value=''; filterMonitors(true);" class="mt-5 min-h-[44px] h-[44px] px-5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-white text-xs font-semibold border border-[#2a2a31] transition inline-flex items-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-          <svg class="w-4 h-4 text-[#a1a1aa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <button type="button" onclick="document.getElementById('search-input').value=''; filterMonitors(true);" class="mt-5 h-[34px] px-4 rounded-[10px] bg-[#141418] hover:bg-[#1a1a20] text-white text-xs font-semibold border border-[#2a2a30] transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#89cc9e]">
+          <svg class="w-3.5 h-3.5 text-[#a1a1aa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
           </svg>
           <span>Reset pencarian</span>
@@ -892,44 +872,46 @@ function renderMonitors(forceRebuild = false) {
       </div>
       `
       : `
-      <div class="w-full rounded-[16px] border border-dashed border-[#33333b] bg-[#111115] py-16 sm:py-20 px-6 flex flex-col items-center justify-center text-center">
-        <!-- Lingkaran hijau gelap berisi garis denyut/pulse (#34d399) -->
+      <div class="w-full rounded-2xl border border-dotted border-white/15 glass-card px-6 flex flex-col items-center justify-center text-center" style="min-height: 520px; padding-top: 5rem; padding-bottom: 5rem;">
+        <!-- Lingkaran hijau gelap berisi logo KeepUp (#34d399) -->
         <div class="w-14 h-14 rounded-full bg-[#042818] border border-[#34d399]/25 flex items-center justify-center mb-5" aria-hidden="true">
-          <svg class="w-7 h-7 text-[#34d399]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-          </svg>
+          <img src="/favicon.svg" class="w-8 h-8" width="32" height="32" alt="KeepUp Logo" />
         </div>
 
-        <h3 class="text-lg sm:text-xl font-semibold text-white tracking-tight mb-2">Belum ada monitor</h3>
-        <p class="text-sm text-[#a1a1aa] max-w-[420px] mx-auto leading-relaxed mb-6">
-          Tambahkan target pertama Anda untuk mulai memantau uptime, waktu respons, dan status kesehatan secara otomatis.
+        <h3 class="text-xl font-bold text-white tracking-tight mb-2">Belum ada monitor</h3>
+        <p class="text-sm text-white/40 max-w-md mx-auto leading-relaxed mb-6">
+          Tambahkan target pertama Anda untuk mulai memantau uptime,<br class="hidden sm:inline"/> waktu respons, dan status kesehatan secara otomatis.
         </p>
 
-        <!-- Tombol CTA Tambah Monitor (sama dengan di header) -->
-        <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="min-h-[44px] h-[44px] px-5 rounded-[10px] bg-[#34d399] hover:bg-[#4ee2aa] text-[#04130d] font-semibold text-sm transition inline-flex items-center gap-2 cursor-pointer shadow-sm active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+        <!-- Tombol CTA Tambah Monitor -->
+        <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="h-10 px-5 rounded-xl bg-[#86efac] hover:bg-[#a7f3d0] text-[#04130d] font-semibold text-sm transition inline-flex items-center gap-2 cursor-pointer shadow-sm active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#86efac]">
+          <svg class="w-4 h-4 stroke-[2.5]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
           </svg>
           <span>Tambah Monitor</span>
         </button>
 
-        <!-- Tiga tombol pintasan template di bawah CTA -->
-        <div class="flex flex-wrap items-center justify-center gap-2.5 mt-6 pt-6 border-t border-[#2a2a31]/60 max-w-lg w-full">
-          <span class="w-full text-[11px] font-medium uppercase tracking-wider text-[#a1a1aa] mb-1">Mulai cepat dengan template:</span>
-          <button type="button" onclick="openCreateMonitorWithTemplate('http')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-            <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+        <!-- Garis pembatas halus -->
+        <div class="w-full max-w-md border-t border-white/5 mt-8 mb-5" style="padding-top: 1rem;"></div>
+
+        <span class="text-[11px] font-medium uppercase tracking-wider text-white/40 mb-3">MULAI CEPAT DENGAN TEMPLATE:</span>
+
+        <!-- Tiga tombol pintasan template dengan ikon -->
+        <div class="flex flex-wrap items-center justify-center gap-2.5">
+          <button type="button" onclick="openCreateMonitorWithTemplate('http')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+            <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
             </svg>
             <span>Website HTTP(S)</span>
           </button>
-          <button type="button" onclick="openCreateMonitorWithTemplate('tcp')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-            <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+          <button type="button" onclick="openCreateMonitorWithTemplate('tcp')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+            <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
             </svg>
             <span>TCP Port</span>
           </button>
-          <button type="button" onclick="openCreateMonitorWithTemplate('ping')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-            <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+          <button type="button" onclick="openCreateMonitorWithTemplate('ping')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+            <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
             </svg>
             <span>Ping</span>
@@ -1352,19 +1334,29 @@ function renderWebhookItem(w) {
   `;
 }
 
+async function loadWebhooksPreview() {
+  const container = document.getElementById('webhooks-preview-list');
+  if (!container) return;
+  try {
+    const res = await apiFetch('/api/webhooks');
+    if (res && res.ok) {
+      window.allWebhooks = await res.json();
+      renderWebhooksSection(window.allWebhooks);
+    } else {
+      renderWebhooksSection([]);
+    }
+  } catch (e) {
+    renderWebhooksSection([]);
+  }
+}
+window.loadWebhooksPreview = loadWebhooksPreview;
+
 function renderWebhooksSection(webhooks) {
   const container = document.getElementById('webhooks-preview-list');
   if (!container) return;
 
-  if (webhooks.length === 0) {
-    batchInsertHTML(
-      container,
-      `
-      <div class="col-span-full p-6 text-center text-neutral-500 dark:text-white/40 text-xs glass-card rounded-xl">
-        No notification webhooks registered. Click "+ Add Webhook" to receive instant alert cards.
-      </div>
-    `
-    );
+  if (!webhooks || webhooks.length === 0) {
+    container.innerHTML = '';
     return;
   }
 
@@ -1472,11 +1464,11 @@ function setViewMode(mode) {
     gridBtn.setAttribute('aria-pressed', isGrid ? 'true' : 'false');
     listBtn.setAttribute('aria-pressed', isGrid ? 'false' : 'true');
     if (isGrid) {
-      gridBtn.className = 'h-8 px-2.5 rounded-md text-white bg-white/10 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
-      listBtn.className = 'h-8 px-2.5 rounded-md text-white/50 hover:text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
+      gridBtn.className = 'p-1 rounded-lg text-white bg-white/10 transition';
+      listBtn.className = 'p-1 rounded-lg text-white/40 hover:text-white transition';
     } else {
-      listBtn.className = 'h-8 px-2.5 rounded-md text-white bg-white/10 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
-      gridBtn.className = 'h-8 px-2.5 rounded-md text-white/50 hover:text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
+      listBtn.className = 'p-1 rounded-lg text-white bg-white/10 transition';
+      gridBtn.className = 'p-1 rounded-lg text-white/40 hover:text-white transition';
     }
   }
 

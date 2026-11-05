@@ -54,6 +54,25 @@
       --toggle-inactive: #3f3f46;
     }
 
+    .border-dotted {
+      border-style: dotted !important;
+    }
+    .border-dashed {
+      border-style: dashed !important;
+    }
+    .w-3\.5 {
+      width: 0.875rem !important;
+    }
+    .h-3\.5 {
+      height: 0.875rem !important;
+    }
+    .top-1\/2 {
+      top: 50% !important;
+    }
+    .-translate-y-1\/2 {
+      transform: translateY(-50%) !important;
+    }
+
     /* Light Mode Palette (Clean Minimalist Palette) */
     [data-theme="light"] {
       --bg-main: #f5f5f7;
@@ -1252,109 +1271,70 @@
 
       <!-- ── 3. Monitors Section ──────────────────────────────────────────────── -->
       <section class="space-y-4">
-        <!-- Row 1: Title + count + primary action -->
-        <div class="flex items-center justify-between gap-3 pt-2">
-          <div class="flex items-center gap-2.5">
-            <h2 class="text-xl sm:text-2xl font-bold text-white tracking-tight">Monitors</h2>
-            <span id="monitors-count-badge" class="text-xs px-2.5 py-1 rounded-full bg-white/10 text-neutral-300 font-medium">0 target</span>
-          </div>
-          <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="min-h-[44px] h-[44px] px-4 rounded-[10px] bg-[#34d399] hover:bg-[#4ee2aa] text-[#04130d] text-sm font-semibold active:scale-95 transition flex items-center gap-2 whitespace-nowrap cursor-pointer shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b0b0c]">
-            <svg class="w-4 h-4 stroke-[2.5]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
-            </svg>
-            <span>Tambah Monitor</span>
-          </button>
-        </div>
-
-        <!-- Row 2: Select all + Search + Sort + View Toggles (wrap on small screens) -->
-        <div class="flex flex-wrap items-center gap-2.5">
-          <!-- Master Selection Checkbox -->
-          <label id="master-select-label" class="inline-flex items-center gap-2.5 px-3.5 h-[44px] bg-[#141418] border border-[#2a2a31] rounded-[10px] cursor-pointer text-xs text-neutral-200 select-none transition shrink-0 hover:border-white/20 focus-within:ring-2 focus-within:ring-[#34d399]" title="Pilih semua monitor">
-            <input type="checkbox" id="master-select-cb" onchange="handleMasterSelectToggle(this.checked)" aria-label="Pilih semua monitor" class="rounded border-white/20 bg-white/5 focus:ring-0 focus:outline-none w-4 h-4 accent-[#34d399] cursor-pointer" />
-            <span class="text-xs font-medium">Pilih semua</span>
-          </label>
-
-          <!-- Search Input -->
-          <div class="relative flex-1 min-w-[200px]">
-            <input id="search-input" oninput="filterMonitors()" type="text" placeholder="Cari target..." aria-label="Cari target monitor" class="w-full bg-[#141418] border border-[#2a2a31] rounded-[10px] pl-10 pr-12 text-xs sm:text-sm text-white placeholder-[#a1a1aa]/60 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399] transition h-[44px] hover:border-white/20" />
-            <svg class="w-4 h-4 text-[#a1a1aa] absolute left-3.5 top-1/2 -translate-y-1/2 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
-            </svg>
-            <kbd class="inline-flex absolute right-3 top-1/2 -translate-y-1/2 items-center px-1.5 h-5 rounded border border-white/10 bg-white/5 text-[10px] font-mono text-[#a1a1aa] pointer-events-none" aria-hidden="true">⌘K</kbd>
+        <!-- Monitors Section Header (Title, Count, Search & View Toggles in one row) -->
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+          <div class="flex items-center gap-2">
+            <h2 class="text-xl font-bold text-white tracking-tight">Monitors</h2>
+            <span id="monitors-count-badge" class="text-xs px-2.5 py-0.5 rounded-full bg-white/10 text-white/70 font-medium">0 target</span>
           </div>
 
-          <!-- Sort Controls (Status, Nama, Uptime) -->
-          <div class="flex items-center gap-2 shrink-0">
-            <div class="relative inline-flex items-center">
-              <select id="sort-select" onchange="setSortKey(this.value)" aria-label="Urutkan monitor berdasarkan" class="bg-[#141418] border border-[#2a2a31] text-xs sm:text-sm text-neutral-200 rounded-[10px] pl-3.5 pr-8 focus:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399] transition cursor-pointer appearance-none h-[44px] font-medium hover:border-white/20" title="Urutkan monitor berdasarkan">
-                <option value="status">Status</option>
-                <option value="name">Nama</option>
-                <option value="uptime">Uptime</option>
-              </select>
-              <svg class="w-3.5 h-3.5 text-[#a1a1aa] absolute right-3 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
+          <div class="flex items-center gap-2">
+            <div class="relative flex items-center">
+              <input id="search-input" oninput="filterMonitors()" type="text" placeholder="Search target by name or URL..." class="bg-black/20 border border-white/10 rounded-xl pl-9 pr-3 h-8 text-xs text-white placeholder-white/30 focus:outline-none focus:ring-1 focus:ring-[#30d158] transition w-48 sm:w-64" />
+              <svg class="w-4 h-4 text-white/40 absolute left-3 top-1/2 -translate-y-1/2 pointer-events-none" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
               </svg>
             </div>
 
-            <!-- Sort Direction Toggle -->
-            <button id="sort-dir-btn" onclick="toggleSortDirection()" aria-label="Arah urutan monitor" class="h-[44px] px-3.5 rounded-[10px] bg-[#141418] hover:bg-[#1a1a20] border border-[#2a2a31] hover:border-white/20 text-neutral-200 hover:text-white text-xs font-mono font-medium transition flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]" title="Ubah Arah Urutan (Ascending / Descending)">
-              <svg id="sort-dir-icon" class="w-3.5 h-3.5 text-[#a1a1aa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
-              </svg>
-              <span id="sort-dir-text" class="text-xs font-mono font-semibold uppercase tracking-wider text-neutral-200">DESC</span>
-            </button>
-          </div>
-
-          <!-- View Mode Toggles (Card Grid vs List) -->
-          <div class="bg-[#141418] p-1 rounded-[10px] flex items-center border border-[#2a2a31] text-xs shrink-0 h-[44px] gap-1">
-            <button id="view-grid-btn" type="button" onclick="setViewMode('grid')" aria-label="Tampilan grid" aria-pressed="true" class="h-8 px-2.5 rounded-md text-white bg-white/10 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]" title="Tampilan Card Grid">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
-              </svg>
-            </button>
-            <button id="view-list-btn" type="button" onclick="setViewMode('list')" aria-label="Tampilan daftar" aria-pressed="false" class="h-8 px-2.5 rounded-md text-white/50 hover:text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]" title="Tampilan Daftar Ringkas">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
-              </svg>
-            </button>
+            <div class="bg-black/20 p-1 rounded-xl flex items-center border border-white/10 text-xs">
+              <button id="view-grid-btn" type="button" onclick="setViewMode('grid')" aria-label="Tampilan grid" aria-pressed="false" class="p-1 rounded-lg text-white/40 hover:text-white transition" title="Card Grid View">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2V6zM14 6a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2V6zM4 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2H6a2 2 0 01-2-2v-2zM14 16a2 2 0 012-2h2a2 2 0 012 2v2a2 2 0 01-2 2h-2a2 2 0 01-2-2v-2z"/>
+                </svg>
+              </button>
+              <button id="view-list-btn" type="button" onclick="setViewMode('list')" aria-label="Tampilan daftar" aria-pressed="true" class="p-1 rounded-lg text-white bg-white/10 transition" title="Compact List View">
+                <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                  <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 6h16M4 12h16M4 18h16"/>
+                </svg>
+              </button>
+            </div>
           </div>
         </div>
 
         <!-- Dynamic Monitors Container (Grid / List) -->
         <div id="monitors-container" class="w-full">
           <!-- Rendered dynamically by app.js -->
-          <div class="w-full rounded-[16px] border border-dashed border-[#33333b] bg-[#111115] py-16 sm:py-20 px-6 flex flex-col items-center justify-center text-center">
+          <div class="w-full rounded-2xl border border-dotted border-white/15 glass-card px-6 flex flex-col items-center justify-center text-center" style="min-height: 520px; padding-top: 5rem; padding-bottom: 5rem;">
             <div class="w-14 h-14 rounded-full bg-[#042818] border border-[#34d399]/25 flex items-center justify-center mb-5" aria-hidden="true">
-              <svg class="w-7 h-7 text-[#34d399]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
-                <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
-              </svg>
+              <img src="/favicon.svg" class="w-8 h-8" width="32" height="32" alt="KeepUp Logo" />
             </div>
-            <h3 class="text-lg sm:text-xl font-semibold text-white tracking-tight mb-2">Belum ada monitor</h3>
-            <p class="text-sm text-[#a1a1aa] max-w-[420px] mx-auto leading-relaxed mb-6">
-              Tambahkan target pertama Anda untuk mulai memantau uptime, waktu respons, dan status kesehatan secara otomatis.
+            <h3 class="text-xl font-bold text-white tracking-tight mb-2">Belum ada monitor</h3>
+            <p class="text-sm text-white/40 max-w-md mx-auto leading-relaxed mb-6">
+              Tambahkan target pertama Anda untuk mulai memantau uptime,<br class="hidden sm:inline"/> waktu respons, dan status kesehatan secara otomatis.
             </p>
-            <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="min-h-[44px] h-[44px] px-5 rounded-[10px] bg-[#34d399] hover:bg-[#4ee2aa] text-[#04130d] font-semibold text-sm transition inline-flex items-center gap-2 cursor-pointer shadow-sm active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-              <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+            <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="h-10 px-5 rounded-xl bg-[#86efac] hover:bg-[#a7f3d0] text-[#04130d] font-semibold text-sm transition inline-flex items-center gap-2 cursor-pointer shadow-sm active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#86efac]">
+              <svg class="w-4 h-4 stroke-[2.5]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+                <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
               </svg>
               <span>Tambah Monitor</span>
             </button>
-            <div class="flex flex-wrap items-center justify-center gap-2.5 mt-6 pt-6 border-t border-[#2a2a31]/60 max-w-lg w-full">
-              <span class="w-full text-[11px] font-medium uppercase tracking-wider text-[#a1a1aa] mb-1">Mulai cepat dengan template:</span>
-              <button type="button" onclick="openCreateMonitorWithTemplate('http')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-                <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <div class="w-full max-w-md border-t border-white/5 mt-8 mb-5" style="padding-top: 1rem;"></div>
+            <span class="text-[11px] font-medium uppercase tracking-wider text-white/40 mb-3">MULAI CEPAT DENGAN TEMPLATE:</span>
+            <div class="flex flex-wrap items-center justify-center gap-2.5">
+              <button type="button" onclick="openCreateMonitorWithTemplate('http')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+                <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
                 </svg>
                 <span>Website HTTP(S)</span>
               </button>
-              <button type="button" onclick="openCreateMonitorWithTemplate('tcp')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-                <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <button type="button" onclick="openCreateMonitorWithTemplate('tcp')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+                <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
                 </svg>
                 <span>TCP Port</span>
               </button>
-              <button type="button" onclick="openCreateMonitorWithTemplate('ping')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
-                <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <button type="button" onclick="openCreateMonitorWithTemplate('ping')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+                <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
                   <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
                 </svg>
                 <span>Ping</span>
@@ -1391,6 +1371,23 @@
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 9l-7 7-7-7"/>
             </svg>
           </button>
+        </div>
+      </section>
+
+      <!-- ── 4. Notifications Preview / Settings Section ──────────────────────── -->
+      <section class="space-y-4 pt-10 border-t border-white/5" style="padding-top: 1rem;">
+        <div class="flex items-center justify-between">
+          <div>
+            <h2 class="text-base font-semibold text-white tracking-tight">Active Alert Webhooks</h2>
+            <p class="text-xs text-white/50 mt-0.5">Automated state-change notifications routed to Discord, Slack, and endpoints</p>
+          </div>
+          <button type="button" onclick="openEditWebhookModal()" class="text-xs text-white/80 hover:text-white font-medium px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition flex items-center gap-1.5 cursor-pointer">
+            <span>+ Add Webhook</span>
+          </button>
+        </div>
+
+        <div id="webhooks-preview-list" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
+          <!-- Rendered dynamically by app.js -->
         </div>
       </section>
     </div>
