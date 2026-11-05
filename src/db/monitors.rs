@@ -132,8 +132,8 @@ pub async fn update_monitor(
     let check_type = payload.check_type.unwrap_or(existing.check_type);
     let port = payload.port.or(existing.port);
     let dns_record_type = payload.dns_record_type.or(existing.dns_record_type);
-    let dns_expected = payload.dns_expected.or(payload.dns_expected_value.clone()).or(existing.dns_expected);
-    let dns_expected_value = payload.dns_expected_value.or(payload.dns_expected.clone()).or(existing.dns_expected_value);
+    let dns_expected = payload.dns_expected.clone().or(payload.dns_expected_value.clone()).or(existing.dns_expected);
+    let dns_expected_value = payload.dns_expected_value.or(payload.dns_expected).or(existing.dns_expected_value);
 
     let http_method = payload.http_method.unwrap_or(existing.http_method);
     let expected_status = payload.expected_status.unwrap_or(existing.expected_status);

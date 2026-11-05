@@ -795,6 +795,13 @@ mod tests {
             notify_on_resolve: true,
             custom_template: None,
             created_at: "2026-11-02T00:00:00Z".to_string(),
+            bot_name: None,
+            avatar_url: None,
+            telegram_bot_token: None,
+            telegram_chat_id: None,
+            telegram_thread_id: None,
+            last_error: None,
+            last_error_at: None,
         };
 
         let err = test_channel(&reqwest::Client::new(), &channel)

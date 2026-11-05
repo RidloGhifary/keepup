@@ -5,6 +5,7 @@ mod checker;
 mod config;
 mod db;
 mod error;
+mod middleware;
 mod net_guard;
 mod ui;
 

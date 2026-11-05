@@ -1,4 +1,4 @@
-use std::collections::{HashMap, HashSet};
+use std::collections::HashSet;
 use std::sync::Arc;
 use std::time::Duration;
 
@@ -71,6 +71,47 @@ pub struct Monitor {
     pub resend_interval_mins: i32,
     #[sqlx(default)]
     pub last_alerted_at: Option<String>,
+}
+
+impl From<&crate::db::monitors::Monitor> for Monitor {
+    fn from(m: &crate::db::monitors::Monitor) -> Self {
+        Self {
+            id: m.id.clone(),
+            name: m.name.clone(),
+            url: m.url.clone(),
+            check_interval_secs: m.check_interval_secs,
+            timeout_secs: m.timeout_secs,
+            max_retries: m.max_retries,
+            last_status: m.last_status.clone(),
+            down_since: m.down_since.clone(),
+            check_domain_expiry: m.check_domain_expiry,
+            domain_warning_days: m.domain_warning_days,
+            domain_expires_at: m.domain_expires_at.clone(),
+            domain_days_remaining: m.domain_days_remaining,
+            last_domain_alert_days: m.last_domain_alert_days,
+            domain_last_checked_at: m.domain_last_checked_at.clone(),
+            check_ssl: m.check_ssl,
+            ssl_warning_days: m.ssl_warning_days,
+            ssl_expires_at: m.ssl_expires_at.clone(),
+            ssl_days_remaining: m.ssl_days_remaining,
+            last_ssl_alert_days: m.last_ssl_alert_days,
+            ssl_last_checked_at: m.ssl_last_checked_at.clone(),
+            check_type: m.check_type.clone(),
+            port: m.port,
+            dns_record_type: m.dns_record_type.clone(),
+            dns_expected_value: m.dns_expected_value.clone(),
+            http_method: m.http_method.clone(),
+            expected_status: m.expected_status.clone(),
+            request_headers: m.request_headers.clone(),
+            body_keyword: m.body_keyword.clone(),
+            json_pointer: m.json_pointer.clone(),
+            json_expected: m.json_expected.clone(),
+            degraded_latency_ms: m.degraded_latency_ms,
+            dns_expected: m.dns_expected.clone(),
+            resend_interval_mins: m.resend_interval_mins,
+            last_alerted_at: m.last_alerted_at.clone(),
+        }
+    }
 }
 
 // ── In-memory per-monitor state ──────────────────────────────────────────────
@@ -485,17 +526,6 @@ let is_http = monitor.check_type.is_empty() || monitor.check_type == "http";
                 .await
                 {
                     error!(monitor_id = %monitor.id, "Failed to update domain expiry in DB: {e}");
-                }
-            }
-            Err(e) => {
-                warn!(monitor = %monitor.name, "RDAP domain expiration check failed: {e}");
-            }
-        }
-    } else if let Some(ref exp_str) = monitor.domain_expires_at {
-        if let Ok((_, remaining)) = crate::checker::domain::calculate_days_remaining(exp_str, Utc::now()) {
-            domain_days = Some(remaining as i32);
-        }
-    }
                 }
             }
             Err(e) => {

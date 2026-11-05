@@ -50,7 +50,7 @@ async function handleLogout() {
 
 window.allMonitors = [];
 window.allWebhooks = [];
-window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'grid';
+window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'list';
 window.statusMap = {};
 let statusMap = window.statusMap;
 window.selectedMonitorIds = new Set();
@@ -318,6 +318,16 @@ function sortMonitors(list) {
         const nameB = (b.name || '').toLowerCase();
         result = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
         if (!isAsc) result = -result;
+        break;
+      }
+      case 'uptime': {
+        const sm = window.statusMap || statusMap;
+        const liveA = (sm && sm[a.id]) || a;
+        const liveB = (sm && sm[b.id]) || b;
+        const upA = (liveA && liveA.uptime_24h !== undefined && liveA.uptime_24h !== null) ? liveA.uptime_24h : 100;
+        const upB = (liveB && liveB.uptime_24h !== undefined && liveB.uptime_24h !== null) ? liveB.uptime_24h : 100;
+        // Default (desc): highest uptime first
+        result = isAsc ? (upA - upB) : (upB - upA);
         break;
       }
       case 'latency': {
@@ -779,9 +789,64 @@ function updateSingleMonitorCardDOM(m) {
   return true;
 }
 
+function updateToolbarDisabledState() {
+  const totalMonitors = (window.allMonitors || []).length;
+  const isDisabled = totalMonitors === 0;
+
+  const masterCb = document.getElementById('master-select-cb');
+  const masterLabel = document.getElementById('master-select-label');
+  if (masterCb) masterCb.disabled = isDisabled;
+  if (masterLabel) {
+    masterLabel.classList.toggle('opacity-50', isDisabled);
+    masterLabel.classList.toggle('cursor-not-allowed', isDisabled);
+    masterLabel.classList.toggle('hover:border-white/20', !isDisabled);
+  }
+
+  const searchInput = document.getElementById('search-input');
+  if (searchInput) {
+    searchInput.disabled = isDisabled;
+    searchInput.classList.toggle('opacity-50', isDisabled);
+    searchInput.classList.toggle('cursor-not-allowed', isDisabled);
+    searchInput.classList.toggle('hover:border-white/20', !isDisabled);
+  }
+
+  const sortSelect = document.getElementById('sort-select');
+  if (sortSelect) {
+    sortSelect.disabled = isDisabled;
+    sortSelect.classList.toggle('opacity-50', isDisabled);
+    sortSelect.classList.toggle('cursor-not-allowed', isDisabled);
+    sortSelect.classList.toggle('hover:border-white/20', !isDisabled);
+  }
+
+  const sortDirBtn = document.getElementById('sort-dir-btn');
+  if (sortDirBtn) {
+    sortDirBtn.disabled = isDisabled;
+    sortDirBtn.classList.toggle('opacity-50', isDisabled);
+    sortDirBtn.classList.toggle('cursor-not-allowed', isDisabled);
+    sortDirBtn.classList.toggle('pointer-events-none', isDisabled);
+    sortDirBtn.classList.toggle('hover:border-white/20', !isDisabled);
+  }
+
+  const viewGridBtn = document.getElementById('view-grid-btn');
+  const viewListBtn = document.getElementById('view-list-btn');
+  if (viewGridBtn) {
+    viewGridBtn.disabled = isDisabled;
+    viewGridBtn.classList.toggle('opacity-50', isDisabled);
+    viewGridBtn.classList.toggle('cursor-not-allowed', isDisabled);
+  }
+  if (viewListBtn) {
+    viewListBtn.disabled = isDisabled;
+    viewListBtn.classList.toggle('opacity-50', isDisabled);
+    viewListBtn.classList.toggle('cursor-not-allowed', isDisabled);
+  }
+}
+window.updateToolbarDisabledState = updateToolbarDisabledState;
+
 function renderMonitors(forceRebuild = false) {
   const container = document.getElementById('monitors-container');
   if (!container) return;
+
+  updateToolbarDisabledState();
 
   const searchInput = document.getElementById('search-input');
   const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
@@ -795,7 +860,7 @@ function renderMonitors(forceRebuild = false) {
   const sorted = sortMonitors(filtered);
 
   const countBadge = document.getElementById('monitors-count-badge');
-  if (countBadge) countBadge.innerText = `${filtered.length} target${filtered.length === 1 ? '' : 's'}`;
+  if (countBadge) countBadge.innerText = `${filtered.length} target`;
 
   const paginationContainer = document.getElementById('monitors-pagination-container');
   const pageInfo = document.getElementById('monitors-page-info');
@@ -806,18 +871,73 @@ function renderMonitors(forceRebuild = false) {
     if (paginationContainer) paginationContainer.classList.add('hidden');
     container.className = 'w-full';
     container.dataset.renderedKey = '';
-    batchInsertHTML(
-      container,
-      `
-      <div class="glass-card rounded-2xl p-12 text-center text-white/50 space-y-3">
-        <svg class="w-10 h-10 mx-auto text-white/30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-        </svg>
-        <p class="text-sm font-medium text-white/70">${query ? 'No matching targets found' : 'No monitors configured yet'}</p>
-        <p class="text-xs text-white/40">${query ? 'Try searching for a different keyword' : 'Click "+ Add Monitor" to create your first health check target'}</p>
+    const emptyMarkup = isSearching
+      ? `
+      <div class="w-full rounded-[16px] border border-dashed border-[#33333b] bg-[#111115] py-14 px-6 flex flex-col items-center justify-center text-center">
+        <div class="w-12 h-12 rounded-full bg-white/5 border border-white/10 flex items-center justify-center mb-4 text-[#a1a1aa]" aria-hidden="true">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+        </div>
+        <h3 class="text-base font-semibold text-white tracking-tight">Tidak ada hasil untuk &ldquo;${escapeHtml(query)}&rdquo;</h3>
+        <p class="text-sm text-[#a1a1aa] max-w-sm mx-auto mt-1 leading-relaxed">
+          Coba periksa ejaan atau gunakan kata kunci pencarian yang lain.
+        </p>
+        <button type="button" onclick="document.getElementById('search-input').value=''; filterMonitors(true);" class="mt-5 min-h-[44px] h-[44px] px-5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-white text-xs font-semibold border border-[#2a2a31] transition inline-flex items-center gap-2 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
+          <svg class="w-4 h-4 text-[#a1a1aa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+          <span>Reset pencarian</span>
+        </button>
       </div>
-    `
-    );
+      `
+      : `
+      <div class="w-full rounded-[16px] border border-dashed border-[#33333b] bg-[#111115] py-16 sm:py-20 px-6 flex flex-col items-center justify-center text-center">
+        <!-- Lingkaran hijau gelap berisi garis denyut/pulse (#34d399) -->
+        <div class="w-14 h-14 rounded-full bg-[#042818] border border-[#34d399]/25 flex items-center justify-center mb-5" aria-hidden="true">
+          <svg class="w-7 h-7 text-[#34d399]" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+          </svg>
+        </div>
+
+        <h3 class="text-lg sm:text-xl font-semibold text-white tracking-tight mb-2">Belum ada monitor</h3>
+        <p class="text-sm text-[#a1a1aa] max-w-[420px] mx-auto leading-relaxed mb-6">
+          Tambahkan target pertama Anda untuk mulai memantau uptime, waktu respons, dan status kesehatan secara otomatis.
+        </p>
+
+        <!-- Tombol CTA Tambah Monitor (sama dengan di header) -->
+        <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="min-h-[44px] h-[44px] px-5 rounded-[10px] bg-[#34d399] hover:bg-[#4ee2aa] text-[#04130d] font-semibold text-sm transition inline-flex items-center gap-2 cursor-pointer shadow-sm active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
+          <svg class="w-4 h-4" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
+          </svg>
+          <span>Tambah Monitor</span>
+        </button>
+
+        <!-- Tiga tombol pintasan template di bawah CTA -->
+        <div class="flex flex-wrap items-center justify-center gap-2.5 mt-6 pt-6 border-t border-[#2a2a31]/60 max-w-lg w-full">
+          <span class="w-full text-[11px] font-medium uppercase tracking-wider text-[#a1a1aa] mb-1">Mulai cepat dengan template:</span>
+          <button type="button" onclick="openCreateMonitorWithTemplate('http')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
+            <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+            </svg>
+            <span>Website HTTP(S)</span>
+          </button>
+          <button type="button" onclick="openCreateMonitorWithTemplate('tcp')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
+            <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+            </svg>
+            <span>TCP Port</span>
+          </button>
+          <button type="button" onclick="openCreateMonitorWithTemplate('ping')" class="min-h-[36px] h-9 px-3.5 rounded-[10px] bg-[#18181f] hover:bg-[#22222a] text-neutral-300 hover:text-white border border-[#2a2a31] text-xs font-medium transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]">
+            <svg class="w-3.5 h-3.5 text-[#34d399]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            <span>Ping</span>
+          </button>
+        </div>
+      </div>
+      `;
+    batchInsertHTML(container, emptyMarkup);
     if (paginationContainer) paginationContainer.classList.add('hidden');
     return;
   }
@@ -1348,12 +1468,15 @@ function setViewMode(mode) {
   const listBtn = document.getElementById('view-list-btn');
 
   if (gridBtn && listBtn) {
-    if (mode === 'grid') {
-      gridBtn.className = 'p-1.5 rounded-lg text-white bg-white/10 transition';
-      listBtn.className = 'p-1.5 rounded-lg text-white/40 hover:text-white transition';
+    const isGrid = mode === 'grid';
+    gridBtn.setAttribute('aria-pressed', isGrid ? 'true' : 'false');
+    listBtn.setAttribute('aria-pressed', isGrid ? 'false' : 'true');
+    if (isGrid) {
+      gridBtn.className = 'h-8 px-2.5 rounded-md text-white bg-white/10 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
+      listBtn.className = 'h-8 px-2.5 rounded-md text-white/50 hover:text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
     } else {
-      listBtn.className = 'p-1.5 rounded-lg text-white bg-white/10 transition';
-      gridBtn.className = 'p-1.5 rounded-lg text-white/40 hover:text-white transition';
+      listBtn.className = 'h-8 px-2.5 rounded-md text-white bg-white/10 transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
+      gridBtn.className = 'h-8 px-2.5 rounded-md text-white/50 hover:text-white transition focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#34d399]';
     }
   }
 
@@ -2490,8 +2613,17 @@ document.addEventListener('change', (e) => {
   }
 });
 
-// Escape key listener for modals
+// Keyboard shortcut listeners (Escape for modals, ⌘K / Ctrl+K for search)
 document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    const searchInput = document.getElementById('search-input');
+    if (searchInput && !searchInput.disabled) {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+  }
+
   if (e.key === 'Escape') {
     const badgeModal = document.getElementById('badge-modal');
     if (badgeModal && !badgeModal.classList.contains('hidden')) {

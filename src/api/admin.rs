@@ -114,7 +114,14 @@ pub async fn clone_monitor(
     let cloned = monitors::get_monitor_by_id(&state.db, &new_id).await?;
 
     // Signal the background scheduler to start polling the cloned monitor
-    let _ = state.events_tx.send(crate::observability::DashboardEvent::MonitorUpdated(Box::new(cloned.clone())));
+    let _ = state.reload_tx.send(new_id.clone());
+    let _ = state.events_tx.send(
+        serde_json::json!({
+            "event": "monitor_created",
+            "monitor_id": new_id,
+        })
+        .to_string(),
+    );
 
     info!(
         source_id = %id,
@@ -312,9 +319,10 @@ pub async fn ping_monitor(
         ));
     }
 
+    let sched_monitor: crate::checker::scheduler::Monitor = (&monitor).into();
     let result = crate::checker::scheduler::execute_probe(
         &state.http_client,
-        &monitor,
+        &sched_monitor,
         state.config.allow_private_targets,
     )
     .await;
@@ -2058,7 +2066,6 @@ mod tests {
     }
 
     #[tokio::test]
-    #[tokio::test]
     async fn test_unauthenticated_monitor_details_prevents_oracle_hides_channels_sanitizes_errors_and_includes_tls_days() {
         let (app, state) = setup_test_app().await;
 
@@ -2310,16 +2317,6 @@ mod tests {
             .method("POST")
             .uri(format!("/api/admin/channels/{}/test", chan.id))
             .header("Authorization", format!("Bearer {token}"))
-            .body(Body::empty())
-            .unwrap();
-        let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::OK);
-
-        let fallback_str = captured_body.lock().await.clone();
-        let fallback_payload: Value = serde_json::from_str(&fallback_str).unwrap();
-        assert_eq!(fallback_payload["username"], crate::checker::alerting::DEFAULT_BOT_NAME);
-        assert_eq!(fallback_payload["avatar_url"], crate::checker::alerting::DEFAULT_AVATAR_URL);
-    }
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
@@ -2755,6 +2752,10 @@ mod tests {
             channel_type: "webhook".to_string(),
             url: "https://webhook.site/clone-test".to_string(),
             is_default: false,
+            is_enabled: true,
+            use_default_template: true,
+            notify_on_resolve: true,
+            custom_template: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             bot_name: None,
             avatar_url: None,

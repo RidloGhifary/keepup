@@ -503,7 +503,6 @@ pub async fn robots_txt(State(state): State<Arc<AppState>>) -> impl IntoResponse
 
     (headers, body)
 }
-}
 
 pub use public_status as get_default_status;
 pub use public_status_by_slug as get_status_by_slug;
@@ -1744,6 +1743,11 @@ mod tests {
             Some("Internal only"),
             false,
             None,
+            true,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1797,6 +1801,11 @@ mod tests {
                     display_order: 2,
                 },
             ]),
+            true,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -1832,6 +1841,11 @@ mod tests {
                     display_order: 3,
                 },
             ]),
+            true,
+            None,
+            None,
+            None,
+            None,
         )
         .await
         .unwrap();
@@ -2038,7 +2052,7 @@ mod tests {
         );
         assert_eq!(
             res_indexed.headers().get(axum::http::header::LINK).unwrap(),
-            "<https://status.example.com/status/seo-public>; rel="canonical""
+            r#"<https://status.example.com/status/seo-public>; rel="canonical""#
         );
 
         // 5. Test public status API headers for non-indexed page
@@ -2076,7 +2090,7 @@ mod tests {
         );
         assert_eq!(
             html_res.headers().get(axum::http::header::LINK).unwrap(),
-            "<https://status.example.com/status/seo-public>; rel="canonical""
+            r#"<https://status.example.com/status/seo-public>; rel="canonical""#
         );
         let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64).await.unwrap();
         let html = String::from_utf8_lossy(&html_bytes);

@@ -282,9 +282,6 @@ function openEditMonitorModal(data) {
     const degradedLatencyEl = document.getElementById('m-degraded-latency');
     if (degradedLatencyEl) degradedLatencyEl.value = monitor.degraded_latency_ms || '';
 
-    const dnsTypeEl = document.getElementById('m-dns-record-type');
-    if (dnsTypeEl) dnsTypeEl.value = monitor.dns_record_type || 'A';
-
     const dnsExpectedEl = document.getElementById('m-dns-expected');
     if (dnsExpectedEl) dnsExpectedEl.value = monitor.dns_expected || '';
 
@@ -366,8 +363,6 @@ function openEditMonitorModal(data) {
     if (jsonExpectedEl) jsonExpectedEl.value = '';
     const degradedLatencyEl = document.getElementById('m-degraded-latency');
     if (degradedLatencyEl) degradedLatencyEl.value = '';
-    const dnsTypeEl = document.getElementById('m-dns-record-type');
-    if (dnsTypeEl) dnsTypeEl.value = 'A';
     const dnsExpectedEl = document.getElementById('m-dns-expected');
     if (dnsExpectedEl) dnsExpectedEl.value = '';
     const resendIntervalEl = document.getElementById('m-resend-interval');
@@ -404,6 +399,25 @@ function openEditMonitorModal(data) {
 
   showModal();
 }
+
+function openCreateMonitorWithTemplate(type) {
+  openEditMonitorModal(null);
+  const probeSelect = document.getElementById('m-probe-type');
+  if (probeSelect) {
+    probeSelect.value = type;
+    if (typeof onProbeTypeChange === 'function') {
+      onProbeTypeChange();
+    }
+  }
+  const typeSelect = document.getElementById('m-type');
+  if (typeSelect) {
+    typeSelect.value = type;
+  }
+  if (typeof handleMonitorTypeChange === 'function') {
+    handleMonitorTypeChange(type);
+  }
+}
+window.openCreateMonitorWithTemplate = openCreateMonitorWithTemplate;
 
 function openCloneMonitorModal(monitor, channelIds = []) {
   if (!monitor) return;
