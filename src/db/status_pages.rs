@@ -148,6 +148,17 @@ pub async fn get_public_status_page(
     Ok(Some((page, monitors)))
 }
 
+/// Query all status pages.
+pub async fn get_all_status_pages(pool: &SqlitePool) -> Result<Vec<StatusPage>, AppError> {
+    let pages = sqlx::query_as::<_, StatusPage>(
+        "SELECT slug, title, description, is_public, created_at FROM status_pages ORDER BY created_at ASC"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(pages)
+}
+
 /// List all status pages with their assigned monitor counts.
 pub async fn list_status_pages(pool: &SqlitePool) -> Result<Vec<StatusPageWithCount>, AppError> {
     let pages = sqlx::query_as::<_, StatusPageWithCount>(

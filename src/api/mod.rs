@@ -1,13 +1,14 @@
 pub mod admin;
 pub mod auth;
 pub mod dto;
+pub mod incidents;
 pub mod logs;
 pub mod maintenance;
 pub mod monitors;
+pub mod observability;
 pub mod public;
-pub mod status;
+pub mod push;
 pub mod status_pages;
-pub mod webhooks;
 
 use std::sync::Arc;
 
@@ -39,11 +40,12 @@ async fn admin_robots_middleware(
     res
 }
 
-/// Build the full API router, protecting administrative routes with auth middleware
-/// while keeping public status and auth endpoints accessible.
-pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
-    // ── Authentication endpoints (login protected by IP rate limiter) ──
-    let rate_limiter = crate::middleware::rate_limit::auth_rate_limiter();
+/// Build a single shared API sub-router that is mounted identically at `/api` and `/api/v1`.
+fn build_v1_router(state: Arc<AppState>) -> Router<Arc<AppState>> {
+    // ── Authentication endpoints (login + password change protected by IP rate limiter) ──
+    let rate_limiter = crate::middleware::rate_limit::auth_rate_limiter_with_proxy(
+        state.config.trust_proxy_headers,
+    );
 
     let login_route = Router::new()
         .route("/login", post(auth::login))
@@ -61,108 +63,16 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/monitors/:id/details", get(admin::get_monitor_details))
         .route("/badge/:id", get(public::badge));
 
-    // ── Direct /api administrative routes (protected with require_auth) ──
-    let api_direct_protected = Router::new()
-        .route("/monitors", get(monitors::list).post(monitors::create))
-        .route(
-            "/monitors/:id",
-            get(monitors::get_one)
-                .put(admin::update_monitor)
-                .delete(monitors::delete),
-        )
-        .route("/monitors/:id/clone", post(admin::clone_monitor))
-        .route("/admin/monitors/:id/clone", post(admin::clone_monitor))
-        .route(
-            "/status-pages",
-            get(status_pages::list_status_pages).post(status_pages::create_status_page),
-        )
-        .route(
-            "/status-pages/:slug",
-            get(status_pages::get_status_page)
-                .put(status_pages::update_status_page)
-                .delete(status_pages::delete_status_page),
-        )
-        .route(
-            "/admin/status-pages",
-            get(status_pages::list_status_pages).post(status_pages::create_status_page),
-        )
-        .route(
-            "/admin/status-pages/:slug",
-            get(status_pages::get_status_page)
-                .put(status_pages::update_status_page)
-                .delete(status_pages::delete_status_page),
-        )
-        .route(
-            "/webhooks",
-            get(webhooks::list_webhooks).post(webhooks::create_webhook),
-        )
-        .route(
-            "/webhooks/:id",
-            put(webhooks::update_webhook).delete(webhooks::delete_webhook),
-        )
-        .route("/webhooks/test", post(webhooks::test_webhook_direct))
-        .route("/webhooks/:id/test", post(webhooks::test_webhook))
-        .route(
-            "/maintenance",
-            get(maintenance::list_maintenance).post(maintenance::create_maintenance),
-        )
-        .route(
-            "/maintenance/:id",
-            get(maintenance::get_maintenance)
-                .put(maintenance::update_maintenance)
-                .delete(maintenance::delete_maintenance),
-        )
-        .route(
-            "/admin/maintenance",
-            get(maintenance::list_maintenance).post(maintenance::create_maintenance),
-        )
-        .route(
-            "/admin/maintenance/:id",
-            get(maintenance::get_maintenance)
-                .put(maintenance::update_maintenance)
-                .delete(maintenance::delete_maintenance),
-        )
+    let password_routes = Router::new()
         .route("/admin/change-password", post(admin::change_password))
         .route("/change-password", post(admin::change_password))
-        .route("/admin/monitors/:id/ping", post(admin::ping_monitor))
-        .route("/monitors/:id/ping", post(admin::ping_monitor))
-        .route("/admin/monitors/pause-all", post(admin::pause_all_monitors))
-        .route("/monitors/pause-all", post(admin::pause_all_monitors))
-        .route("/admin/monitors/resume-all", post(admin::resume_all_monitors))
-        .route("/monitors/resume-all", post(admin::resume_all_monitors))
-        .route("/admin/monitors/bulk-pause", post(admin::bulk_pause_monitors))
-        .route("/monitors/bulk-pause", post(admin::bulk_pause_monitors))
-        .route("/admin/monitors/bulk-resume", post(admin::bulk_resume_monitors))
-        .route("/monitors/bulk-resume", post(admin::bulk_resume_monitors))
-        .route("/admin/monitors/bulk-delete", post(admin::bulk_delete_monitors))
-        .route("/monitors/bulk-delete", post(admin::bulk_delete_monitors))
-        .route("/admin/monitors/bulk-preview", post(admin::bulk_preview_monitors))
-        .route("/monitors/bulk-preview", post(admin::bulk_preview_monitors))
-        .route("/admin/assets/expiry", get(admin::get_asset_expiry))
-        .route("/assets/expiry", get(admin::get_asset_expiry))
-        .route("/admin/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
-        .route("/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
-        .route("/admin/channels", get(admin::list_channels).post(admin::create_channel))
-        .route("/channels", get(admin::list_channels).post(admin::create_channel))
-        .route(
-            "/admin/channels/:id",
-            put(admin::update_channel).delete(admin::delete_channel),
-        )
-        .route(
-            "/channels/:id",
-            put(admin::update_channel).delete(admin::delete_channel),
-        )
-        .route("/admin/channels/:id/test", post(admin::test_channel))
-        .route("/channels/:id/test", post(admin::test_channel))
-        .route("/admin/monitors/:id/channels", get(admin::get_monitor_channels))
-        .route("/monitors/:id/channels", get(admin::get_monitor_channels))
-        .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
-            crate::middleware::auth::require_auth,
+        .layer(crate::middleware::rate_limit::auth_rate_limiter_with_proxy(
+            state.config.trust_proxy_headers,
         ));
 
-    // ── Admin endpoints under /api/v1 (protected with require_auth) ────
-    let admin_v1_protected = Router::new()
+    // ── Protected administrative routes ───────────────────────────────
+    let protected = Router::new()
+        .merge(password_routes)
         .route("/monitors", get(monitors::list).post(monitors::create))
         .route(
             "/monitors/:id",
@@ -194,16 +104,6 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .delete(status_pages::delete_status_page),
         )
         .route(
-            "/webhooks",
-            get(webhooks::list_webhooks).post(webhooks::create_webhook),
-        )
-        .route(
-            "/webhooks/:id",
-            put(webhooks::update_webhook).delete(webhooks::delete_webhook),
-        )
-        .route("/webhooks/test", post(webhooks::test_webhook_direct))
-        .route("/webhooks/:id/test", post(webhooks::test_webhook))
-        .route(
             "/maintenance",
             get(maintenance::list_maintenance).post(maintenance::create_maintenance),
         )
@@ -223,8 +123,6 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
                 .put(maintenance::update_maintenance)
                 .delete(maintenance::delete_maintenance),
         )
-        .route("/admin/change-password", post(admin::change_password))
-        .route("/change-password", post(admin::change_password))
         .route("/admin/monitors/:id/ping", post(admin::ping_monitor))
         .route("/monitors/:id/ping", post(admin::ping_monitor))
         .route("/admin/monitors/pause-all", post(admin::pause_all_monitors))
@@ -241,10 +139,26 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/monitors/bulk-preview", post(admin::bulk_preview_monitors))
         .route("/admin/assets/expiry", get(admin::get_asset_expiry))
         .route("/assets/expiry", get(admin::get_asset_expiry))
-        .route("/admin/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
-        .route("/monitors/:id/refresh-assets", post(admin::refresh_monitor_assets))
-        .route("/admin/channels", get(admin::list_channels).post(admin::create_channel))
-        .route("/channels", get(admin::list_channels).post(admin::create_channel))
+        .route(
+            "/admin/monitors/:id/refresh-assets",
+            post(admin::refresh_monitor_assets),
+        )
+        .route(
+            "/monitors/:id/refresh-assets",
+            post(admin::refresh_monitor_assets),
+        )
+        .route(
+            "/admin/channels",
+            get(admin::list_channels).post(admin::create_channel),
+        )
+        .route(
+            "/channels",
+            get(admin::list_channels).post(admin::create_channel),
+        )
+        .route(
+            "/webhooks",
+            get(admin::list_channels).post(admin::create_channel),
+        )
         .route(
             "/admin/channels/:id",
             put(admin::update_channel).delete(admin::delete_channel),
@@ -253,34 +167,77 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
             "/channels/:id",
             put(admin::update_channel).delete(admin::delete_channel),
         )
+        .route(
+            "/webhooks/:id",
+            put(admin::update_channel).delete(admin::delete_channel),
+        )
         .route("/admin/channels/:id/test", post(admin::test_channel))
         .route("/channels/:id/test", post(admin::test_channel))
-        .route("/admin/monitors/:id/channels", get(admin::get_monitor_channels))
+        .route("/webhooks/:id/test", post(admin::test_channel))
+        .route(
+            "/admin/monitors/:id/channels",
+            get(admin::get_monitor_channels),
+        )
         .route("/monitors/:id/channels", get(admin::get_monitor_channels))
+        .route("/admin/dashboard", get(observability::dashboard_batch_handler))
+        .route("/dashboard", get(observability::dashboard_batch_handler))
+        .route("/admin/export", get(observability::export_handler))
+        .route("/export", get(observability::export_handler))
+        .route(
+            "/admin/import",
+            post(observability::import_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
+        .route(
+            "/import",
+            post(observability::import_handler)
+                .layer(axum::extract::DefaultBodyLimit::max(10 * 1024 * 1024)),
+        )
+        .route("/admin/events", get(observability::events_sse_handler))
+        .route("/events", get(observability::events_sse_handler))
+        .route(
+            "/admin/incidents",
+            get(incidents::list_incidents).post(incidents::create_incident),
+        )
+        .route(
+            "/incidents",
+            get(incidents::list_incidents).post(incidents::create_incident),
+        )
+        .route(
+            "/admin/incidents/:id/updates",
+            post(incidents::add_update),
+        )
+        .route(
+            "/incidents/:id/updates",
+            post(incidents::add_update),
+        )
+        .route(
+            "/admin/incidents/:id",
+            axum::routing::delete(incidents::delete_incident),
+        )
+        .route(
+            "/incidents/:id",
+            axum::routing::delete(incidents::delete_incident),
+        )
         .route_layer(axum::middleware::from_fn_with_state(
-            state.clone(),
+            state,
             crate::middleware::auth::require_auth,
         ));
 
-    // Assemble /api and /api/v1
-    let api_combined = Router::new()
-        .nest("/auth", auth_routes.clone())
-        .nest("/public", public_api.clone())
-        .route("/badge/:id", get(public::badge))
-        .route("/admin/monitors/:id/details", get(admin::get_monitor_details))
-        .route("/monitors/:id/details", get(admin::get_monitor_details))
-        .merge(api_direct_protected);
-
-    let v1_combined = Router::new()
+    Router::new()
         .nest("/auth", auth_routes)
         .nest("/public", public_api)
+        .route("/push/:token", get(push::push_handler).post(push::push_handler))
         .route("/badge/:id", get(public::badge))
         .route("/admin/monitors/:id/details", get(admin::get_monitor_details))
         .route("/monitors/:id/details", get(admin::get_monitor_details))
-        .merge(admin_v1_protected);
+        .merge(protected)
+}
 
+/// Build the full API router mounted at `/api` and `/api/v1`.
+pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
     Router::new()
-        .nest("/api", api_combined)
-        .nest("/api/v1", v1_combined)
+        .nest("/api", build_v1_router(state.clone()))
+        .nest("/api/v1", build_v1_router(state))
         .layer(axum::middleware::from_fn(admin_robots_middleware))
 }

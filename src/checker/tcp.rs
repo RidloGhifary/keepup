@@ -1,51 +1,8 @@
 use std::time::{Duration, Instant};
 
-use super::http::CheckResult;
+use crate::checker::http::CheckResult;
 
-/// Probe TCP port connectivity on target host with a socket connection attempt.
-pub async fn ping_tcp(target: &str, port_override: Option<i32>, timeout_secs: u64) -> CheckResult {
-    let start = Instant::now();
-
-    let (host, port) = match parse_host_and_port(target, port_override) {
-        Ok(hp) => hp,
-        Err(e) => {
-            return CheckResult {
-                status_code: None,
-                latency_ms: 0,
-                is_up: false,
-                error_msg: Some(e),
-            };
-        }
-    };
-
-    let connect_fut = tokio::net::TcpStream::connect((host.as_str(), port));
-    let result = tokio::time::timeout(Duration::from_secs(timeout_secs), connect_fut).await;
-    let latency_ms = start.elapsed().as_millis() as i64;
-
-    match result {
-        Ok(Ok(_stream)) => CheckResult {
-            status_code: None,
-            latency_ms,
-            is_up: true,
-            error_msg: None,
-        },
-        Ok(Err(err)) => CheckResult {
-            status_code: None,
-            latency_ms,
-            is_up: false,
-            error_msg: Some(format!("TCP connection failed: {err}")),
-        },
-        Err(_) => CheckResult {
-            status_code: None,
-            latency_ms: (timeout_secs * 1000) as i64,
-            is_up: false,
-            error_msg: Some(format!(
-                "TCP connection to {host}:{port} timed out after {timeout_secs}s"
-            )),
-        },
-    }
-}
-
+/// Parse target and optional port override into (host, port).
 pub fn parse_host_and_port(
     target: &str,
     port_override: Option<i32>,
@@ -69,7 +26,20 @@ pub fn parse_host_and_port(
         return Ok((host, port as u16));
     }
 
-    // Attempt extracting host:port
+    // Bracketed IPv6 format [::1]:port
+    if let Some(rest) = t.strip_prefix('[') {
+        if let Some((h, p_str)) = rest.split_once(']') {
+            let port_str = p_str.strip_prefix(':').unwrap_or("");
+            if let Ok(p) = port_str.parse::<u16>() {
+                if !h.is_empty() {
+                    return Ok((h.to_string(), p));
+                }
+            }
+        }
+        return Err("Invalid bracketed IPv6 TCP target".to_string());
+    }
+
+    // Standard host:port
     if let Some((h, p_str)) = t.rsplit_once(':') {
         if let Ok(p) = p_str.parse::<u16>() {
             let host = h.trim_matches('[').trim_matches(']').to_string();
@@ -81,6 +51,79 @@ pub fn parse_host_and_port(
     }
 
     Err("TCP check requires a target port (specified via port field or host:port)".to_string())
+}
+
+/// Probe TCP port connectivity on target host with a socket connection attempt.
+pub async fn ping_tcp(target: &str, port_override: Option<i32>, timeout_secs: u64) -> CheckResult {
+    ping_tcp_checked(target, port_override, timeout_secs, true).await
+}
+
+/// Probe a TCP target with SSRF net_guard check.
+pub async fn ping_tcp_checked(
+    target: &str,
+    port_override: Option<i32>,
+    timeout_secs: u64,
+    allow_private: bool,
+) -> CheckResult {
+    let start = Instant::now();
+
+    let (host, port) = match parse_host_and_port(target, port_override) {
+        Ok(hp) => hp,
+        Err(e) => {
+            return CheckResult {
+                status_code: None,
+                latency_ms: 0,
+                is_up: false,
+                is_degraded: false,
+                error_msg: Some(e),
+            };
+        }
+    };
+
+    let addrs = match crate::net_guard::resolve_checked(&host, port, allow_private).await {
+        Ok(addrs) => addrs,
+        Err(e) => {
+            return CheckResult {
+                status_code: None,
+                latency_ms: start.elapsed().as_millis() as i64,
+                is_up: false,
+                is_degraded: false,
+                error_msg: Some(format!("TCP target resolution failed: {e}")),
+            };
+        }
+    };
+
+    let connect_res = tokio::time::timeout(
+        Duration::from_secs(timeout_secs),
+        tokio::net::TcpStream::connect(&addrs[..]),
+    )
+    .await;
+
+    let latency_ms = start.elapsed().as_millis() as i64;
+
+    match connect_res {
+        Ok(Ok(_stream)) => CheckResult {
+            status_code: Some(port as i32),
+            latency_ms,
+            is_up: true,
+            is_degraded: false,
+            error_msg: None,
+        },
+        Ok(Err(e)) => CheckResult {
+            status_code: None,
+            latency_ms,
+            is_up: false,
+            is_degraded: false,
+            error_msg: Some(format!("TCP connection error: {e}")),
+        },
+        Err(_) => CheckResult {
+            status_code: None,
+            latency_ms,
+            is_up: false,
+            is_degraded: false,
+            error_msg: Some("TCP connection timed out".to_string()),
+        },
+    }
 }
 
 #[cfg(test)]
@@ -106,6 +149,37 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_ping_tcp_success_closed_and_private_guard() {
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        let target_url = format!("tcp://127.0.0.1:{port}");
+
+        tokio::spawn(async move {
+            let _ = listener.accept().await;
+        });
+
+        let res = ping_tcp_checked(&target_url, None, 3, true).await;
+        assert!(res.is_up, "Open TCP port must succeed");
+        assert_eq!(res.status_code, Some(port as i32));
+        assert!(res.error_msg.is_none());
+
+        let res_blocked = ping_tcp_checked(&target_url, None, 3, false).await;
+        assert!(!res_blocked.is_up, "Loopback TCP probe must be blocked when allow_private is false");
+        assert!(res_blocked.error_msg.unwrap().to_lowercase().contains("blocked"));
+
+        let closed_res = ping_tcp_checked("tcp://127.0.0.1:1", None, 1, true).await;
+        assert!(!closed_res.is_up, "Closed TCP port must fail");
+
+        let res_v6 = ping_tcp_checked("tcp://[::1]:9999", None, 1, false).await;
+        assert!(!res_v6.is_up);
+        let err_v6 = res_v6.error_msg.unwrap().to_lowercase();
+        assert!(
+            err_v6.contains("blocked") || err_v6.contains("private"),
+            "Loopback IPv6 without allow_private must be blocked by net_guard, not fail format"
+        );
+    }
+
+    #[tokio::test]
     async fn test_ping_tcp_local_listener() {
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
         let port = listener.local_addr().unwrap().port() as i32;
@@ -118,7 +192,6 @@ mod tests {
 
     #[tokio::test]
     async fn test_ping_tcp_connection_refused() {
-        // Port 1 is reserved and typically not open
         let res = ping_tcp("127.0.0.1", Some(1), 1).await;
         assert!(!res.is_up);
         assert!(res.error_msg.is_some());

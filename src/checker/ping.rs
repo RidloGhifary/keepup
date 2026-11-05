@@ -27,6 +27,7 @@ pub async fn ping_icmp(target: &str, timeout_secs: u64) -> CheckResult {
             status_code: None,
             latency_ms: 0,
             is_up: false,
+            is_degraded: false,
             error_msg: Some("ICMP target cannot be empty".to_string()),
         };
     }
@@ -52,6 +53,7 @@ pub async fn ping_icmp(target: &str, timeout_secs: u64) -> CheckResult {
                 status_code: None,
                 latency_ms: duration.as_millis() as i64,
                 is_up: true,
+                is_degraded: false,
                 error_msg: None,
             };
         }
@@ -78,6 +80,7 @@ pub async fn ping_icmp(target: &str, timeout_secs: u64) -> CheckResult {
             status_code: None,
             latency_ms: fallback_start.elapsed().as_millis() as i64,
             is_up: true,
+            is_degraded: false,
             error_msg: None,
         },
         Ok(Ok(output)) => {
@@ -91,6 +94,7 @@ pub async fn ping_icmp(target: &str, timeout_secs: u64) -> CheckResult {
                 status_code: None,
                 latency_ms,
                 is_up: false,
+                is_degraded: false,
                 error_msg: Some(msg),
             }
         }
@@ -98,12 +102,14 @@ pub async fn ping_icmp(target: &str, timeout_secs: u64) -> CheckResult {
             status_code: None,
             latency_ms,
             is_up: false,
+            is_degraded: false,
             error_msg: Some(format!("Failed to execute ping probe: {err}")),
         },
         Err(_) => CheckResult {
             status_code: None,
             latency_ms: (timeout_secs * 1000) as i64,
             is_up: false,
+            is_degraded: false,
             error_msg: Some(format!("Ping to {host} timed out after {timeout_secs}s")),
         },
     }

@@ -27,10 +27,6 @@ pub async fn update_monitor(
 ) -> Result<Json<Monitor>, AppError> {
     payload.validate()?;
 
-    if let Some(ref channel_ids) = payload.channel_ids {
-        let _ = crate::db::notifications::set_monitor_channels(&state.db, &id, channel_ids).await;
-    }
-
     let updated = monitors::update_monitor(&state.db, &id, payload).await?;
 
     // Signal the background scheduler to re-arm the monitor interval immediately.
@@ -46,7 +42,7 @@ pub async fn update_monitor(
         );
     }
 
-    state.status_cache.invalidate(None).await;
+    state.invalidate_status_cache().await;
 
     Ok(Json(updated))
 }
@@ -63,12 +59,21 @@ pub async fn clone_monitor(
     let new_id = uuid::Uuid::new_v4().to_string();
     let new_name = format!("{} (Copy)", source.name);
 
+    let push_token = if source.url.starts_with("push://") {
+        Some(crate::api::push::generate_push_token())
+    } else {
+        None
+    };
+
     sqlx::query(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
                                check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
-                               check_type, port, dns_record_type, dns_expected_value) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               http_method, expected_status, request_headers, body_keyword, \
+                               json_pointer, json_expected, degraded_latency_ms, push_token, \
+                               grace_secs, dns_record_type, dns_expected, resend_interval_mins, \
+                               check_type, port, dns_expected_value) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&new_id)
     .bind(&new_name)
@@ -82,23 +87,41 @@ pub async fn clone_monitor(
     .bind(source.domain_warning_days)
     .bind(source.check_ssl)
     .bind(source.ssl_warning_days)
+    .bind(&source.http_method)
+    .bind(&source.expected_status)
+    .bind(&source.request_headers)
+    .bind(&source.body_keyword)
+    .bind(&source.json_pointer)
+    .bind(&source.json_expected)
+    .bind(source.degraded_latency_ms)
+    .bind(&push_token)
+    .bind(source.grace_secs)
+    .bind(&source.dns_record_type)
+    .bind(&source.dns_expected)
+    .bind(source.resend_interval_mins)
     .bind(&source.check_type)
     .bind(source.port)
-    .bind(&source.dns_record_type)
     .bind(&source.dns_expected_value)
-    .execute(&state.db)
+    .execute(&state.write_db)
     .await?;
 
     // Copy attached notification channels
     let attached_channels = crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id).await?;
     if !attached_channels.is_empty() {
-        let _ = crate::db::notifications::set_monitor_channels(&state.db, &new_id, &attached_channels).await;
+        let _ = crate::db::notifications::set_monitor_channels(&state.write_db, &new_id, &attached_channels).await;
     }
 
     let cloned = monitors::get_monitor_by_id(&state.db, &new_id).await?;
 
     // Signal the background scheduler to start polling the cloned monitor
     let _ = state.reload_tx.send(new_id.clone());
+    let _ = state.events_tx.send(
+        serde_json::json!({
+            "event": "monitor_created",
+            "monitor_id": new_id,
+        })
+        .to_string(),
+    );
 
     info!(
         source_id = %id,
@@ -106,7 +129,7 @@ pub async fn clone_monitor(
         "Successfully cloned monitor target"
     );
 
-    state.status_cache.invalidate(None).await;
+    state.invalidate_status_cache().await;
 
     Ok((StatusCode::CREATED, Json(cloned)))
 }
@@ -163,6 +186,19 @@ pub struct MonitorDetailResponse {
     pub logs: Vec<DetailCheckLog>,
 }
 
+pub(crate) fn sanitize_public_error(err: &str) -> String {
+    if err == "MAINTENANCE" {
+        return "MAINTENANCE".to_string();
+    }
+    if let Some(pos) = err.find("status code: ") {
+        return format!("HTTP error: {}", &err[pos..]);
+    }
+    if err.contains("timed out") || err.contains("timeout") {
+        return "Request timed out".to_string();
+    }
+    "Check failed".to_string()
+}
+
 /// `GET /api/admin/monitors/:id/details`
 ///
 /// Fetches deep-dive diagnostic telemetry, SLA percentages, latency stats, and 50 recent check logs.
@@ -175,41 +211,59 @@ pub async fn get_monitor_details(
 ) -> Result<Json<MonitorDetailResponse>, AppError> {
     let monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
-    // If monitor is private (is_public == 0), require valid admin authentication
-    if monitor.is_public == 0 {
+    let ver = state.current_session_version();
+    let is_authenticated = {
         let has_cookie_auth = jar
             .get(crate::api::auth::SESSION_COOKIE_NAME)
-            .and_then(|c| crate::api::auth::validate_jwt(c.value(), &state.config.jwt_secret).ok())
+            .and_then(|c| {
+                crate::api::auth::validate_jwt(c.value(), &state.config.jwt_secret, ver).ok()
+            })
             .is_some();
 
         let has_bearer_auth = headers
             .get(axum::http::header::AUTHORIZATION)
             .and_then(|h| h.to_str().ok())
             .and_then(|h| h.strip_prefix("Bearer "))
-            .and_then(|t| crate::api::auth::validate_jwt(t, &state.config.jwt_secret).ok())
+            .and_then(|t| crate::api::auth::validate_jwt(t, &state.config.jwt_secret, ver).ok())
             .is_some();
 
-        if !has_cookie_auth && !has_bearer_auth {
-            return Err(AppError::Unauthorized(
-                "Authentication required to view private monitor details".to_string(),
-            ));
-        }
+        has_cookie_auth || has_bearer_auth
+    };
+
+    if !is_authenticated && (monitor.is_public == 0 || monitor.is_active == 0) {
+        return Err(AppError::NotFound(format!("Monitor {id} not found")));
     }
 
     let slas = checks::get_uptime_slas(&state.db, &id).await?;
     let latency = checks::get_latency_percentiles(&state.db, &id, 24).await?;
     let hourly_latency = monitors::get_24h_latency_history(&state.db, &id).await?;
-    let logs = checks::get_recent_check_logs(&state.db, &id, 50).await?;
+    let mut logs = checks::get_recent_check_logs(&state.db, &id, 50).await?;
 
-    let channel_ids = crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id)
-        .await
-        .unwrap_or_default();
+    if !is_authenticated {
+        for log in &mut logs {
+            if let Some(ref err) = log.error_message {
+                log.error_message = Some(sanitize_public_error(err));
+            }
+        }
+    }
+
+    let channel_ids = if is_authenticated {
+        crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id)
+            .await
+            .unwrap_or_default()
+    } else {
+        Vec::new()
+    };
 
     let info = MonitorDetailInfo {
         id: monitor.id.clone(),
         name: monitor.name.clone(),
         url: monitor.url.clone(),
-        method: "GET".to_string(),
+        method: if monitor.http_method.is_empty() {
+            "GET".to_string()
+        } else {
+            monitor.http_method.clone()
+        },
         status: monitor.last_status.clone(),
         is_active: monitor.is_active == 1,
         is_public: monitor.is_public == 1,
@@ -255,14 +309,21 @@ pub async fn ping_monitor(
 ) -> Result<Json<PingResponse>, AppError> {
     let monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
-    let result = crate::checker::execute_probe(
+    let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(&state.db, &monitor.id)
+        .await
+        .unwrap_or(false);
+
+    if monitor.url.starts_with("push://") {
+        return Err(AppError::BadRequest(
+            "Push heartbeat monitors cannot be probed outbound via manual ping".to_string(),
+        ));
+    }
+
+    let sched_monitor: crate::checker::scheduler::Monitor = (&monitor).into();
+    let result = crate::checker::scheduler::execute_probe(
         &state.http_client,
-        &monitor.check_type,
-        &monitor.url,
-        monitor.port,
-        monitor.dns_record_type.as_deref(),
-        monitor.dns_expected_value.as_deref(),
-        monitor.timeout_secs as u64,
+        &sched_monitor,
+        state.config.allow_private_targets,
     )
     .await;
 
@@ -284,7 +345,13 @@ pub async fn ping_monitor(
 
     let mut ssl_days = monitor.ssl_days_remaining;
     if is_http && monitor.check_ssl == 1 {
-        if let Ok(info) = crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64).await {
+        if let Ok(info) = crate::checker::tls::check_ssl_expiration(
+            &monitor.url,
+            monitor.timeout_secs as u64,
+            state.config.allow_private_targets,
+        )
+        .await
+        {
             ssl_days = Some(info.days_remaining as i32);
             let _ = monitors::update_ssl_expiry(
                 &state.db,
@@ -295,6 +362,12 @@ pub async fn ping_monitor(
             .await;
         }
     }
+
+    let error_msg_to_store = if in_maintenance {
+        Some("MAINTENANCE".to_string())
+    } else {
+        result.error_msg.clone()
+    };
 
     // Persist check log to SQLite
     sqlx::query(
@@ -307,18 +380,28 @@ pub async fn ping_monitor(
     .bind(result.status_code)
     .bind(result.latency_ms)
     .bind(result.latency_ms)
-    .bind(result.is_up as i32)
-    .bind(&result.error_msg)
+    .bind(if in_maintenance { 1 } else { result.is_up as i32 })
+    .bind(&error_msg_to_store)
     .bind(domain_days)
     .bind(ssl_days)
     .execute(&state.db)
     .await?;
 
-    let status_str = if result.is_up { "UP" } else { "DOWN" };
-    let down_since = if result.is_up {
-        None
+    let (status_str, down_since) = if in_maintenance {
+        ("MAINTENANCE", None)
+    } else if result.is_up {
+        if result.is_degraded {
+            ("DEGRADED", None)
+        } else {
+            ("UP", None)
+        }
     } else {
-        Some(chrono::Utc::now().to_rfc3339())
+        // Preserves existing down_since if monitor was already DOWN
+        let preserved = monitor
+            .down_since
+            .clone()
+            .unwrap_or_else(|| chrono::Utc::now().to_rfc3339());
+        ("DOWN", Some(preserved))
     };
 
     let _ = monitors::update_monitor_status(
@@ -328,6 +411,27 @@ pub async fn ping_monitor(
         down_since.as_deref(),
     )
     .await;
+
+    // Synchronize shared in-memory monitor_states
+    {
+        let mut states = state.monitor_states.lock().await;
+        let entry = states.entry(monitor.id.clone()).or_insert_with(|| {
+            crate::checker::scheduler::MonitorState {
+                status: status_str.to_string(),
+                consecutive_failures: if result.is_up || in_maintenance { 0 } else { 1 },
+                last_state_change: chrono::Utc::now(),
+                last_alerted_at: None,
+            }
+        });
+        entry.status = status_str.to_string();
+        if result.is_up || in_maintenance {
+            entry.consecutive_failures = 0;
+        } else {
+            entry.consecutive_failures += 1;
+        }
+    }
+
+    state.invalidate_status_cache().await;
 
     info!(
         monitor_id = %monitor.id,
@@ -710,7 +814,13 @@ pub async fn refresh_monitor_assets(
     let mut monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
     if monitor.check_ssl == 1 {
-        if let Ok(info) = crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64).await {
+        if let Ok(info) = crate::checker::tls::check_ssl_expiration(
+            &monitor.url,
+            monitor.timeout_secs as u64,
+            state.config.allow_private_targets,
+        )
+        .await
+        {
             let _ = monitors::update_ssl_expiry(
                 &state.db,
                 &monitor.id,
@@ -773,13 +883,14 @@ pub struct ChangePasswordPayload {
 
 /// `POST /api/admin/change-password`
 ///
-/// Changes the administrator password after validating the current password.
-/// Persists the new salted SHA-256 hash into SQLite `app_config`.
+/// Changes the administrator password after validating the current password,
+/// persists an Argon2id hash into `app_config`, increments `session_version`
+/// to revoke existing JWTs (`SEC-06`), and rotates the session cookie.
 pub async fn change_password(
     State(state): State<Arc<AppState>>,
+    jar: CookieJar,
     Json(payload): Json<ChangePasswordPayload>,
-) -> Result<Json<Value>, AppError> {
-    // 1. Verify current_password matches active admin credentials.
+) -> Result<(CookieJar, Json<Value>), AppError> {
     let active_password =
         crate::api::auth::get_active_admin_password(&state.db, &state.config.admin_password).await;
 
@@ -789,14 +900,18 @@ pub async fn change_password(
         ));
     }
 
-    // 2. Enforce minimum length on new_password (>= 8 characters).
-    if payload.new_password.chars().count() < 8 {
+    let pw_len = payload.new_password.chars().count();
+    if pw_len < 8 {
         return Err(AppError::BadRequest(
             "New password must be at least 8 characters long".to_string(),
         ));
     }
+    if pw_len > 256 {
+        return Err(AppError::BadRequest(
+            "New password must not exceed 256 characters".to_string(),
+        ));
+    }
 
-    // 3. Persist new password hash into SQLite app_config table.
     let hashed = crate::api::auth::hash_password(&payload.new_password);
     sqlx::query(
         "INSERT INTO app_config (key, value) VALUES ('admin_password', $1) \
@@ -807,23 +922,48 @@ pub async fn change_password(
     .await
     .map_err(AppError::Database)?;
 
-    info!("Administrator password updated successfully");
-    Ok(Json(json!({
-        "message": "Password updated successfully"
-    })))
+    let new_ver = crate::api::auth::bump_session_version(&state).await?;
+    let fresh_jwt = crate::api::auth::create_jwt(
+        &state.config.admin_user,
+        &state.config.jwt_secret,
+        new_ver,
+    )
+    .map_err(|e| AppError::Internal(anyhow::anyhow!("JWT creation failed: {e}")))?;
+
+    let jar = jar.add(crate::api::auth::build_session_cookie(fresh_jwt));
+
+    info!("Administrator password updated and active sessions rotated");
+    Ok((
+        jar,
+        Json(json!({
+            "message": "Password updated successfully"
+        })),
+    ))
 }
 
 // ── Notification Channel Admin Handlers ─────────────────────────────────────
 
+fn default_true_bool() -> bool {
+    true
+}
+
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct CreateChannelRequest {
     pub name: String,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "provider")]
     pub channel_type: String,
     #[serde(default)]
     pub url: Option<String>,
     #[serde(default)]
     pub is_default: bool,
+    #[serde(default = "default_true_bool")]
+    pub is_enabled: bool,
+    #[serde(default = "default_true_bool")]
+    pub use_default_template: bool,
+    #[serde(default = "default_true_bool")]
+    pub notify_on_resolve: bool,
+    #[serde(default, alias = "message_template")]
+    pub custom_template: Option<String>,
     pub bot_name: Option<String>,
     pub avatar_url: Option<String>,
     pub telegram_bot_token: Option<String>,
@@ -838,7 +978,7 @@ impl CreateChannelRequest {
             return Err(AppError::BadRequest("Channel name cannot be empty".to_string()));
         }
         let ctype = self.channel_type.trim().to_lowercase();
-        if !["discord", "slack", "webhook", "telegram", "generic"].contains(&ctype.as_str()) {
+        if !["discord", "slack", "webhook", "telegram", "generic", "generic_webhook"].contains(&ctype.as_str()) {
             return Err(AppError::BadRequest(
                 "Invalid channel type. Supported types: discord, slack, webhook, telegram".to_string(),
             ));
@@ -880,10 +1020,15 @@ impl CreateChannelRequest {
 #[derive(Debug, Clone, Deserialize, Serialize)]
 pub struct UpdateChannelRequest {
     pub name: Option<String>,
-    #[serde(rename = "type")]
+    #[serde(rename = "type", alias = "provider")]
     pub channel_type: Option<String>,
     pub url: Option<String>,
     pub is_default: Option<bool>,
+    pub is_enabled: Option<bool>,
+    pub use_default_template: Option<bool>,
+    pub notify_on_resolve: Option<bool>,
+    #[serde(default, alias = "message_template")]
+    pub custom_template: Option<String>,
     pub bot_name: Option<String>,
     pub avatar_url: Option<String>,
     pub telegram_bot_token: Option<String>,
@@ -900,13 +1045,16 @@ impl UpdateChannelRequest {
         }
         if let Some(ref url) = self.url {
             let u = url.trim();
-            if !u.is_empty() && !(u.starts_with("http://") || u.starts_with("https://")) {
+            if !u.is_empty()
+                && !crate::db::notifications::is_masked_url(u)
+                && !(u.starts_with("http://") || u.starts_with("https://"))
+            {
                 return Err(AppError::BadRequest("Channel URL must begin with http:// or https://".to_string()));
             }
         }
         if let Some(ref ctype) = self.channel_type {
             let c = ctype.trim().to_lowercase();
-            if !["discord", "slack", "webhook", "telegram", "generic"].contains(&c.as_str()) {
+            if !["discord", "slack", "webhook", "telegram", "generic", "generic_webhook"].contains(&c.as_str()) {
                 return Err(AppError::BadRequest(
                     "Invalid channel type. Supported types: discord, slack, webhook, telegram".to_string(),
                 ));
@@ -922,12 +1070,19 @@ impl UpdateChannelRequest {
     }
 }
 
-/// `GET /api/admin/channels` — List all saved notification channels.
+fn normalize_channel_type(raw: &str) -> String {
+    match raw.trim().to_lowercase().as_str() {
+        "generic" | "generic_webhook" => "webhook".to_string(),
+        other => other.to_string(),
+    }
+}
+
+/// `GET /api/admin/channels` — List all saved notification channels (with masked URLs).
 pub async fn list_channels(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<crate::db::notifications::NotificationChannel>>, AppError> {
     let channels = crate::db::notifications::list_channels(&state.db).await?;
-    Ok(Json(channels))
+    Ok(Json(channels.into_iter().map(|c| c.masked_view()).collect()))
 }
 
 /// `POST /api/admin/channels` — Create a reusable notification channel.
@@ -974,9 +1129,13 @@ pub async fn create_channel(
     let channel = crate::db::notifications::NotificationChannel {
         id: uuid::Uuid::new_v4().to_string(),
         name: payload.name.trim().to_string(),
-        channel_type: ctype,
+        channel_type: normalize_channel_type(&ctype),
         url,
         is_default: payload.is_default,
+        is_enabled: payload.is_enabled,
+        use_default_template: payload.use_default_template,
+        notify_on_resolve: payload.notify_on_resolve,
+        custom_template: payload.custom_template.filter(|s| !s.trim().is_empty()),
         created_at: chrono::Utc::now().to_rfc3339(),
         bot_name,
         avatar_url,
@@ -988,10 +1147,10 @@ pub async fn create_channel(
     };
 
     let created = crate::db::notifications::create_channel(&state.db, channel).await?;
-    Ok((axum::http::StatusCode::CREATED, Json(created)))
+    Ok((axum::http::StatusCode::CREATED, Json(created.masked_view())))
 }
 
-/// `PUT /api/admin/channels/:id` — Update channel details.
+/// `PUT /api/admin/channels/:id` — Update channel details (preserving existing secret URL when omitted or masked).
 pub async fn update_channel(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
@@ -1007,10 +1166,25 @@ pub async fn update_channel(
     let channel_type = payload
         .channel_type
         .as_deref()
-        .map(|s| s.trim().to_lowercase())
+        .map(normalize_channel_type)
         .unwrap_or(existing.channel_type);
-    let url = payload.url.as_deref().map(str::trim).unwrap_or(&existing.url);
+    let url = match payload.url.as_deref().map(str::trim) {
+        Some(u) if !u.is_empty() && !crate::db::notifications::is_masked_url(u) => u,
+        _ => &existing.url,
+    };
     let is_default = payload.is_default.unwrap_or(existing.is_default);
+    let is_enabled = payload.is_enabled.unwrap_or(existing.is_enabled);
+    let use_default_template = payload
+        .use_default_template
+        .unwrap_or(existing.use_default_template);
+    let notify_on_resolve = payload
+        .notify_on_resolve
+        .unwrap_or(existing.notify_on_resolve);
+    let custom_template = match &payload.custom_template {
+        Some(tpl) if tpl.trim().is_empty() => None,
+        Some(tpl) => Some(tpl.as_str()),
+        None => existing.custom_template.as_deref(),
+    };
 
     let bot_name = match payload.bot_name {
         Some(s) => {
@@ -1075,6 +1249,10 @@ pub async fn update_channel(
         &channel_type,
         url,
         is_default,
+        is_enabled,
+        use_default_template,
+        notify_on_resolve,
+        custom_template,
         bot_name.as_deref(),
         avatar_url.as_deref(),
         telegram_bot_token.as_deref(),
@@ -1083,7 +1261,7 @@ pub async fn update_channel(
     )
     .await?;
 
-    Ok(Json(updated))
+    Ok(Json(updated.masked_view()))
 }
 
 /// `DELETE /api/admin/channels/:id` — Remove a channel and unbind from monitors.
@@ -1112,9 +1290,10 @@ pub async fn test_channel(
             ));
         }
         Err(err) => {
+            tracing::error!("Failed loading notification channel {id} for test: {err}");
             return Err((
                 axum::http::StatusCode::INTERNAL_SERVER_ERROR,
-                Json(json!({ "error": err.to_string() })),
+                Json(json!({ "error": "Internal server error" })),
             ));
         }
     };
@@ -1158,14 +1337,6 @@ pub async fn get_monitor_channels(
     Ok(Json(channel_ids))
 }
 
-// ── Webhook Admin Handlers (delegated to crate::api::webhooks) ───────────────
-
-#[allow(unused_imports)]
-pub use crate::api::webhooks::{
-    create_webhook, delete_webhook, list_webhooks, test_webhook, test_webhook_direct,
-    update_webhook,
-};
-
 // ── Status Page Admin Handlers (delegated to crate::api::status_pages) ───────
 
 #[allow(unused_imports)]
@@ -1205,17 +1376,7 @@ mod tests {
             .expect("Failed to run migrations");
 
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool,
-            config,
-            http_client,
-            reload_tx,
-            status_cache: crate::api::public::PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool, config);
 
         let app = crate::api::router(state.clone()).with_state(state.clone());
         (app, state)
@@ -1228,6 +1389,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1300,9 +1462,46 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
+        let rotated_cookie = res
+            .headers()
+            .get(axum::http::header::SET_COOKIE)
+            .expect("change-password must issue a fresh session cookie")
+            .to_str()
+            .unwrap()
+            .to_string();
         let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["message"], "Password updated successfully");
+
+        // 4b. Previously minted JWT must now be rejected (401), while rotated cookie succeeds
+        let old_jwt_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/monitors")
+                    .header("Authorization", format!("Bearer {token}"))
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(old_jwt_res.status(), StatusCode::UNAUTHORIZED);
+
+        let new_cookie_kv = rotated_cookie.split(';').next().unwrap();
+        let new_jwt_res = app
+            .clone()
+            .oneshot(
+                Request::builder()
+                    .method("GET")
+                    .uri("/api/monitors")
+                    .header(axum::http::header::COOKIE, new_cookie_kv)
+                    .body(Body::empty())
+                    .unwrap(),
+            )
+            .await
+            .unwrap();
+        assert_eq!(new_jwt_res.status(), StatusCode::OK);
 
         // 5. Verify old password no longer works for login
         let req = Request::builder()
@@ -1346,6 +1545,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1376,14 +1576,14 @@ mod tests {
             .unwrap();
         }
 
-        // 1. Unauthenticated request to private monitor details should return 401
+        // 1. Unauthenticated request to private monitor details should return 404 (prevents oracle)
         let req = Request::builder()
             .method("GET")
             .uri("/api/admin/monitors/mon-priv/details")
             .body(Body::empty())
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
-        assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        assert_eq!(res.status(), StatusCode::NOT_FOUND);
 
         // 2. Unauthenticated request to public monitor details should succeed (200 OK)
         let req = Request::builder()
@@ -1450,6 +1650,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1559,6 +1760,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1755,11 +1957,17 @@ mod tests {
         use std::sync::atomic::{AtomicUsize, Ordering};
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
-        let (app, state) = setup_test_app().await;
+        let (strict_app, strict_state) = setup_test_app().await;
+
+        let mut allow_priv_cfg = crate::config::Config::from_env();
+        allow_priv_cfg.allow_private_targets = true;
+        let state = AppState::new_for_test(strict_state.db.clone(), allow_priv_cfg);
+        let app = crate::api::router(state.clone()).with_state(state.clone());
 
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1804,6 +2012,23 @@ mod tests {
         let chan: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
 
+        // Default strict app (ALLOW_PRIVATE_TARGETS=false) MUST block 127.0.0.1 webhook SSRF
+        let strict_token = crate::api::auth::create_jwt(
+            &strict_state.config.admin_user,
+            &strict_state.config.jwt_secret,
+            strict_state.current_session_version(),
+        )
+        .unwrap();
+        let strict_req = Request::builder()
+            .method("POST")
+            .uri(format!("/api/admin/channels/{}/test", chan.id))
+            .header("Authorization", format!("Bearer {strict_token}"))
+            .body(Body::empty())
+            .unwrap();
+        let strict_res = strict_app.oneshot(strict_req).await.unwrap();
+        assert_eq!(strict_res.status(), StatusCode::BAD_REQUEST);
+        assert_eq!(hit_counter.load(Ordering::SeqCst), 0);
+
         // Test POST /api/admin/channels/:id/test
         let req = Request::builder()
             .method("POST")
@@ -1816,7 +2041,7 @@ mod tests {
         assert!(hit_counter.load(Ordering::SeqCst) >= 1);
 
         // Test parallel alert dispatcher decoupling
-        let payload = crate::notifier::AlertPayload {
+        let payload = crate::alerting::AlertPayload {
             monitor_id: None,
             monitor_name: "Mock Service".to_string(),
             monitor_url: "https://mock.service".to_string(),
@@ -1841,6 +2066,157 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_unauthenticated_monitor_details_prevents_oracle_hides_channels_sanitizes_errors_and_includes_tls_days() {
+        let (app, state) = setup_test_app().await;
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES \
+             ('mon-priv', 'Private DB', 'https://db.internal', 0, 1), \
+             ('mon-paused', 'Paused API', 'https://paused.example.com', 1, 0), \
+             ('mon-pub', 'Public API', 'https://pub.example.com', 1, 1)",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        let chan = crate::db::notifications::create_channel(
+            &state.db,
+            crate::db::notifications::NotificationChannel {
+                id: "chan-sec-1".to_string(),
+                name: "Sec Hook".to_string(),
+                channel_type: "webhook".to_string(),
+                url: "https://hooks.example.com/secret".to_string(),
+                is_default: false,
+                is_enabled: true,
+                use_default_template: true,
+                notify_on_resolve: true,
+                custom_template: None,
+                created_at: chrono::Utc::now().to_rfc3339(),
+                bot_name: None,
+                avatar_url: None,
+                telegram_bot_token: None,
+                telegram_chat_id: None,
+                telegram_thread_id: None,
+                last_error: None,
+                last_error_at: None,
+            },
+        )
+        .await
+        .unwrap();
+        crate::db::notifications::set_monitor_channels(
+            &state.db,
+            "mon-pub",
+            &[chan.id.clone()],
+        )
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, status_code, latency_ms, is_up, error_msg, ssl_days_remaining, domain_days_remaining, checked_at) \
+             VALUES ('mon-pub', 502, 85, 0, 'dial tcp 10.24.0.9:8080: connection refused', 62, 180, datetime('now'))",
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // 1. Private monitor returns 404 (not 401) to unauthenticated callers
+        let req_priv = Request::builder()
+            .method("GET")
+            .uri("/api/admin/monitors/mon-priv/details")
+            .body(Body::empty())
+            .unwrap();
+        let res_priv = app.clone().oneshot(req_priv).await.unwrap();
+        assert_eq!(res_priv.status(), StatusCode::NOT_FOUND);
+
+        // 2. Paused monitor returns 404 to unauthenticated callers
+        let req_paused = Request::builder()
+            .method("GET")
+            .uri("/api/admin/monitors/mon-paused/details")
+            .body(Body::empty())
+            .unwrap();
+        let res_paused = app.clone().oneshot(req_paused).await.unwrap();
+        assert_eq!(res_paused.status(), StatusCode::NOT_FOUND);
+
+        // 3. Public active monitor returns 200 with empty channel_ids, sanitized error_message, and populated tls_days_remaining
+        let req_pub = Request::builder()
+            .method("GET")
+            .uri("/api/admin/monitors/mon-pub/details")
+            .body(Body::empty())
+            .unwrap();
+        let res_pub = app.clone().oneshot(req_pub).await.unwrap();
+        assert_eq!(res_pub.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res_pub.into_body(), 1024 * 32).await.unwrap();
+        let details: MonitorDetailResponse = serde_json::from_slice(&body).unwrap();
+
+        assert!(
+            details.monitor.channel_ids.is_empty(),
+            "unauthenticated details response must not leak channel_ids"
+        );
+        assert_eq!(details.logs.len(), 1);
+        assert_eq!(
+            details.logs[0].tls_days_remaining,
+            Some(62),
+            "tls_days_remaining must be populated from ssl_days_remaining"
+        );
+        let err_msg = details.logs[0].error_message.as_deref().unwrap_or("");
+        assert!(
+            !err_msg.contains("10.24.0.9"),
+            "unauthenticated details response must sanitize internal error_message, got: {err_msg}"
+        );
+    }
+
+    #[tokio::test]
+    async fn test_ping_monitor_preserves_down_since_and_respects_maintenance() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let initial_down_since = "2026-01-01T00:00:00Z";
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, max_retries, is_active, is_public, last_status, down_since) \
+             VALUES ('mon-down', 'Down Service', 'http://127.0.0.1:9', 60, 1, 1, 1, 1, 'DOWN', ?)"
+        )
+        .bind(initial_down_since)
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        let config = crate::config::Config {
+            allow_private_targets: true,
+            ..Default::default()
+        };
+
+        let state = crate::AppState::new_for_test(pool.clone(), config.clone());
+        let app = crate::build_http_app(state);
+
+        let token = crate::api::auth::create_jwt(
+            &config.admin_user,
+            &config.jwt_secret,
+            1,
+        )
+        .unwrap();
+
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/admin/monitors/mon-down/ping")
+            .header("authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        // Verify down_since was NOT overwritten by current timestamp!
+        let row: (Option<String>,) = sqlx::query_as("SELECT down_since FROM monitors WHERE id = 'mon-down'")
+            .fetch_one(&pool)
+            .await
+            .unwrap();
+        assert_eq!(row.0.as_deref(), Some(initial_down_since), "ping_monitor must preserve existing down_since on already-DOWN monitor");
+    }
+
+    #[tokio::test]
     async fn test_discord_channel_custom_bot_and_avatar_test_dispatch() {
         use tokio::io::{AsyncReadExt, AsyncWriteExt};
 
@@ -1849,6 +2225,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -1960,6 +2337,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -2075,6 +2453,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -2143,6 +2522,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -2234,6 +2614,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -2360,6 +2741,7 @@ mod tests {
         let token = crate::api::auth::create_jwt(
             &state.config.admin_user,
             &state.config.jwt_secret,
+            state.current_session_version(),
         )
         .unwrap();
 
@@ -2370,6 +2752,10 @@ mod tests {
             channel_type: "webhook".to_string(),
             url: "https://webhook.site/clone-test".to_string(),
             is_default: false,
+            is_enabled: true,
+            use_default_template: true,
+            notify_on_resolve: true,
+            custom_template: None,
             created_at: chrono::Utc::now().to_rfc3339(),
             bot_name: None,
             avatar_url: None,

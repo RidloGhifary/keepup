@@ -50,7 +50,7 @@ async function handleLogout() {
 
 window.allMonitors = [];
 window.allWebhooks = [];
-window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'grid';
+window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'list';
 window.statusMap = {};
 let statusMap = window.statusMap;
 window.selectedMonitorIds = new Set();
@@ -87,13 +87,10 @@ async function fetchDashboardData(showSpin = false) {
   }
 
   try {
-    const [monitorsRes, statusRes] = await Promise.all([
-      apiFetch('/api/monitors', { signal }),
-      apiFetch('/api/v1/public/status', { signal }),
-    ]);
+    const dashRes = await apiFetch('/api/admin/dashboard', { signal });
 
     // If unauthorized, do not render dashboard contents (redirect is underway)
-    if (monitorsRes && monitorsRes.status === 401) {
+    if (dashRes && dashRes.status === 401) {
       const isLoginPage =
         window.location.pathname.endsWith('/login.html') ||
         window.location.pathname === '/login';
@@ -103,24 +100,56 @@ async function fetchDashboardData(showSpin = false) {
       return;
     }
 
-    if (monitorsRes && monitorsRes.ok) {
-      window.allMonitors = await monitorsRes.json();
-    }
-
-    if (statusRes && statusRes.ok) {
-      const statusData = await statusRes.json();
+    if (dashRes && dashRes.ok) {
+      const dash = await dashRes.json();
+      const monitors = [];
       statusMap = {};
       window.statusMap = statusMap;
-      (statusData.monitors || []).forEach((m) => {
-        statusMap[m.id] = m;
+
+      (dash.monitors || []).forEach((item) => {
+        const m = { ...item };
+        monitors.push(m);
+        // logs attached directly from single query
+        logsCache[m.id] = (item.logs || []).slice().reverse();
+        statusMap[m.id] = {
+          id: m.id,
+          name: m.name,
+          url: m.url,
+          current_status: m.last_status,
+          last_latency_ms: (item.logs && item.logs.length > 0) ? item.logs[item.logs.length - 1].latency_ms : null,
+          uptime_24h: 100.0,
+        };
       });
-      updateOverviewHero(statusData);
+
+      window.allMonitors = monitors;
+      updateOverviewHero({
+        status: dash.summary.down_count > 0 ? 'Major Outage' : (dash.summary.degraded_count > 0 ? 'Partial Outage' : 'All Systems Operational'),
+        monitors: Object.values(statusMap),
+      });
+
+      renderMonitors();
+      loadWebhooksPreview();
+    } else {
+      const [monitorsRes, statusRes] = await Promise.all([
+        apiFetch('/api/monitors', { signal }),
+        apiFetch('/api/v1/public/status', { signal }),
+      ]);
+      if (monitorsRes && monitorsRes.ok) {
+        window.allMonitors = await monitorsRes.json();
+      }
+      if (statusRes && statusRes.ok) {
+        const statusData = await statusRes.json();
+        statusMap = {};
+        window.statusMap = statusMap;
+        (statusData.monitors || []).forEach((m) => {
+          statusMap[m.id] = m;
+        });
+        updateOverviewHero(statusData);
+      }
+      await fetchRecentLogsForMonitors(window.allMonitors || [], signal);
+      renderMonitors();
+      loadWebhooksPreview();
     }
-
-    // Fetch recent check logs for historical bar charts (top 30 per monitor)
-    await fetchRecentLogsForMonitors(window.allMonitors, signal);
-
-    renderMonitors();
   } catch (err) {
     if (err.name === 'AbortError') return;
     console.error('Failed to fetch dashboard data:', err);
@@ -218,6 +247,27 @@ function updateOverviewHero(statusData) {
 
 // ── Rendering Monitors (Card Grid vs Compact List with Pagination & Sorting) ──
 
+window.monitorsCurrentPage = 1;
+window.monitorsPageSize = 12;
+
+function changeMonitorsPage(page) {
+  window.monitorsCurrentPage = Number(page);
+  renderMonitors();
+  const panel = document.getElementById('monitors-panel');
+  if (panel && window.scrollY > panel.offsetTop + 100) {
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function changeMonitorsPageSize(size) {
+  window.monitorsPageSize = size === 'all' ? 'all' : parseInt(size, 10) || 12;
+  window.monitorsCurrentPage = 1;
+  renderMonitors();
+}
+
+window.changeMonitorsPage = changeMonitorsPage;
+window.changeMonitorsPageSize = changeMonitorsPageSize;
+
 const MONITORS_PAGE_SIZE = 9;
 let monitorDisplayLimit = MONITORS_PAGE_SIZE;
 
@@ -270,6 +320,16 @@ function sortMonitors(list) {
         const nameB = (b.name || '').toLowerCase();
         result = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
         if (!isAsc) result = -result;
+        break;
+      }
+      case 'uptime': {
+        const sm = window.statusMap || statusMap;
+        const liveA = (sm && sm[a.id]) || a;
+        const liveB = (sm && sm[b.id]) || b;
+        const upA = (liveA && liveA.uptime_24h !== undefined && liveA.uptime_24h !== null) ? liveA.uptime_24h : 100;
+        const upB = (liveB && liveB.uptime_24h !== undefined && liveB.uptime_24h !== null) ? liveB.uptime_24h : 100;
+        // Default (desc): highest uptime first
+        result = isAsc ? (upA - upB) : (upB - upA);
         break;
       }
       case 'latency': {
@@ -731,9 +791,37 @@ function updateSingleMonitorCardDOM(m) {
   return true;
 }
 
+function updateToolbarDisabledState() {
+  const totalMonitors = (window.allMonitors || []).length;
+  const isDisabled = totalMonitors === 0;
+
+  const masterCb = document.getElementById('master-select-cb');
+  if (masterCb) masterCb.disabled = isDisabled;
+
+  const searchInput = document.getElementById('search-input');
+  if (searchInput) searchInput.disabled = isDisabled;
+
+  const sortSelect = document.getElementById('sort-select');
+  if (sortSelect) sortSelect.disabled = isDisabled;
+
+  const sortDirBtn = document.getElementById('sort-dir-btn');
+  if (sortDirBtn) {
+    sortDirBtn.disabled = isDisabled;
+    sortDirBtn.classList.toggle('pointer-events-none', isDisabled);
+  }
+
+  const viewGridBtn = document.getElementById('view-grid-btn');
+  const viewListBtn = document.getElementById('view-list-btn');
+  if (viewGridBtn) viewGridBtn.disabled = isDisabled;
+  if (viewListBtn) viewListBtn.disabled = isDisabled;
+}
+window.updateToolbarDisabledState = updateToolbarDisabledState;
+
 function renderMonitors(forceRebuild = false) {
   const container = document.getElementById('monitors-container');
   if (!container) return;
+
+  updateToolbarDisabledState();
 
   const searchInput = document.getElementById('search-input');
   const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
@@ -747,37 +835,120 @@ function renderMonitors(forceRebuild = false) {
   const sorted = sortMonitors(filtered);
 
   const countBadge = document.getElementById('monitors-count-badge');
-  if (countBadge) countBadge.innerText = `${filtered.length} target${filtered.length === 1 ? '' : 's'}`;
+  if (countBadge) countBadge.innerText = `${filtered.length} target`;
 
-  const paginationContainer = document.getElementById('monitors-pagination');
+  const headerAddBtn = document.getElementById('header-add-monitor-btn');
+  if (headerAddBtn) {
+    headerAddBtn.classList.toggle('hidden', filtered.length === 0);
+  }
+
+  const paginationContainer = document.getElementById('monitors-pagination-container');
+  const pageInfo = document.getElementById('monitors-page-info');
+  const paginationControls = document.getElementById('monitors-pagination-controls');
+  const showMoreContainer = document.getElementById('monitors-pagination');
 
   if (filtered.length === 0) {
     if (paginationContainer) paginationContainer.classList.add('hidden');
     container.className = 'w-full';
     container.dataset.renderedKey = '';
-    batchInsertHTML(
-      container,
-      `
-      <div class="glass-card rounded-2xl p-12 text-center text-white/50 space-y-3">
-        <svg class="w-10 h-10 mx-auto text-white/30" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-          <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M9 12h6m-6 4h6m2 5H7a2 2 0 01-2-2V5a2 2 0 012-2h5.586a1 1 0 01.707.293l5.414 5.414a1 1 0 01.293.707V19a2 2 0 01-2 2z"/>
-        </svg>
-        <p class="text-sm font-medium text-white/70">${query ? 'No matching targets found' : 'No monitors configured yet'}</p>
-        <p class="text-xs text-white/40">${query ? 'Try searching for a different keyword' : 'Click "+ Add Monitor" to create your first health check target'}</p>
+    const emptyMarkup = isSearching
+      ? `
+      <div class="w-full rounded-[16px] border border-dashed border-[#33333a] bg-[#111115] py-14 px-6 flex flex-col items-center justify-center text-center">
+        <div class="w-12 h-12 rounded-full bg-[#1b221e] border border-[#24312b] flex items-center justify-center mb-4 text-[#a1a1aa]" aria-hidden="true">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+        </div>
+        <h3 class="text-base font-semibold text-white tracking-tight">Tidak ada hasil untuk &ldquo;${escapeHtml(query)}&rdquo;</h3>
+        <p class="text-sm text-[#a1a1aa] max-w-sm mx-auto mt-1 leading-relaxed">
+          Coba periksa ejaan atau gunakan kata kunci pencarian yang lain.
+        </p>
+        <button type="button" onclick="document.getElementById('search-input').value=''; filterMonitors(true);" class="mt-5 h-[34px] px-4 rounded-[10px] bg-[#141418] hover:bg-[#1a1a20] text-white text-xs font-semibold border border-[#2a2a30] transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#89cc9e]">
+          <svg class="w-3.5 h-3.5 text-[#a1a1aa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+          <span>Reset pencarian</span>
+        </button>
       </div>
-    `
-    );
+      `
+      : `
+      <div class="w-full rounded-2xl border border-dotted border-white/15 glass-card px-6 flex flex-col items-center justify-center text-center" style="min-height: 520px; padding-top: 5rem; padding-bottom: 5rem;">
+        <!-- Lingkaran hijau gelap berisi logo KeepUp (#34d399) -->
+        <div class="w-14 h-14 rounded-full bg-[#042818] border border-[#34d399]/25 flex items-center justify-center mb-5" aria-hidden="true">
+          <img src="/favicon.svg" class="w-8 h-8" width="32" height="32" alt="KeepUp Logo" />
+        </div>
+
+        <h3 class="text-xl font-bold text-white tracking-tight mb-2">Belum ada monitor</h3>
+        <p class="text-sm text-white/40 max-w-md mx-auto leading-relaxed mb-6">
+          Tambahkan target pertama Anda untuk mulai memantau uptime,<br class="hidden sm:inline"/> waktu respons, dan status kesehatan secara otomatis.
+        </p>
+
+        <!-- Tombol CTA Tambah Monitor -->
+        <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="h-10 px-5 rounded-xl bg-[#86efac] hover:bg-[#a7f3d0] text-[#04130d] font-semibold text-sm transition inline-flex items-center gap-2 cursor-pointer shadow-sm active:scale-95 focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#86efac]">
+          <svg class="w-4 h-4 stroke-[2.5]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+          </svg>
+          <span>Tambah Monitor</span>
+        </button>
+
+        <!-- Garis pembatas halus -->
+        <div class="w-full max-w-md border-t border-white/5 mt-8 mb-5" style="padding-top: 1rem;"></div>
+
+        <span class="text-[11px] font-medium uppercase tracking-wider text-white/40 mb-3">MULAI CEPAT DENGAN TEMPLATE:</span>
+
+        <!-- Tiga tombol pintasan template dengan ikon -->
+        <div class="flex flex-wrap items-center justify-center gap-2.5">
+          <button type="button" onclick="openCreateMonitorWithTemplate('http')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+            <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 01-9 9m9-9a9 9 0 00-9-9m9 9H3m9 9a9 9 0 01-9-9m9 9c1.657 0 3-4.03 3-9s-1.343-9-3-9m0 18c-1.657 0-3-4.03-3-9s1.343-9 3-9m-9 9a9 9 0 019-9"/>
+            </svg>
+            <span>Website HTTP(S)</span>
+          </button>
+          <button type="button" onclick="openCreateMonitorWithTemplate('tcp')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+            <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M5 12h14M5 12a2 2 0 01-2-2V6a2 2 0 012-2h14a2 2 0 012 2v4a2 2 0 01-2 2M5 12a2 2 0 00-2 2v4a2 2 0 002 2h14a2 2 0 002-2v-4a2 2 0 00-2-2m-2-4h.01M17 16h.01"/>
+            </svg>
+            <span>TCP Port</span>
+          </button>
+          <button type="button" onclick="openCreateMonitorWithTemplate('ping')" class="px-4 py-2 rounded-xl bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 text-xs font-medium transition inline-flex items-center gap-2 cursor-pointer">
+            <svg class="w-3.5 h-3.5 text-white/60" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
+            </svg>
+            <span>Ping</span>
+          </button>
+        </div>
+      </div>
+      `;
+    batchInsertHTML(container, emptyMarkup);
+    if (paginationContainer) paginationContainer.classList.add('hidden');
     return;
   }
 
-  // Client-side search (⌘K) automatically bypasses pagination limits to search across all monitors
-  const visible = isSearching ? sorted : sorted.slice(0, monitorDisplayLimit);
-  const currentKey = `${window.currentViewMode}:${visible.map((m) => m.id).join(',')}`;
+  // Calculate pagination bounds
+  const totalItems = filtered.length;
+  const isAll = window.monitorsPageSize === 'all';
+  const pageSize = isAll ? totalItems : (window.monitorsPageSize || 12);
+  const totalPages = isAll ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
+
+  // Clamp current page
+  if (window.monitorsCurrentPage > totalPages) {
+    window.monitorsCurrentPage = totalPages;
+  }
+  if (window.monitorsCurrentPage < 1) {
+    window.monitorsCurrentPage = 1;
+  }
+
+  const currentPage = window.monitorsCurrentPage;
+  const startIndex = isAll ? 0 : (currentPage - 1) * pageSize;
+  const endIndex = isAll ? totalItems : Math.min(startIndex + pageSize, totalItems);
+  const pageItems = isSearching ? sorted : sorted.slice(startIndex, endIndex);
+
+  const currentKey = `${window.currentViewMode}:${pageItems.map((m) => m.id).join(',')}`;
 
   if (!forceRebuild && container.dataset.renderedKey === currentKey) {
     // Perform targeted in-place DOM updates without re-creating DOM tree
     let allUpdated = true;
-    for (const m of visible) {
+    for (const m of pageItems) {
       if (!updateSingleMonitorCardDOM(m)) {
         allUpdated = false;
         break;
@@ -792,19 +963,84 @@ function renderMonitors(forceRebuild = false) {
   container.dataset.renderedKey = currentKey;
   if (window.currentViewMode === 'grid') {
     container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
-    batchInsertHTML(container, visible.map((m) => renderMonitorCard(m)).join(''));
+    batchInsertHTML(container, pageItems.map((m) => renderMonitorCard(m)).join(''));
   } else {
     container.className = 'space-y-2.5';
-    batchInsertHTML(container, visible.map((m) => renderMonitorListRow(m)).join(''));
+    batchInsertHTML(container, pageItems.map((m) => renderMonitorListRow(m)).join(''));
   }
 
-  // Toggle "Show More" pagination button
+  // Render pagination controls
   if (paginationContainer) {
-    if (!isSearching && filtered.length > monitorDisplayLimit) {
-      paginationContainer.classList.remove('hidden');
-    } else {
-      paginationContainer.classList.add('hidden');
+    paginationContainer.classList.remove('hidden');
+
+    if (pageInfo) {
+      if (isAll || totalItems <= pageSize) {
+        pageInfo.innerText = `Showing all ${totalItems} target${totalItems === 1 ? '' : 's'}`;
+      } else {
+        pageInfo.innerText = `Showing ${startIndex + 1}–${endIndex} of ${totalItems} targets`;
+      }
     }
+
+    if (paginationControls) {
+      if (totalPages <= 1) {
+        paginationControls.innerHTML = '';
+      } else {
+        let controlsHtml = '';
+
+        // Previous button
+        const prevDisabled = currentPage === 1;
+        controlsHtml += `
+          <button type="button" ${prevDisabled ? 'disabled' : `onclick="changeMonitorsPage(${currentPage - 1})"`} class="px-2.5 py-1 rounded-lg border border-white/10 ${prevDisabled ? 'opacity-30 cursor-not-allowed text-white/30' : 'text-white/70 hover:text-white hover:bg-white/10 cursor-pointer'} transition flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+            <span class="hidden sm:inline">Prev</span>
+          </button>
+        `;
+
+        // Smart page windowing
+        let pages = [];
+        if (totalPages <= 7) {
+          for (let i = 1; i <= totalPages; i++) pages.push(i);
+        } else {
+          pages.push(1);
+          if (currentPage > 3) pages.push('...');
+          const start = Math.max(2, currentPage - 1);
+          const end = Math.min(totalPages - 1, currentPage + 1);
+          for (let i = start; i <= end; i++) pages.push(i);
+          if (currentPage < totalPages - 2) pages.push('...');
+          pages.push(totalPages);
+        }
+
+        pages.forEach((p) => {
+          if (p === '...') {
+            controlsHtml += `<span class="px-1.5 py-1 text-white/30 text-xs">…</span>`;
+          } else {
+            const isActive = p === currentPage;
+            controlsHtml += `
+              <button type="button" onclick="changeMonitorsPage(${p})" class="w-7 h-7 rounded-lg text-xs font-mono font-medium transition flex items-center justify-center cursor-pointer ${isActive ? 'bg-[#30d158] text-[#0b0b0c] font-bold shadow-sm' : 'text-white/70 hover:text-white hover:bg-white/10 border border-white/10'}">${p}</button>
+            `;
+          }
+        });
+
+        // Next button
+        const nextDisabled = currentPage === totalPages;
+        controlsHtml += `
+          <button type="button" ${nextDisabled ? 'disabled' : `onclick="changeMonitorsPage(${currentPage + 1})"`} class="px-2.5 py-1 rounded-lg border border-white/10 ${nextDisabled ? 'opacity-30 cursor-not-allowed text-white/30' : 'text-white/70 hover:text-white hover:bg-white/10 cursor-pointer'} transition flex items-center gap-1">
+            <span class="hidden sm:inline">Next</span>
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          </button>
+        `;
+
+        paginationControls.innerHTML = controlsHtml;
+      }
+    }
+  }
+
+  if (showMoreContainer) {
+    showMoreContainer.classList.add('hidden');
   }
 
   updateBulkActionBarUI();
@@ -918,14 +1154,14 @@ function renderMonitorCard(m) {
           ${m.is_public === 1 ? '🌐 Public' : '🔒 Private'}
         </span>
         <div class="flex items-center gap-1.5">
-          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? 'Pause Monitor' : 'Resume Monitor'}">
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? 'Pause Monitor' : 'Resume Monitor'}">
             ${
               m.is_active === 1
                 ? `<svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
                 : `<svg class="w-4 h-4 text-[#30d158] pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
             }
           </button>
-          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
             <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
@@ -939,10 +1175,10 @@ function renderMonitorCard(m) {
           <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
             Edit
           </button>
-          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
+          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
             Logs
           </button>
-          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
+          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
             <svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
             </svg>
@@ -1010,10 +1246,10 @@ function renderMonitorListRow(m) {
         </div>
 
         <div class="flex items-center gap-1.5 shrink-0">
-          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
             ${m.is_active === 1 ? '⏸' : '▶'}
           </button>
-          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
             <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
@@ -1085,12 +1321,12 @@ function renderWebhookItem(w) {
       </div>
 
       <div class="flex items-center gap-2 shrink-0">
-        <button data-action="test-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" onclick="testWebhookDirect('${w.id}', '${escapeHtml(w.name)}')" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
+        <button data-action="test-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
           Test
         </button>
         <!-- Smooth toggle -->
         <label class="relative inline-flex items-center cursor-pointer">
-          <input type="checkbox" ${isEnabled ? 'checked' : ''} data-action="toggle-webhook" data-id="${w.id}" data-enabled="${isEnabled}" onchange="toggleWebhookActive('${w.id}', ${isEnabled})" class="sr-only peer">
+          <input type="checkbox" ${isEnabled ? 'checked' : ''} data-action="toggle-webhook" data-id="${w.id}" data-enabled="${isEnabled}" class="sr-only peer">
           <div class="w-9 h-5 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#30d158]"></div>
         </label>
       </div>
@@ -1098,19 +1334,29 @@ function renderWebhookItem(w) {
   `;
 }
 
+async function loadWebhooksPreview() {
+  const container = document.getElementById('webhooks-preview-list');
+  if (!container) return;
+  try {
+    const res = await apiFetch('/api/webhooks');
+    if (res && res.ok) {
+      window.allWebhooks = await res.json();
+      renderWebhooksSection(window.allWebhooks);
+    } else {
+      renderWebhooksSection([]);
+    }
+  } catch (e) {
+    renderWebhooksSection([]);
+  }
+}
+window.loadWebhooksPreview = loadWebhooksPreview;
+
 function renderWebhooksSection(webhooks) {
   const container = document.getElementById('webhooks-preview-list');
   if (!container) return;
 
-  if (webhooks.length === 0) {
-    batchInsertHTML(
-      container,
-      `
-      <div class="col-span-full p-6 text-center text-neutral-500 dark:text-white/40 text-xs glass-card rounded-xl">
-        No notification webhooks registered. Click "+ Add Webhook" to receive instant alert cards.
-      </div>
-    `
-    );
+  if (!webhooks || webhooks.length === 0) {
+    container.innerHTML = '';
     return;
   }
 
@@ -1150,7 +1396,7 @@ async function toggleMonitorActive(id, currentActive) {
 async function toggleWebhookActive(id, currentEnabled) {
   const newEnabled = !currentEnabled;
   try {
-    const res = await apiFetch(`/api/webhooks/${id}`, {
+    const res = await apiFetch(`/api/admin/channels/${id}`, {
       method: 'PUT',
       headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ is_enabled: newEnabled }),
@@ -1182,7 +1428,7 @@ async function testWebhookDirect(id, name) {
     type: 'info',
   });
   try {
-    const res = await apiFetch(`/api/webhooks/${id}/test`, { method: 'POST' });
+    const res = await apiFetch(`/api/admin/channels/${id}/test`, { method: 'POST' });
     if (res) {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
@@ -1214,12 +1460,15 @@ function setViewMode(mode) {
   const listBtn = document.getElementById('view-list-btn');
 
   if (gridBtn && listBtn) {
-    if (mode === 'grid') {
-      gridBtn.className = 'p-1.5 rounded-lg text-white bg-white/10 transition';
-      listBtn.className = 'p-1.5 rounded-lg text-white/40 hover:text-white transition';
+    const isGrid = mode === 'grid';
+    gridBtn.setAttribute('aria-pressed', isGrid ? 'true' : 'false');
+    listBtn.setAttribute('aria-pressed', isGrid ? 'false' : 'true');
+    if (isGrid) {
+      gridBtn.className = 'p-1 rounded-lg text-white bg-white/10 transition';
+      listBtn.className = 'p-1 rounded-lg text-white/40 hover:text-white transition';
     } else {
-      listBtn.className = 'p-1.5 rounded-lg text-white bg-white/10 transition';
-      gridBtn.className = 'p-1.5 rounded-lg text-white/40 hover:text-white transition';
+      listBtn.className = 'p-1 rounded-lg text-white bg-white/10 transition';
+      gridBtn.className = 'p-1 rounded-lg text-white/40 hover:text-white transition';
     }
   }
 
@@ -1228,6 +1477,7 @@ function setViewMode(mode) {
 
 let searchDebounceTimer = null;
 function filterMonitors(immediate = false) {
+  window.monitorsCurrentPage = 1;
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = null;
@@ -2274,6 +2524,47 @@ document.addEventListener('click', (e) => {
       testWebhookDirect(id, name);
       break;
     }
+    case 'edit-channel': {
+      const id = target.dataset.id;
+      if (id) openEditChannelModal(id);
+      break;
+    }
+    case 'delete-channel': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      if (id) deleteNotificationChannel(id, name);
+      break;
+    }
+    case 'test-channel': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      if (id) testNotificationChannel(id, name, target);
+      break;
+    }
+    case 'open-update-incident': {
+      const id = target.dataset.id;
+      if (id) openAddIncidentUpdateModal(id);
+      break;
+    }
+    case 'resolve-incident': {
+      const id = target.dataset.id;
+      if (id) resolveIncident(id);
+      break;
+    }
+    case 'delete-incident': {
+      const id = target.dataset.id;
+      if (id) deleteIncident(id);
+      break;
+    }
+    case 'refresh-asset': {
+      const id = target.dataset.id;
+      if (id) forceRefreshAssetRow(id, target);
+      break;
+    }
+    case 'open-create-channel': {
+      openCreateChannelModal();
+      break;
+    }
     case 'close-badge-modal': {
       closeBadgeModal();
       break;
@@ -2314,8 +2605,17 @@ document.addEventListener('change', (e) => {
   }
 });
 
-// Escape key listener for modals
+// Keyboard shortcut listeners (Escape for modals, ⌘K / Ctrl+K for search)
 document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    const searchInput = document.getElementById('search-input');
+    if (searchInput && !searchInput.disabled) {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+  }
+
   if (e.key === 'Escape') {
     const badgeModal = document.getElementById('badge-modal');
     if (badgeModal && !badgeModal.classList.contains('hidden')) {
@@ -2354,15 +2654,18 @@ function switchAdminView(view) {
   const monitorsPanel = document.getElementById('monitors-panel');
   const assetExpiryPanel = document.getElementById('asset-expiry-panel');
   const channelsPanel = document.getElementById('channels-panel');
+  const incidentsPanel = document.getElementById('incidents-panel');
   const navMonitorsBtn = document.getElementById('nav-btn-monitors');
   const navStatusPagesBtn = document.getElementById('nav-btn-status-pages');
   const navAssetsBtn = document.getElementById('nav-btn-assets');
   const navChannelsBtn = document.getElementById('nav-btn-channels');
   const navMaintenanceBtn = document.getElementById('nav-btn-maintenance');
+  const navIncidentsBtn = document.getElementById('nav-btn-incidents');
 
   if (monitorsPanel) monitorsPanel.classList.add('hidden');
   if (assetExpiryPanel) assetExpiryPanel.classList.add('hidden');
   if (channelsPanel) channelsPanel.classList.add('hidden');
+  if (incidentsPanel) incidentsPanel.classList.add('hidden');
 
   const inactiveBtnClass = 'h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
   const activeBtnClass = 'h-8 px-3 rounded-lg transition bg-white/15 text-white border border-white/20 shadow-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
@@ -2372,6 +2675,7 @@ function switchAdminView(view) {
   if (navAssetsBtn) navAssetsBtn.className = inactiveBtnClass;
   if (navChannelsBtn) navChannelsBtn.className = inactiveBtnClass;
   if (navMaintenanceBtn) navMaintenanceBtn.className = inactiveBtnClass;
+  if (navIncidentsBtn) navIncidentsBtn.className = inactiveBtnClass;
 
   if (view === 'assets') {
     if (assetExpiryPanel) assetExpiryPanel.classList.remove('hidden');
@@ -2381,6 +2685,10 @@ function switchAdminView(view) {
     if (channelsPanel) channelsPanel.classList.remove('hidden');
     if (navChannelsBtn) navChannelsBtn.className = activeBtnClass;
     loadNotificationChannels(true);
+  } else if (view === 'incidents') {
+    if (incidentsPanel) incidentsPanel.classList.remove('hidden');
+    if (navIncidentsBtn) navIncidentsBtn.className = activeBtnClass;
+    loadAdminIncidents(true);
   } else {
     if (monitorsPanel) monitorsPanel.classList.remove('hidden');
     if (navMonitorsBtn) navMonitorsBtn.className = activeBtnClass;
@@ -2495,7 +2803,7 @@ function renderAssetExpiryTable(items) {
         <td class="py-3 px-4">${domainCell}</td>
         <td class="py-3 px-4">${urgencyCell}</td>
         <td class="py-3 px-4 text-right">
-          <button type="button" onclick="forceRefreshAssetRow('${escapeHtml(item.monitor_id)}', this)" class="px-2.5 py-1 text-xs rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 transition inline-flex items-center gap-1 font-sans cursor-pointer active:scale-95" title="Force immediate TLS and domain check">
+          <button type="button" data-action="refresh-asset" data-id="${escapeHtml(item.monitor_id)}" class="px-2.5 py-1 text-xs rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 transition inline-flex items-center gap-1 font-sans cursor-pointer active:scale-95" title="Force immediate TLS and domain check">
             <span>⚡</span><span>Force Refresh</span>
           </button>
         </td>
@@ -2641,13 +2949,13 @@ function renderChannelCard(channel) {
           </div>
           <!-- Action Menu -->
           <div class="flex items-center gap-1 shrink-0">
-            <button onclick="openEditChannelModal('${channel.id}')" class="p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition cursor-pointer" title="Edit Channel">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button data-action="edit-channel" data-id="${channel.id}" class="p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition cursor-pointer" title="Edit Channel">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
               </svg>
             </button>
-            <button onclick="deleteNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}')" class="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer" title="Delete Channel">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button data-action="delete-channel" data-id="${channel.id}" data-name="${escapeHtml(channel.name)}" class="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer" title="Delete Channel">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
               </svg>
             </button>
@@ -2664,7 +2972,7 @@ function renderChannelCard(channel) {
 
       <div class="pt-2 border-t border-white/5 flex items-center justify-between">
         <span class="text-[10px] font-mono text-white/40">Created ${formatDate(channel.created_at)}</span>
-        <button id="test-chan-btn-${channel.id}" onclick="testNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}', this)" class="px-3 py-1 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
+        <button id="test-chan-btn-${channel.id}" data-action="test-channel" data-id="${channel.id}" data-name="${escapeHtml(channel.name)}" class="px-3 py-1 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
           <svg class="w-3 h-3 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
           </svg>
@@ -2940,6 +3248,11 @@ function openCreateChannelModal(isInline = false) {
   const typeEl = document.getElementById('channel-form-type');
   if (typeEl) typeEl.value = 'discord';
 
+  const notifyResolveEl = document.getElementById('channel-form-notify-resolve');
+  if (notifyResolveEl) notifyResolveEl.checked = true;
+  const tmplEl = document.getElementById('channel-form-template');
+  if (tmplEl) tmplEl.value = '';
+
   syncChannelTypeCustomization('discord');
   updateDiscordAvatarPreview();
 
@@ -2986,6 +3299,11 @@ function openEditChannelModal(id) {
   syncChannelTypeCustomization(cType);
   updateDiscordAvatarPreview();
 
+  const notifyResolveEl = document.getElementById('channel-form-notify-resolve');
+  if (notifyResolveEl) notifyResolveEl.checked = channel.notify_on_resolve !== false;
+  const tmplEl = document.getElementById('channel-form-template');
+  if (tmplEl) tmplEl.value = channel.custom_template || '';
+
   if (modal) modal.classList.remove('hidden');
 }
 window.openEditChannelModal = openEditChannelModal;
@@ -3007,6 +3325,8 @@ async function submitChannelForm(e) {
   const type = document.getElementById('channel-form-type')?.value?.trim();
   let url = document.getElementById('channel-form-url')?.value?.trim() || '';
   const is_default = document.getElementById('channel-form-default')?.checked || false;
+  const notify_on_resolve = document.getElementById('channel-form-notify-resolve') ? document.getElementById('channel-form-notify-resolve').checked : true;
+  const custom_template = document.getElementById('channel-form-template')?.value?.trim() || null;
   const bot_name = document.getElementById('channel-form-bot-name')?.value?.trim() || null;
   const avatar_url = document.getElementById('channel-form-avatar-url')?.value?.trim() || null;
   const telegram_bot_token = document.getElementById('channel-form-telegram-token')?.value?.trim() || null;
@@ -3063,6 +3383,8 @@ async function submitChannelForm(e) {
         type,
         url,
         is_default,
+        notify_on_resolve,
+        custom_template,
         bot_name,
         avatar_url,
         telegram_bot_token,
@@ -3116,9 +3438,438 @@ async function submitChannelForm(e) {
 }
 window.submitChannelForm = submitChannelForm;
 
+// ── Incidents Management ───────────────────────────────────────────────────
+
+let isAdminIncidentsLoading = false;
+async function loadAdminIncidents(showLoader = true) {
+  if (isAdminIncidentsLoading) return;
+  isAdminIncidentsLoading = true;
+
+  const refreshIcon = document.getElementById('incidents-refresh-icon');
+  if (refreshIcon && showLoader) refreshIcon.classList.add('animate-spin');
+
+  try {
+    const res = await apiFetch('/api/admin/incidents');
+    if (!res.ok) throw new Error('Failed to load incidents: ' + res.status);
+    const incidents = await res.json();
+    window.cachedIncidents = incidents;
+    renderAdminIncidents(incidents);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    isAdminIncidentsLoading = false;
+    if (refreshIcon) refreshIcon.classList.remove('animate-spin');
+  }
+}
+window.loadAdminIncidents = loadAdminIncidents;
+
+function renderAdminIncidents(incidents) {
+  const container = document.getElementById('incidents-list-container');
+  if (!container) return;
+
+  if (!incidents || incidents.length === 0) {
+    container.innerHTML = `
+      <div class="glass-card rounded-2xl p-8 text-center text-white/50 text-xs space-y-2 border border-white/5">
+        <p class="font-medium text-white/70">No incidents recorded</p>
+        <p class="text-white/40">Use "+ Create Incident" above to declare an active disruption or maintenance record.</p>
+      </div>
+    `;
+    return;
+  }
+
+  const html = incidents.map((inc) => {
+    const isResolved = inc.status === 'RESOLVED';
+    const statusBadgeClass = isResolved
+      ? 'status-badge-operational'
+      : inc.status === 'INVESTIGATING'
+      ? 'status-badge-down'
+      : 'status-badge-degraded';
+
+    let updatesHtml = '';
+    if (Array.isArray(inc.updates) && inc.updates.length > 0) {
+      updatesHtml = `
+        <div class="mt-3 space-y-2 pl-3 border-l border-white/10 text-xs">
+          ${inc.updates.map((u) => `
+            <div class="space-y-0.5">
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-white/90 uppercase text-[10px]">${escapeHtml(u.status)}</span>
+                <span class="text-white/40 font-mono text-[10px]">${escapeHtml(formatDate(u.created_at))}</span>
+              </div>
+              <p class="text-white/70 text-xs">${escapeHtml(u.message)}</p>
+            </div>
+          `).join('')}
+        </div>
+      `;
+    }
+
+    return `
+      <div class="glass-card rounded-2xl p-5 border border-white/10 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <h3 class="font-semibold text-white text-sm">${escapeHtml(inc.title)}</h3>
+            <span class="px-2 py-0.5 rounded-full text-[10px] ${statusBadgeClass} font-medium">${escapeHtml(inc.status)}</span>
+            <span class="px-1.5 py-0.2 rounded text-[9px] bg-white/10 text-white/60 font-mono">${escapeHtml(inc.severity)}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button data-action="open-update-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white transition cursor-pointer">
+              + Update
+            </button>
+            ${!isResolved ? `
+              <button data-action="resolve-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-[#30d158]/20 hover:bg-[#30d158]/30 text-[#30d158] transition cursor-pointer">
+                Resolve
+              </button>
+            ` : ''}
+            <button data-action="delete-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition cursor-pointer">
+              Delete
+            </button>
+          </div>
+        </div>
+        <div class="text-[11px] text-white/40 font-mono">
+          <span>Started: ${escapeHtml(formatDate(inc.started_at))}</span>
+          ${inc.resolved_at ? `<span> • Resolved: ${escapeHtml(formatDate(inc.resolved_at))}</span>` : ''}
+        </div>
+        ${updatesHtml}
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = html;
+}
+
+function openCreateIncidentModal() {
+  const modal = document.getElementById('incident-modal');
+  const monitorSelect = document.getElementById('incident-form-monitor');
+  if (monitorSelect) {
+    monitorSelect.innerHTML = '<option value="">None / System-Wide</option>' +
+      (window.allMonitors || []).map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
+  }
+  const form = document.getElementById('incident-form');
+  if (form) form.reset();
+  if (modal) modal.classList.remove('hidden');
+}
+window.openCreateIncidentModal = openCreateIncidentModal;
+
+function closeIncidentModal() {
+  const modal = document.getElementById('incident-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeIncidentModal = closeIncidentModal;
+
+async function submitIncidentForm(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const title = document.getElementById('incident-form-title')?.value?.trim();
+  const status = document.getElementById('incident-form-status')?.value;
+  const severity = document.getElementById('incident-form-severity')?.value;
+  const monitor_id = document.getElementById('incident-form-monitor')?.value || null;
+  const message = document.getElementById('incident-form-message')?.value?.trim();
+
+  const saveBtn = document.getElementById('save-incident-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Posting...';
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/incidents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, status, severity, monitor_id, message }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to post incident');
+    }
+
+    closeIncidentModal();
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Incident Declared', message: `Incident "${title}" posted.`, type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Incident Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = 'Post Incident';
+    }
+  }
+}
+window.submitIncidentForm = submitIncidentForm;
+
+function openAddIncidentUpdateModal(id) {
+  const modal = document.getElementById('incident-update-modal');
+  const idEl = document.getElementById('update-form-incident-id');
+  if (idEl) idEl.value = id;
+  const msgEl = document.getElementById('update-form-message');
+  if (msgEl) msgEl.value = '';
+  if (modal) modal.classList.remove('hidden');
+}
+window.openAddIncidentUpdateModal = openAddIncidentUpdateModal;
+
+function closeIncidentUpdateModal() {
+  const modal = document.getElementById('incident-update-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeIncidentUpdateModal = closeIncidentUpdateModal;
+
+async function submitIncidentUpdateForm(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const id = document.getElementById('update-form-incident-id')?.value;
+  const status = document.getElementById('update-form-status')?.value;
+  const message = document.getElementById('update-form-message')?.value?.trim();
+
+  if (!id || !message) return;
+
+  const saveBtn = document.getElementById('save-update-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Posting...';
+  }
+
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}/updates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, message }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to post update');
+    }
+
+    closeIncidentUpdateModal();
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Update Posted', message: 'Incident update appended.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Update Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = 'Post Update';
+    }
+  }
+}
+window.submitIncidentUpdateForm = submitIncidentUpdateForm;
+
+async function resolveIncident(id) {
+  if (!id) return;
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Incident marked as resolved by administrator.' }),
+    });
+    if (!res.ok) throw new Error('Failed to resolve incident');
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Resolved', message: 'Incident marked as RESOLVED.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  }
+}
+window.resolveIncident = resolveIncident;
+
+async function deleteIncident(id) {
+  if (!id) return;
+  if (!confirm('Are you sure you want to delete this incident and all timeline updates?')) return;
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete incident');
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Deleted', message: 'Incident deleted.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  }
+}
+window.deleteIncident = deleteIncident;
+
+// ── JSON Configuration Export & Import ─────────────────────────────────────
+
+async function exportConfigJson() {
+  try {
+    const res = await apiFetch('/api/admin/export');
+    if (!res.ok) throw new Error('Export failed: ' + res.status);
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `keepup-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Export Complete', message: 'KeepUp configuration exported successfully.', type: 'success' });
+    }
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Export Failed', message: err.message, type: 'error' });
+    }
+  }
+}
+window.exportConfigJson = exportConfigJson;
+
+async function importConfigJson(inputEl) {
+  const file = inputEl?.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    const res = await apiFetch('/api/admin/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Import failed');
+    }
+    const result = await res.json();
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Import Successful',
+        message: `Imported ${result.imported_monitors} monitors, ${result.imported_channels} channels.`,
+        type: 'success',
+      });
+    }
+    inputEl.value = '';
+    fetchDashboardData(true);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Import Failed', message: err.message, type: 'error' });
+    }
+    inputEl.value = '';
+  }
+}
+window.importConfigJson = importConfigJson;
+
+// ── Consolidated Navigation Dropdown Menu ────────────────────────────────────
+
+function toggleNavDropdown(e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  const menu = document.getElementById('nav-dropdown-menu');
+  const btn = document.getElementById('nav-dropdown-btn');
+  const caret = document.getElementById('nav-dropdown-caret');
+  if (!menu) return;
+
+  const isHidden = menu.classList.contains('hidden');
+  if (isHidden) {
+    menu.classList.remove('hidden');
+    menu.classList.add('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+    if (caret) caret.classList.add('rotate-180');
+  } else {
+    menu.classList.add('hidden');
+    menu.classList.remove('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (caret) caret.classList.remove('rotate-180');
+  }
+}
+
+function closeNavDropdown() {
+  const menu = document.getElementById('nav-dropdown-menu');
+  const btn = document.getElementById('nav-dropdown-btn');
+  const caret = document.getElementById('nav-dropdown-caret');
+  if (menu && !menu.classList.contains('hidden')) {
+    menu.classList.add('hidden');
+    menu.classList.remove('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (caret) caret.classList.remove('rotate-180');
+  }
+}
+
+window.toggleNavDropdown = toggleNavDropdown;
+window.closeNavDropdown = closeNavDropdown;
+
+async function loadNavUserProfile() {
+  try {
+    const res = await apiFetch('/api/auth/me');
+    if (res && res.user) {
+      const label = document.getElementById('nav-user-label');
+      if (label) label.textContent = res.user;
+    }
+  } catch (_) {}
+}
+
 // ── Initialization & Auto-Refresh Loop (Every 5 seconds) ─────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('click', (e) => {
+    const container = document.getElementById('nav-dropdown-container');
+    if (container && !container.contains(e.target)) {
+      closeNavDropdown();
+    }
+  });
+
+  const navContainer = document.getElementById('nav-dropdown-container');
+  if (navContainer) {
+    navContainer.addEventListener('keydown', (e) => {
+      const menu = document.getElementById('nav-dropdown-menu');
+      const btn = document.getElementById('nav-dropdown-btn');
+      if (!menu) return;
+      const isOpen = !menu.classList.contains('hidden');
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+
+      if (e.key === 'Escape') {
+        if (isOpen) {
+          e.preventDefault();
+          closeNavDropdown();
+          if (btn) btn.focus();
+        }
+        return;
+      }
+
+      if (!isOpen && (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        toggleNavDropdown(e);
+        items[0]?.focus();
+        return;
+      }
+
+      if (isOpen) {
+        const currentIndex = items.indexOf(document.activeElement);
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          const nextIndex = (currentIndex + 1) % items.length;
+          items[nextIndex]?.focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          const prevIndex = (currentIndex - 1 + items.length) % items.length;
+          items[prevIndex]?.focus();
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          items[0]?.focus();
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          items[items.length - 1]?.focus();
+        } else if (e.key === 'Tab') {
+          closeNavDropdown();
+        }
+      }
+    });
+  }
   const badgeBackdrop = document.getElementById('badge-modal');
   if (badgeBackdrop) {
     badgeBackdrop.addEventListener('click', (e) => {
@@ -3155,6 +3906,24 @@ document.addEventListener('DOMContentLoaded', () => {
     });
   }
 
+  const incidentBackdrop = document.getElementById('incident-modal');
+  if (incidentBackdrop) {
+    incidentBackdrop.addEventListener('click', (e) => {
+      if (e.target === incidentBackdrop) {
+        closeIncidentModal();
+      }
+    });
+  }
+
+  const updateBackdrop = document.getElementById('incident-update-modal');
+  if (updateBackdrop) {
+    updateBackdrop.addEventListener('click', (e) => {
+      if (e.target === updateBackdrop) {
+        closeIncidentUpdateModal();
+      }
+    });
+  }
+
   const bulkDeleteBackdrop = document.getElementById('bulk-delete-modal');
   if (bulkDeleteBackdrop) {
     bulkDeleteBackdrop.addEventListener('click', (e) => {
@@ -3166,6 +3935,13 @@ document.addEventListener('DOMContentLoaded', () => {
 
   document.addEventListener('keydown', (e) => {
     if (e.key === 'Escape') {
+      const menu = document.getElementById('nav-dropdown-menu');
+      const btn = document.getElementById('nav-dropdown-btn');
+      const wasMenuOpen = menu && !menu.classList.contains('hidden');
+      closeNavDropdown();
+      if (wasMenuOpen && btn) {
+        btn.focus();
+      }
       const bulkDeleteModal = document.getElementById('bulk-delete-modal');
       if (bulkDeleteModal && !bulkDeleteModal.classList.contains('hidden')) {
         closeBulkDeleteModal();
@@ -3178,6 +3954,16 @@ document.addEventListener('DOMContentLoaded', () => {
       const channelModal = document.getElementById('channel-modal');
       if (channelModal && !channelModal.classList.contains('hidden')) {
         closeChannelModal();
+        return;
+      }
+      const incModal = document.getElementById('incident-modal');
+      if (incModal && !incModal.classList.contains('hidden')) {
+        closeIncidentModal();
+        return;
+      }
+      const upModal = document.getElementById('incident-update-modal');
+      if (upModal && !upModal.classList.contains('hidden')) {
+        closeIncidentUpdateModal();
         return;
       }
     } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
@@ -3194,20 +3980,46 @@ document.addEventListener('DOMContentLoaded', () => {
     window.location.pathname.includes('login') ||
     window.location.pathname.includes('status');
 
+  function initLiveEventStream() {
+    if (window.EventSource) {
+      try {
+        const evtSource = new EventSource('/api/events');
+        evtSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.event === 'check_completed' || data.event === 'status_changed') {
+              if (!document.hidden && currentAdminView === 'monitors') {
+                fetchDashboardData(false);
+              }
+            }
+          } catch (_) {}
+        };
+        evtSource.onerror = () => {
+          // EventSource will auto-reconnect
+        };
+      } catch (_) {}
+    }
+  }
+
   if (!isAuthOrStatusPage) {
     initSortingControls();
     setViewMode(window.currentViewMode);
+    loadNavUserProfile();
     fetchDashboardData(true);
+    initLiveEventStream();
 
-    // Auto-refresh every 5 seconds per PRD requirements
+    // Auto-refresh fallback every 10 seconds (paused when tab hidden)
     setInterval(() => {
+      if (document.hidden) return;
       if (currentAdminView === 'assets') {
         loadAssetExpiryData(false);
       } else if (currentAdminView === 'channels') {
         loadNotificationChannels(false);
+      } else if (currentAdminView === 'incidents') {
+        loadAdminIncidents(false);
       } else {
         fetchDashboardData(false);
       }
-    }, 5000);
+    }, 10000);
   }
 });

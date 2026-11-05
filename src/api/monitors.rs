@@ -40,10 +40,30 @@ pub struct CreateMonitor {
     pub check_type: String,
     #[serde(default)]
     pub port: Option<i32>,
-    #[serde(default)]
+    #[serde(default = "default_dns_record_type")]
     pub dns_record_type: Option<String>,
     #[serde(default)]
     pub dns_expected_value: Option<String>,
+    #[serde(default = "default_http_method")]
+    pub http_method: String,
+    #[serde(default = "default_expected_status")]
+    pub expected_status: String,
+    #[serde(default)]
+    pub request_headers: Option<String>,
+    #[serde(default)]
+    pub body_keyword: Option<String>,
+    #[serde(default)]
+    pub json_pointer: Option<String>,
+    #[serde(default)]
+    pub json_expected: Option<String>,
+    #[serde(default)]
+    pub degraded_latency_ms: Option<i64>,
+    #[serde(default)]
+    pub dns_expected: Option<String>,
+    #[serde(default)]
+    pub resend_interval_mins: i32,
+    #[serde(default = "default_grace_secs")]
+    pub grace_secs: i32,
 }
 
 fn default_check_type() -> String {
@@ -64,6 +84,92 @@ fn default_true() -> bool {
 fn default_warning_days() -> i32 {
     30
 }
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+fn default_expected_status() -> String {
+    "200-299".to_string()
+}
+fn default_dns_record_type() -> Option<String> {
+    Some("A".to_string())
+}
+fn default_grace_secs() -> i32 {
+    60
+}
+
+impl CreateMonitor {
+    pub fn validate(&self) -> Result<(), AppError> {
+        let name = self.name.trim();
+        if name.is_empty() {
+            return Err(AppError::BadRequest("Monitor name cannot be empty".to_string()));
+        }
+        let check_type = self.check_type.trim().to_lowercase();
+        if check_type != "http" && check_type != "tcp" && check_type != "dns" && check_type != "ping" && check_type != "push" {
+            return Err(AppError::BadRequest(format!(
+                "Invalid check_type '{check_type}'. Allowed: http, tcp, dns, ping, push"
+            )));
+        }
+        let url = self.url.trim();
+        if url.is_empty() {
+            return Err(AppError::BadRequest("Target URL/host cannot be empty".to_string()));
+        }
+        if check_type == "http" && !url.starts_with("http://") && !url.starts_with("https://") {
+            return Err(AppError::BadRequest(
+                "HTTP Monitor URL must start with http:// or https://".to_string(),
+            ));
+        }
+        if check_type == "push" && !url.starts_with("push://") {
+            return Err(AppError::BadRequest(
+                "Push monitor target must start with push://".to_string(),
+            ));
+        }
+        if check_type != "http" && check_type != "push" && url.contains("://") && !url.starts_with("tcp://") && !url.starts_with("dns://") {
+            return Err(AppError::BadRequest(
+                "Unsupported URL scheme: must start with http://, https://, tcp://, dns://, or push://"
+                    .to_string(),
+            ));
+        }
+        if let Some(port) = self.port {
+            if !(1..=65535).contains(&port) {
+                return Err(AppError::BadRequest("TCP port must be between 1 and 65535".to_string()));
+            }
+        }
+        if let Some(ref rtype) = self.dns_record_type {
+            let rt = rtype.trim().to_uppercase();
+            if rt != "A" && rt != "AAAA" && rt != "CNAME" && rt != "TXT" && rt != "MX" {
+                return Err(AppError::BadRequest(format!(
+                    "Invalid dns_record_type '{rtype}'. Allowed: A, AAAA, CNAME, TXT, MX"
+                )));
+            }
+        }
+        if !(5..=86400).contains(&self.check_interval_secs) {
+            return Err(AppError::BadRequest(
+                "check_interval_secs must be between 5 and 86400".to_string(),
+            ));
+        }
+        if !(1..=60).contains(&self.timeout_secs) {
+            return Err(AppError::BadRequest(
+                "timeout_secs must be between 1 and 60".to_string(),
+            ));
+        }
+        if !(1..=10).contains(&self.max_retries) {
+            return Err(AppError::BadRequest(
+                "max_retries must be between 1 and 10".to_string(),
+            ));
+        }
+        if !(1..=365).contains(&self.domain_warning_days) {
+            return Err(AppError::BadRequest(
+                "domain_warning_days must be between 1 and 365".to_string(),
+            ));
+        }
+        if !(1..=365).contains(&self.ssl_warning_days) {
+            return Err(AppError::BadRequest(
+                "ssl_warning_days must be between 1 and 365".to_string(),
+            ));
+        }
+        Ok(())
+    }
+}
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -72,13 +178,7 @@ pub async fn list(
     State(state): State<Arc<AppState>>,
 ) -> Result<Json<Vec<MonitorRow>>, AppError> {
     let rows = sqlx::query_as::<_, MonitorRow>(
-        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at, \
-               check_domain_expiry, domain_warning_days, domain_expires_at, \
-               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-               check_type, port, dns_record_type, dns_expected_value \
-         FROM monitors ORDER BY created_at DESC",
+        "SELECT * FROM monitors ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
     .await?;
@@ -92,13 +192,7 @@ pub async fn get_one(
     Path(id): Path<String>,
 ) -> Result<Json<MonitorRow>, AppError> {
     let row = sqlx::query_as::<_, MonitorRow>(
-        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at, \
-               check_domain_expiry, domain_warning_days, domain_expires_at, \
-               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-               check_type, port, dns_record_type, dns_expected_value \
-         FROM monitors WHERE id = ?",
+        "SELECT * FROM monitors WHERE id = ?",
     )
     .bind(&id)
     .fetch_optional(&state.db)
@@ -113,46 +207,30 @@ pub async fn create(
     State(state): State<Arc<AppState>>,
     Json(body): Json<CreateMonitor>,
 ) -> Result<(StatusCode, Json<MonitorRow>), AppError> {
-    if body.name.trim().is_empty() {
-        return Err(AppError::BadRequest("Monitor name cannot be empty".to_string()));
-    }
-    let check_type = body.check_type.trim().to_lowercase();
-    if check_type != "http" && check_type != "tcp" && check_type != "dns" && check_type != "ping" {
-        return Err(AppError::BadRequest(format!(
-            "Invalid check_type '{check_type}'. Allowed: http, tcp, dns, ping"
-        )));
-    }
-    let u = body.url.trim();
-    if u.is_empty() {
-        return Err(AppError::BadRequest("Target URL/host cannot be empty".to_string()));
-    }
-    if check_type == "http" && !u.starts_with("http://") && !u.starts_with("https://") {
-        return Err(AppError::BadRequest(
-            "HTTP Monitor URL must start with http:// or https://".to_string(),
-        ));
-    }
-    if let Some(port) = body.port {
-        if !(1..=65535).contains(&port) {
-            return Err(AppError::BadRequest("TCP port must be between 1 and 65535".to_string()));
-        }
-    }
-    if let Some(ref rtype) = body.dns_record_type {
-        let rt = rtype.trim().to_uppercase();
-        if rt != "A" && rt != "AAAA" && rt != "CNAME" && rt != "TXT" && rt != "MX" {
-            return Err(AppError::BadRequest(format!(
-                "Invalid dns_record_type '{rtype}'. Allowed: A, AAAA, CNAME, TXT, MX"
-            )));
-        }
-    }
+    body.validate()?;
 
     let id = uuid::Uuid::new_v4().to_string();
+    let push_token = if body.url.starts_with("push://") {
+        Some(crate::api::push::generate_push_token())
+    } else {
+        None
+    };
+
+    let dns_record_type = body.dns_record_type.clone().unwrap_or_else(|| "A".to_string());
+    let dns_expected = body.dns_expected.clone().or_else(|| body.dns_expected_value.clone());
+    let dns_expected_value = body.dns_expected_value.clone().or_else(|| body.dns_expected.clone());
+
+    let mut tx = state.db.begin().await?;
 
     sqlx::query(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
                                check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
-                               check_type, port, dns_record_type, dns_expected_value) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               http_method, expected_status, request_headers, body_keyword, \
+                               json_pointer, json_expected, degraded_latency_ms, push_token, \
+                               grace_secs, dns_record_type, dns_expected, resend_interval_mins, \
+                               check_type, port, dns_expected_value) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&body.name)
@@ -166,44 +244,62 @@ pub async fn create(
     .bind(body.domain_warning_days)
     .bind(body.check_ssl as i32)
     .bind(body.ssl_warning_days)
-    .bind(&check_type)
+    .bind(&body.http_method)
+    .bind(&body.expected_status)
+    .bind(&body.request_headers)
+    .bind(&body.body_keyword)
+    .bind(&body.json_pointer)
+    .bind(&body.json_expected)
+    .bind(body.degraded_latency_ms)
+    .bind(&push_token)
+    .bind(body.grace_secs)
+    .bind(&dns_record_type)
+    .bind(&dns_expected)
+    .bind(body.resend_interval_mins)
+    .bind(&body.check_type)
     .bind(body.port)
-    .bind(&body.dns_record_type)
-    .bind(&body.dns_expected_value)
-    .execute(&state.db)
+    .bind(&dns_expected_value)
+    .execute(&mut *tx)
     .await?;
 
     // Bind notification channels: explicitly selected or defaults if omitted
     let channel_ids_to_assign = match body.channel_ids {
         Some(ref ids) => ids.clone(),
         None => {
-            crate::db::notifications::list_channels(&state.db)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| c.is_default)
-                .map(|c| c.id)
-                .collect()
+            sqlx::query_as::<_, (String,)>(
+                "SELECT id FROM notification_channels WHERE is_default = 1",
+            )
+            .fetch_all(&mut *tx)
+            .await?
+            .into_iter()
+            .map(|r| r.0)
+            .collect()
         }
     };
-    if !channel_ids_to_assign.is_empty() {
-        let _ = crate::db::notifications::set_monitor_channels(&state.db, &id, &channel_ids_to_assign).await;
+
+    let mut seen = std::collections::HashSet::new();
+    for chan_id in channel_ids_to_assign {
+        if seen.insert(chan_id.clone()) {
+            sqlx::query(
+                "INSERT INTO monitor_notification_channels (monitor_id, channel_id) VALUES (?, ?)",
+            )
+            .bind(&id)
+            .bind(&chan_id)
+            .execute(&mut *tx)
+            .await?;
+        }
     }
 
     let row = sqlx::query_as::<_, MonitorRow>(
-        "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
-               is_active, is_public, last_status, down_since, created_at, \
-               check_domain_expiry, domain_warning_days, domain_expires_at, \
-               domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
-               check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-               check_type, port, dns_record_type, dns_expected_value \
-         FROM monitors WHERE id = ?",
+        "SELECT * FROM monitors WHERE id = ?",
     )
     .bind(&id)
-    .fetch_one(&state.db)
+    .fetch_one(&mut *tx)
     .await?;
 
-    state.status_cache.invalidate(None).await;
+    tx.commit().await?;
+
+    state.invalidate_status_cache().await;
 
     Ok((StatusCode::CREATED, Json(row)))
 }
@@ -213,9 +309,11 @@ pub async fn delete(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<StatusCode, AppError> {
+    let mut tx = state.db.begin().await?;
+
     let result = sqlx::query("DELETE FROM monitors WHERE id = ?")
         .bind(&id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
 
     if result.rows_affected() == 0 {
@@ -224,10 +322,73 @@ pub async fn delete(
 
     sqlx::query("DELETE FROM check_logs WHERE monitor_id = ?")
         .bind(&id)
-        .execute(&state.db)
+        .execute(&mut *tx)
         .await?;
 
-    state.status_cache.invalidate(None).await;
+    tx.commit().await?;
+
+    state.invalidate_status_cache().await;
 
     Ok(StatusCode::NO_CONTENT)
+}
+
+#[cfg(test)]
+mod tests {
+    use axum::body::Body;
+    use axum::http::{Request, StatusCode};
+    use tower::ServiceExt;
+
+    #[tokio::test]
+    async fn test_create_monitor_rejects_invalid_bounds() {
+        let pool = sqlx::sqlite::SqlitePoolOptions::new()
+            .max_connections(1)
+            .connect("sqlite::memory:")
+            .await
+            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
+
+        let config = crate::config::Config::default();
+        let token = crate::api::auth::create_jwt(
+            &config.admin_user,
+            &config.jwt_secret,
+            1,
+        )
+        .unwrap();
+
+        let state = crate::AppState::new_for_test(pool, config);
+        let app = crate::build_http_app(state);
+
+        // 1. check_interval_secs < 5 must return 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/monitors")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test","url":"https://example.com","check_interval_secs":0}"#))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // 2. timeout_secs < 1 or > 60 must return 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/monitors")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test","url":"https://example.com","timeout_secs":-1}"#))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+
+        // 3. invalid scheme must return 400
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/monitors")
+            .header("authorization", format!("Bearer {token}"))
+            .header("content-type", "application/json")
+            .body(Body::from(r#"{"name":"test","url":"ftp://example.com"}"#))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::BAD_REQUEST);
+    }
 }

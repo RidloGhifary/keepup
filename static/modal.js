@@ -91,21 +91,21 @@ function validateUrlInput(input) {
   if (!indicator) return;
   const val = (input?.value || '').trim();
   if (!val) {
-    indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-white/30"></span><span class="text-white/40">HTTP / HTTPS</span>`;
+    indicator.innerHTML = `HTTP / HTTPS`;
     return;
   }
   try {
     const parsed = new URL(val);
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#30d158]"></span><span class="text-[#30d158] font-semibold">${parsed.protocol.toUpperCase().replace(':', '')} VALID</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#84cc6e;display:inline-block;"></span><span style="color:#84cc6e;font-weight:600;font-size:10px;font-family:var(--mono,monospace);">${parsed.protocol.toUpperCase().replace(':', '')} VALID</span></span>`;
     } else {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">INVALID PROTOCOL</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#f0707a;display:inline-block;"></span><span style="color:#f0707a;font-size:10px;font-family:var(--mono,monospace);">INVALID PROTOCOL</span></span>`;
     }
   } catch (_) {
     if (val.startsWith('http://') || val.startsWith('https://')) {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span><span class="text-amber-400">INCOMPLETE</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#e5c07b;display:inline-block;"></span><span style="color:#e5c07b;font-size:10px;font-family:var(--mono,monospace);">INCOMPLETE</span></span>`;
     } else {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">MISSING PROTOCOL</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#f0707a;display:inline-block;"></span><span style="color:#f0707a;font-size:10px;font-family:var(--mono,monospace);">MISSING PROTOCOL</span></span>`;
     }
   }
 }
@@ -161,6 +161,60 @@ window.handleMonitorTypeChange = handleMonitorTypeChange;
 
 // ── Open Modals with Dynamic Data ────────────────────────────────────────────
 
+function onProbeTypeChange() {
+  const probeTypeEl = document.getElementById('m-probe-type');
+  const probeType = probeTypeEl ? probeTypeEl.value : 'http';
+
+  const httpOpts = document.getElementById('m-http-options');
+  const dnsOpts = document.getElementById('m-dns-options');
+  const pushOpts = document.getElementById('m-push-options');
+  const urlInput = document.getElementById('m-url');
+  const urlHint = document.getElementById('m-url-hint');
+
+  if (httpOpts) httpOpts.classList.toggle('hidden', probeType !== 'http');
+  if (dnsOpts) dnsOpts.classList.toggle('hidden', probeType !== 'dns');
+  if (pushOpts) pushOpts.classList.toggle('hidden', probeType !== 'push');
+
+  if (urlInput) {
+    if (probeType === 'http') {
+      urlInput.placeholder = 'https://api.example.com/health';
+      if (urlHint) urlHint.innerText = 'Accepts standard HTTPS or HTTP endpoints with custom ports';
+    } else if (probeType === 'tcp') {
+      urlInput.placeholder = 'tcp://db.example.com:5432';
+      if (urlHint) urlHint.innerText = 'TCP socket target in tcp://host:port format';
+    } else if (probeType === 'dns') {
+      urlInput.placeholder = 'dns://1.1.1.1:53/example.com';
+      if (urlHint) urlHint.innerText = 'DNS query target in dns://nameserver:port/hostname format';
+    } else if (probeType === 'push') {
+      urlInput.placeholder = 'push://heartbeat';
+      if (!urlInput.value || !urlInput.value.startsWith('push://')) {
+        urlInput.value = 'push://heartbeat';
+      }
+      if (urlHint) urlHint.innerText = 'Push Heartbeat: pings are received via HTTP push to unique token';
+    }
+  }
+}
+window.onProbeTypeChange = onProbeTypeChange;
+
+function copyPushUrl() {
+  const display = document.getElementById('m-push-url-display');
+  if (!display || !display.value || display.value.includes('Generated')) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Push URL', message: 'Save the monitor first to generate the push token URL.', type: 'warning' });
+    }
+    return;
+  }
+  navigator.clipboard.writeText(display.value).then(() => {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Copied', message: 'Push heartbeat URL copied to clipboard.', type: 'success' });
+    }
+  }).catch(() => {
+    display.select();
+    document.execCommand('copy');
+  });
+}
+window.copyPushUrl = copyPushUrl;
+
 function openEditMonitorModal(data) {
   let monitor = null;
   if (typeof data === 'string') {
@@ -199,6 +253,53 @@ function openEditMonitorModal(data) {
     document.getElementById('m-active').checked = monitor.is_active === 1;
     document.getElementById('m-public').checked = monitor.is_public === 1;
 
+    let probeType = 'http';
+    if (monitor.url.startsWith('push://')) probeType = 'push';
+    else if (monitor.url.startsWith('tcp://')) probeType = 'tcp';
+    else if (monitor.url.startsWith('dns://')) probeType = 'dns';
+
+    const probeTypeEl = document.getElementById('m-probe-type');
+    if (probeTypeEl) probeTypeEl.value = probeType;
+
+    const httpMethodEl = document.getElementById('m-http-method');
+    if (httpMethodEl) httpMethodEl.value = monitor.http_method || 'GET';
+
+    const expectedStatusEl = document.getElementById('m-expected-status');
+    if (expectedStatusEl) expectedStatusEl.value = monitor.expected_status || '200-299';
+
+    const headersEl = document.getElementById('m-request-headers');
+    if (headersEl) headersEl.value = monitor.request_headers || '';
+
+    const bodyKeywordEl = document.getElementById('m-body-keyword');
+    if (bodyKeywordEl) bodyKeywordEl.value = monitor.body_keyword || '';
+
+    const jsonPointerEl = document.getElementById('m-json-pointer');
+    if (jsonPointerEl) jsonPointerEl.value = monitor.json_pointer || '';
+
+    const jsonExpectedEl = document.getElementById('m-json-expected');
+    if (jsonExpectedEl) jsonExpectedEl.value = monitor.json_expected || '';
+
+    const degradedLatencyEl = document.getElementById('m-degraded-latency');
+    if (degradedLatencyEl) degradedLatencyEl.value = monitor.degraded_latency_ms || '';
+
+    const dnsExpectedEl = document.getElementById('m-dns-expected');
+    if (dnsExpectedEl) dnsExpectedEl.value = monitor.dns_expected || '';
+
+    const resendIntervalEl = document.getElementById('m-resend-interval');
+    if (resendIntervalEl) resendIntervalEl.value = monitor.resend_interval_mins || 0;
+
+    const graceSecsEl = document.getElementById('m-grace-secs');
+    if (graceSecsEl) graceSecsEl.value = monitor.grace_secs || 60;
+
+    const pushUrlDisplay = document.getElementById('m-push-url-display');
+    if (pushUrlDisplay) {
+      if (monitor.push_token) {
+        pushUrlDisplay.value = `${window.location.origin}/api/push/${monitor.push_token}`;
+      } else {
+        pushUrlDisplay.value = 'Generated upon saving as push monitor';
+      }
+    }
+
     const domainExpiryEl = document.getElementById('m-domain-expiry');
     const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
     if (domainExpiryEl) {
@@ -220,6 +321,7 @@ function openEditMonitorModal(data) {
     }
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
+    onProbeTypeChange();
     loadMonitorChannelsChecklist(monitor.id);
   } else {
     if (title) title.innerText = 'Add New Monitor';
@@ -245,6 +347,31 @@ function openEditMonitorModal(data) {
     document.getElementById('m-active').checked = true;
     document.getElementById('m-public').checked = true;
 
+    const probeTypeEl = document.getElementById('m-probe-type');
+    if (probeTypeEl) probeTypeEl.value = 'http';
+    const httpMethodEl = document.getElementById('m-http-method');
+    if (httpMethodEl) httpMethodEl.value = 'GET';
+    const expectedStatusEl = document.getElementById('m-expected-status');
+    if (expectedStatusEl) expectedStatusEl.value = '200-299';
+    const headersEl = document.getElementById('m-request-headers');
+    if (headersEl) headersEl.value = '';
+    const bodyKeywordEl = document.getElementById('m-body-keyword');
+    if (bodyKeywordEl) bodyKeywordEl.value = '';
+    const jsonPointerEl = document.getElementById('m-json-pointer');
+    if (jsonPointerEl) jsonPointerEl.value = '';
+    const jsonExpectedEl = document.getElementById('m-json-expected');
+    if (jsonExpectedEl) jsonExpectedEl.value = '';
+    const degradedLatencyEl = document.getElementById('m-degraded-latency');
+    if (degradedLatencyEl) degradedLatencyEl.value = '';
+    const dnsExpectedEl = document.getElementById('m-dns-expected');
+    if (dnsExpectedEl) dnsExpectedEl.value = '';
+    const resendIntervalEl = document.getElementById('m-resend-interval');
+    if (resendIntervalEl) resendIntervalEl.value = 0;
+    const graceSecsEl = document.getElementById('m-grace-secs');
+    if (graceSecsEl) graceSecsEl.value = 60;
+    const pushUrlDisplay = document.getElementById('m-push-url-display');
+    if (pushUrlDisplay) pushUrlDisplay.value = 'Generated upon creation';
+
     const domainExpiryEl = document.getElementById('m-domain-expiry');
     const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
     if (domainExpiryEl) {
@@ -266,11 +393,31 @@ function openEditMonitorModal(data) {
     }
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
+    onProbeTypeChange();
     loadMonitorChannelsChecklist(null);
   }
 
   showModal();
 }
+
+function openCreateMonitorWithTemplate(type) {
+  openEditMonitorModal(null);
+  const probeSelect = document.getElementById('m-probe-type');
+  if (probeSelect) {
+    probeSelect.value = type;
+    if (typeof onProbeTypeChange === 'function') {
+      onProbeTypeChange();
+    }
+  }
+  const typeSelect = document.getElementById('m-type');
+  if (typeSelect) {
+    typeSelect.value = type;
+  }
+  if (typeof handleMonitorTypeChange === 'function') {
+    handleMonitorTypeChange(type);
+  }
+}
+window.openCreateMonitorWithTemplate = openCreateMonitorWithTemplate;
 
 function openCloneMonitorModal(monitor, channelIds = []) {
   if (!monitor) return;
@@ -528,7 +675,7 @@ async function handleMonitorSubmit(e) {
   }
   const id = document.getElementById('edit-monitor-id')?.value || '';
   const submitBtn = document.getElementById('save-monitor-btn');
-  const originalText = id ? 'Save Changes' : 'Create Target';
+  const originalText = id ? 'Save Changes' : 'Create Monitor';
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.innerText = id ? 'Saving...' : 'Creating...';
@@ -542,7 +689,12 @@ async function handleMonitorSubmit(e) {
   const channelCheckboxes = document.querySelectorAll('input[name="monitor-channel"]:checked');
   const channel_ids = Array.from(channelCheckboxes).map((cb) => cb.value);
 
-  const check_type = document.getElementById('m-type')?.value || 'http';
+  const check_type = document.getElementById('m-probe-type')?.value || document.getElementById('m-type')?.value || 'http';
+  let url = document.getElementById('m-url')?.value?.trim() || '';
+  if (check_type === 'push' && !url.startsWith('push://')) {
+    url = 'push://heartbeat';
+  }
+
   let port = null;
   if (check_type === 'tcp') {
     const pVal = parseInt(document.getElementById('m-port')?.value || '');
@@ -552,13 +704,16 @@ async function handleMonitorSubmit(e) {
   let dns_expected_value = null;
   if (check_type === 'dns') {
     dns_record_type = document.getElementById('m-dns-record-type')?.value || 'A';
-    const expVal = document.getElementById('m-dns-expected-value')?.value?.trim() || '';
+    const expVal = document.getElementById('m-dns-expected')?.value?.trim() || document.getElementById('m-dns-expected-value')?.value?.trim() || '';
     dns_expected_value = expVal ? expVal : null;
   }
 
+  const degradedLatencyVal = document.getElementById('m-degraded-latency')?.value?.trim();
+  const degraded_latency_ms = degradedLatencyVal ? parseInt(degradedLatencyVal) : null;
+
   const payload = {
     name: document.getElementById('m-name')?.value?.trim() || '',
-    url: document.getElementById('m-url')?.value?.trim() || '',
+    url,
     check_interval_secs: parseInt(document.getElementById('m-interval')?.value || '60'),
     timeout_secs: parseInt(document.getElementById('m-timeout')?.value || '5'),
     max_retries: parseInt(document.getElementById('m-retries')?.value || '3'),
@@ -571,8 +726,18 @@ async function handleMonitorSubmit(e) {
     channel_ids,
     check_type,
     port,
-    dns_record_type,
+    dns_record_type: dns_record_type || 'A',
     dns_expected_value,
+    dns_expected: dns_expected_value,
+    http_method: document.getElementById('m-http-method')?.value || 'GET',
+    expected_status: document.getElementById('m-expected-status')?.value?.trim() || '200-299',
+    request_headers: document.getElementById('m-request-headers')?.value?.trim() || null,
+    body_keyword: document.getElementById('m-body-keyword')?.value?.trim() || null,
+    json_pointer: document.getElementById('m-json-pointer')?.value?.trim() || null,
+    json_expected: document.getElementById('m-json-expected')?.value?.trim() || null,
+    degraded_latency_ms,
+    resend_interval_mins: parseInt(document.getElementById('m-resend-interval')?.value || '0'),
+    grace_secs: parseInt(document.getElementById('m-grace-secs')?.value || '60'),
   };
 
   try {
@@ -621,7 +786,7 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
   const container = document.getElementById('monitor-channels-checklist');
   if (!container) return;
 
-  container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">Loading channels...</div>`;
+  container.innerHTML = `<div class="empty">Loading channels...</div>`;
 
   try {
     let channels = window.cachedChannels || [];
@@ -634,7 +799,7 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
     }
 
     if (!channels || !channels.length) {
-      container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">No channels configured yet. Click "+ Create New Channel" above.</div>`;
+      container.innerHTML = `<div class="empty">No channels configured yet. Click "+ Create New Channel" above.</div>`;
       return;
     }
 
@@ -659,19 +824,19 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
         const isChecked = selectedIds.has(c.id);
         const typeBadge = (c.type || 'webhook').toUpperCase();
         return `
-        <label class="flex items-center justify-between p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition cursor-pointer select-none">
+        <label class="flex items-center justify-between p-2 rounded-xl bg-[#101011] hover:bg-[#1a1a1c] border border-[#2a2a2d] transition cursor-pointer select-none mb-1.5 last:mb-0">
           <div class="flex items-center gap-2.5 min-w-0">
-            <input type="checkbox" name="monitor-channel" value="${c.id}" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-white/20 text-[#30d158] bg-black/40 focus:ring-0 cursor-pointer accent-[#30d158]">
-            <span class="text-white font-medium text-xs truncate">${escapeHtml(c.name)}</span>
-            <span class="text-[10px] text-white/40 uppercase font-mono">(${typeBadge})</span>
+            <input type="checkbox" name="monitor-channel" value="${c.id}" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-[#2a2a2d] text-[#84cc6e] bg-[#101011] focus:ring-0 cursor-pointer accent-[#84cc6e]">
+            <span class="text-[#f2f2f3] font-medium text-xs truncate">${escapeHtml(c.name)}</span>
+            <span class="text-[10px] text-[#8b8b90] uppercase font-mono">(${typeBadge})</span>
           </div>
-          ${c.is_default ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 font-mono">DEFAULT</span>' : ''}
+          ${c.is_default ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#2a2a2d] text-[#8b8b90] font-mono">DEFAULT</span>' : ''}
         </label>
       `;
       })
       .join('');
   } catch (err) {
-    container.innerHTML = `<div class="text-[11px] text-rose-400">Failed to load channels checklist.</div>`;
+    container.innerHTML = `<div class="empty" style="color: #f0707a;">Failed to load channels checklist.</div>`;
   }
 }
 window.loadMonitorChannelsChecklist = loadMonitorChannelsChecklist;
@@ -892,8 +1057,8 @@ async function fetchWebhooksForModal() {
               <div class="text-[10px] text-neutral-500 dark:text-neutral-400 truncate max-w-xs font-mono">${escapeHtml(w.url)}</div>
             </div>
             <div class="flex items-center gap-1 shrink-0">
-              <button type="button" onclick="populateWebhookForm(cachedWebhooks.find(x => x.id === '${w.id}'))" class="text-xs text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/10 transition">Edit</button>
-              <button type="button" onclick="deleteWebhook('${w.id}', '${escapeHtml(w.name)}')" class="text-xs text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300 px-2 py-1 rounded hover:bg-rose-500/10 transition">Delete</button>
+              <button type="button" data-action="edit-webhook" data-id="${w.id}" class="text-xs text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/10 transition">Edit</button>
+              <button type="button" data-action="delete-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" class="text-xs text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300 px-2 py-1 rounded hover:bg-rose-500/10 transition">Delete</button>
             </div>
           </div>
         `;
@@ -1041,11 +1206,11 @@ function renderStatusPagesList(pages) {
             ${p.description ? `<p class="text-[11px] text-white/40 truncate mt-1">${escapeHtml(p.description)}</p>` : ''}
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button type="button" onclick="openEditStatusPageForm('${escapeHtml(p.slug)}')" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white text-xs font-medium transition" title="Edit status page and monitor assignments">
+            <button type="button" data-action="edit-status-page" data-slug="${escapeHtml(p.slug)}" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white text-xs font-medium transition" title="Edit status page and monitor assignments">
               Edit
             </button>
             ${!isDefault ? `
-              <button type="button" onclick="deleteStatusPageConfirm('${escapeHtml(p.slug)}')" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/50 hover:text-[#ff453a] text-xs font-medium transition" title="Delete status page">
+              <button type="button" data-action="delete-status-page" data-slug="${escapeHtml(p.slug)}" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/50 hover:text-[#ff453a] text-xs font-medium transition" title="Delete status page">
                 Delete
               </button>
             ` : ''}
@@ -1566,11 +1731,11 @@ function renderMaintenanceList(windows) {
             </div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button type="button" onclick="openEditMaintenanceForm('${w.id}')" class="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition" title="Edit Maintenance Window">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            <button type="button" data-action="edit-maintenance" data-id="${w.id}" class="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition" title="Edit Maintenance Window">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
             </button>
-            <button type="button" onclick="deleteMaintenanceConfirm('${w.id}', '${escapeHtml(w.title.replace(/'/g, "\\'"))}')" class="p-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/70 hover:text-[#ff453a] transition" title="Delete Maintenance Window">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            <button type="button" data-action="delete-maintenance" data-id="${w.id}" data-title="${escapeHtml(w.title)}" class="p-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/70 hover:text-[#ff453a] transition" title="Delete Maintenance Window">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
             </button>
           </div>
         </div>
@@ -1881,5 +2046,65 @@ document.addEventListener('DOMContentLoaded', () => {
         closeSingleDeleteModal();
       }
     }
+  });
+
+  document.addEventListener('click', (e) => {
+    const target = e.target.closest('[data-action]');
+    if (!target) return;
+    const action = target.dataset.action;
+    switch (action) {
+      case 'edit-status-page': {
+        const slug = target.dataset.slug;
+        if (slug) openEditStatusPageForm(slug);
+        break;
+      }
+      case 'delete-status-page': {
+        const slug = target.dataset.slug;
+        if (slug) deleteStatusPageConfirm(slug);
+        break;
+      }
+      case 'edit-maintenance': {
+        const id = target.dataset.id;
+        if (id) openEditMaintenanceForm(id);
+        break;
+      }
+      case 'delete-maintenance': {
+        const id = target.dataset.id;
+        const title = target.dataset.title;
+        if (id) deleteMaintenanceConfirm(id, title);
+        break;
+      }
+      case 'edit-webhook': {
+        const id = target.dataset.id;
+        if (id && Array.isArray(cachedWebhooks)) {
+          populateWebhookForm(cachedWebhooks.find(x => x.id === id));
+        }
+        break;
+      }
+      case 'delete-webhook': {
+        const id = target.dataset.id;
+        const name = target.dataset.name;
+        if (id) deleteWebhook(id, name);
+        break;
+      }
+    }
+  });
+
+  // Number input steppers (up/down)
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.stepper button');
+    if (!btn) return;
+    const wrap = btn.closest('.num');
+    if (!wrap) return;
+    const input = wrap.querySelector('input');
+    if (!input) return;
+    if (btn.dataset.dir === 'up') {
+      input.stepUp();
+    } else {
+      input.stepDown();
+    }
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.focus();
   });
 });

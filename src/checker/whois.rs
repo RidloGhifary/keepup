@@ -75,6 +75,8 @@ pub fn is_transient_error(err: &WhoisError) -> bool {
                 || lower.contains("no such host")
                 || lower.contains("invalid argument")
                 || lower.contains("invalid domain")
+                || lower.contains("blocked ")
+                || lower.contains("ssrf")
             {
                 return false;
             }
@@ -385,6 +387,22 @@ fn query_whois_server_recursive<'a>(
     depth: usize,
 ) -> std::pin::Pin<Box<dyn std::future::Future<Output = Result<DateTime<Utc>, WhoisError>> + Send + 'a>> {
     Box::pin(async move {
+        let checked_addrs = if depth > 0 {
+            if server.contains(':') {
+                return Err(WhoisError::Io(
+                    clean_domain.to_string(),
+                    format!("Blocked WHOIS referral with explicit port: {server}"),
+                ));
+            }
+            Some(
+                crate::net_guard::resolve_checked(server, 43, false)
+                    .await
+                    .map_err(|e| WhoisError::Io(clean_domain.to_string(), e.to_string()))?,
+            )
+        } else {
+            None
+        };
+
         let server_addr = if server.contains(':') {
             server.to_string()
         } else {
@@ -394,7 +412,12 @@ fn query_whois_server_recursive<'a>(
         let timeout_duration = Duration::from_secs(5);
 
         let raw_response = tokio::time::timeout(timeout_duration, async {
-            let mut stream = TcpStream::connect(&server_addr).await.map_err(|e| {
+            let mut stream = if let Some(ref addrs) = checked_addrs {
+                TcpStream::connect(addrs.as_slice()).await
+            } else {
+                TcpStream::connect(&server_addr).await
+            }
+            .map_err(|e| {
                 WhoisError::Io(
                     clean_domain.to_string(),
                     format!("connect to {server_addr} failed: {e}"),
@@ -776,6 +799,29 @@ Registrar: MockRegistrar LLC
         assert_eq!(
             res,
             Err(WhoisError::InvalidDomain("invalid domain with spaces".to_string()))
+        );
+    }
+
+    #[tokio::test]
+    async fn test_whois_referral_to_private_ip_is_blocked() {
+        let trap_listener = TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let trap_addr = trap_listener.local_addr().unwrap();
+        let trap_hits = Arc::new(AtomicUsize::new(0));
+        let trap_hits_clone = trap_hits.clone();
+        tokio::spawn(async move {
+            if let Ok((mut sock, _)) = trap_listener.accept().await {
+                trap_hits_clone.fetch_add(1, Ordering::SeqCst);
+                let _ = sock.write_all(b"Registry Expiry Date: 2029-01-01T00:00:00Z\n").await;
+            }
+        });
+
+        // Simulating depth=1 referral hop targeting a private/loopback address or custom port
+        let res = query_whois_server_recursive("ssrf-referral.io", &trap_addr.to_string(), 1).await;
+        assert!(res.is_err(), "WHOIS referral hop to loopback/private IP must fail");
+        assert_eq!(
+            trap_hits.load(Ordering::SeqCst),
+            0,
+            "WHOIS referral to private/loopback IP or non-43 port must be blocked before connecting"
         );
     }
 }

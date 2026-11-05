@@ -66,6 +66,7 @@ pub async fn ping_dns(
             status_code: None,
             latency_ms: 0,
             is_up: false,
+            is_degraded: false,
             error_msg: Some("DNS target domain cannot be empty".to_string()),
         };
     }
@@ -79,6 +80,7 @@ pub async fn ping_dns(
                 status_code: None,
                 latency_ms: 0,
                 is_up: false,
+                is_degraded: false,
                 error_msg: Some(err),
             };
         }
@@ -100,6 +102,7 @@ pub async fn ping_dns(
                     status_code: None,
                     latency_ms,
                     is_up: false,
+                    is_degraded: false,
                     error_msg: Some(format!("No DNS records returned for {domain} ({record_type})")),
                 };
             }
@@ -119,6 +122,7 @@ pub async fn ping_dns(
                             status_code: None,
                             latency_ms,
                             is_up: false,
+                            is_degraded: false,
                             error_msg: Some(format!(
                                 "DNS answers [{}] did not match expected value '{}'",
                                 records.join(", "),
@@ -130,9 +134,10 @@ pub async fn ping_dns(
             }
 
             CheckResult {
-                status_code: None,
+                status_code: Some(records.len() as i32),
                 latency_ms,
                 is_up: true,
+                is_degraded: false,
                 error_msg: None,
             }
         }
@@ -140,12 +145,14 @@ pub async fn ping_dns(
             status_code: None,
             latency_ms,
             is_up: false,
+            is_degraded: false,
             error_msg: Some(format!("DNS lookup failed: {err}")),
         },
         Err(_) => CheckResult {
             status_code: None,
             latency_ms: (timeout_secs * 1000) as i64,
             is_up: false,
+            is_degraded: false,
             error_msg: Some(format!("DNS lookup for {domain} timed out after {timeout_secs}s")),
         },
     }
@@ -176,7 +183,6 @@ mod tests {
     #[tokio::test]
     async fn test_ping_dns_cloudflare() {
         let res = ping_dns("one.one.one.one", Some("A"), Some("1.1.1.1"), 5).await;
-        // In environments with internet/DNS connectivity this should pass
         if res.is_up {
             assert!(res.error_msg.is_none());
             assert!(res.latency_ms >= 0);

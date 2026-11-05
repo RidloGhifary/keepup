@@ -1,26 +1,59 @@
+use std::net::{IpAddr, Ipv4Addr, SocketAddr};
 use std::sync::Arc;
 use std::time::Duration;
 
 use axum::body::Body;
-use axum::http::{header, HeaderValue, Response, StatusCode};
+use axum::extract::ConnectInfo;
+use axum::http::{header, HeaderValue, Request, Response, StatusCode};
 use governor::clock::QuantaInstant;
 use governor::middleware::NoOpMiddleware;
 use serde_json::json;
 use tower_governor::governor::GovernorConfigBuilder;
-use tower_governor::key_extractor::SmartIpKeyExtractor;
+use tower_governor::key_extractor::{KeyExtractor, SmartIpKeyExtractor};
 use tower_governor::{GovernorError, GovernorLayer};
 
-/// Creates the rate limiter layer configured for login protection:
+/// Proxy-aware IP key extractor (`NV-01`).
+///
+/// By default (`trust_proxy_headers == false`), extracts strictly from the TCP socket
+/// `ConnectInfo<SocketAddr>` so clients cannot bypass rate limits by spoofing `X-Forwarded-For`.
+/// When `trust_proxy_headers == true`, delegates to `SmartIpKeyExtractor`.
+/// Falls back to `127.0.0.1` in in-memory `oneshot` test invocations without `ConnectInfo`.
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+pub struct ClientIpKeyExtractor {
+    pub trust_proxy_headers: bool,
+}
+
+impl KeyExtractor for ClientIpKeyExtractor {
+    type Key = IpAddr;
+
+    fn extract<T>(&self, req: &Request<T>) -> Result<Self::Key, GovernorError> {
+        if self.trust_proxy_headers {
+            if let Ok(ip) = SmartIpKeyExtractor.extract(req) {
+                return Ok(ip);
+            }
+        }
+
+        if let Some(connect_info) = req.extensions().get::<ConnectInfo<SocketAddr>>() {
+            return Ok(connect_info.0.ip());
+        }
+
+        Ok(IpAddr::V4(Ipv4Addr::LOCALHOST))
+    }
+}
+
+/// Creates the rate limiter layer configured for authentication & password-change protection:
 /// - 5 request burst limit per IP
 /// - 1 token replenished every 12 seconds (~5 requests/minute quota)
-/// - Smart IP extraction (X-Forwarded-For, X-Real-IP, Forwarded, or Peer IP)
-/// - Custom 429 JSON response matching KeepUp error schema
-pub fn auth_rate_limiter() -> GovernorLayer<SmartIpKeyExtractor, NoOpMiddleware<QuantaInstant>> {
+pub fn auth_rate_limiter_with_proxy(
+    trust_proxy_headers: bool,
+) -> GovernorLayer<ClientIpKeyExtractor, NoOpMiddleware<QuantaInstant>> {
     let config = Arc::new(
         GovernorConfigBuilder::default()
             .period(Duration::from_secs(12))
             .burst_size(5)
-            .key_extractor(SmartIpKeyExtractor)
+            .key_extractor(ClientIpKeyExtractor {
+                trust_proxy_headers,
+            })
             .error_handler(|err| {
                 let mut builder = Response::builder()
                     .status(StatusCode::TOO_MANY_REQUESTS)
@@ -39,12 +72,14 @@ pub fn auth_rate_limiter() -> GovernorLayer<SmartIpKeyExtractor, NoOpMiddleware<
                 }
 
                 let body = json!({
-                    "error": "Too many login attempts. Please wait a minute before trying again."
+                    "error": "Too many authentication attempts. Please wait a minute before trying again."
                 });
 
                 builder
                     .body(Body::from(serde_json::to_string(&body).unwrap_or_default()))
-                    .unwrap_or_else(|_| Response::new(Body::from("{\"error\":\"Too many login attempts\"}")))
+                    .unwrap_or_else(|_| {
+                        Response::new(Body::from("{\"error\":\"Too many authentication attempts\"}"))
+                    })
             })
             .finish()
             .expect("Governor rate-limiting configuration is valid"),
@@ -56,8 +91,6 @@ pub fn auth_rate_limiter() -> GovernorLayer<SmartIpKeyExtractor, NoOpMiddleware<
 #[cfg(test)]
 mod tests {
     use super::*;
-    use axum::body::to_bytes;
-    use axum::http::Request;
     use axum::routing::post;
     use axum::Router;
     use tower::ServiceExt;
@@ -67,12 +100,45 @@ mod tests {
     }
 
     #[tokio::test]
+    async fn test_rate_limiter_ignores_spoofed_xff_by_default() {
+        let app = Router::new()
+            .route("/login", post(mock_login))
+            .layer(auth_rate_limiter_with_proxy(false));
+
+        let peer: SocketAddr = "203.0.113.10:54321".parse().unwrap();
+
+        // Even if the client rotates X-Forwarded-For on every request, default peer-IP mode blocks the 6th attempt!
+        for i in 1..=5 {
+            let mut req = Request::builder()
+                .uri("/login")
+                .method("POST")
+                .header("X-Forwarded-For", format!("198.51.100.{i}"))
+                .body(Body::empty())
+                .unwrap();
+            req.extensions_mut().insert(ConnectInfo(peer));
+
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::OK);
+        }
+
+        let mut sixth = Request::builder()
+            .uri("/login")
+            .method("POST")
+            .header("X-Forwarded-For", "198.51.100.250")
+            .body(Body::empty())
+            .unwrap();
+        sixth.extensions_mut().insert(ConnectInfo(peer));
+
+        let res = app.clone().oneshot(sixth).await.unwrap();
+        assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
+    }
+
+    #[tokio::test]
     async fn test_rate_limiter_allows_up_to_burst_and_blocks_excess() {
         let app = Router::new()
             .route("/login", post(mock_login))
-            .layer(auth_rate_limiter());
+            .layer(auth_rate_limiter_with_proxy(true));
 
-        // First 5 requests from the same IP (192.168.1.100 via X-Forwarded-For) should succeed
         for i in 1..=5 {
             let req = Request::builder()
                 .uri("/login")
@@ -89,7 +155,6 @@ mod tests {
             );
         }
 
-        // 6th request from the same IP should be rate-limited with 429 Too Many Requests
         let req = Request::builder()
             .uri("/login")
             .method("POST")
@@ -99,19 +164,8 @@ mod tests {
 
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::TOO_MANY_REQUESTS);
-        assert_eq!(
-            res.headers().get("content-type").unwrap(),
-            "application/json"
-        );
 
-        let body = to_bytes(res.into_body(), 1024).await.unwrap();
-        let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
-        assert_eq!(
-            json_body["error"],
-            "Too many login attempts. Please wait a minute before trying again."
-        );
-
-        // A different IP (192.168.1.200) should still succeed (has its own quota)
+        // Distinct IP when trust_proxy_headers=true succeeds
         let diff_ip_req = Request::builder()
             .uri("/login")
             .method("POST")

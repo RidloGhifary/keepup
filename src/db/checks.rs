@@ -1,5 +1,314 @@
+use std::collections::HashMap;
 use serde::{Deserialize, Serialize};
 use sqlx::SqlitePool;
+
+use crate::db::monitors::{DailyUptime, HourlyLatency};
+use crate::error::AppError;
+
+/// Batched metric aggregations across multiple monitors for public status pages.
+#[derive(Debug, Clone)]
+pub struct BatchMonitorMetrics {
+    pub latest_is_up: Option<bool>,
+    pub last_latency_ms: Option<i64>,
+    pub uptime_24h: f64,
+    pub uptime_history: Vec<DailyUptime>,
+    pub latency_24h: Vec<HourlyLatency>,
+    pub latency: LatencyPercentiles,
+}
+
+/// Compute public status metrics in batched O(1) set-based queries rather than 6N per-monitor queries.
+pub async fn get_batch_public_metrics(
+    pool: &SqlitePool,
+    monitor_ids: &[String],
+) -> Result<HashMap<String, BatchMonitorMetrics>, AppError> {
+    if monitor_ids.is_empty() {
+        return Ok(HashMap::new());
+    }
+
+    let placeholders = vec!["?"; monitor_ids.len()].join(",");
+
+    // 1. Latest check per monitor
+    #[derive(sqlx::FromRow)]
+    struct LatestRow {
+        monitor_id: String,
+        is_up: i32,
+        latency_ms: Option<i64>,
+    }
+
+    let latest_sql = format!(
+        r#"
+        SELECT cl.monitor_id, cl.is_up, COALESCE(cl.response_time_ms, cl.latency_ms) AS latency_ms
+        FROM check_logs cl
+        INNER JOIN (
+            SELECT monitor_id, MAX(id) AS max_id
+            FROM check_logs
+            WHERE monitor_id IN ({placeholders})
+            GROUP BY monitor_id
+        ) latest ON cl.id = latest.max_id
+        "#
+    );
+    let mut query = sqlx::query_as::<_, LatestRow>(&latest_sql);
+    for id in monitor_ids {
+        query = query.bind(id);
+    }
+    let latest_rows = query.fetch_all(pool).await?;
+    let mut latest_map: HashMap<String, (bool, Option<i64>)> = HashMap::new();
+    for r in latest_rows {
+        latest_map.insert(r.monitor_id, (r.is_up == 1, r.latency_ms));
+    }
+
+    // 2. 24h uptime aggregation
+    #[derive(sqlx::FromRow)]
+    struct AggRow {
+        monitor_id: String,
+        total: i64,
+        up_count: i64,
+    }
+    let agg_sql = format!(
+        r#"
+        SELECT monitor_id,
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END), 0) AS up_count
+        FROM check_logs
+        WHERE monitor_id IN ({placeholders})
+          AND checked_at >= datetime('now', '-24 hours')
+        GROUP BY monitor_id
+        "#
+    );
+    let mut query = sqlx::query_as::<_, AggRow>(&agg_sql);
+    for id in monitor_ids {
+        query = query.bind(id);
+    }
+    let agg_rows = query.fetch_all(pool).await?;
+    let mut uptime_map: HashMap<String, f64> = HashMap::new();
+    for r in agg_rows {
+        let pct = if r.total > 0 {
+            (r.up_count as f64 / r.total as f64) * 100.0
+        } else {
+            100.0
+        };
+        uptime_map.insert(r.monitor_id, (pct * 100.0).round() / 100.0);
+    }
+
+    // 3. 24h percentiles: fetch sorted latencies per monitor
+    #[derive(sqlx::FromRow)]
+    struct LatRow {
+        monitor_id: String,
+        lat: i32,
+    }
+    let lat_sql = format!(
+        r#"
+        SELECT monitor_id, COALESCE(response_time_ms, latency_ms) AS lat
+        FROM check_logs
+        WHERE monitor_id IN ({placeholders})
+          AND checked_at >= datetime('now', '-24 hours')
+          AND COALESCE(response_time_ms, latency_ms) IS NOT NULL
+        ORDER BY monitor_id, lat ASC
+        "#
+    );
+    let mut query = sqlx::query_as::<_, LatRow>(&lat_sql);
+    for id in monitor_ids {
+        query = query.bind(id);
+    }
+    let lat_rows = query.fetch_all(pool).await?;
+    let mut lats_by_monitor: HashMap<String, Vec<i32>> = HashMap::new();
+    for r in lat_rows {
+        lats_by_monitor.entry(r.monitor_id).or_default().push(r.lat);
+    }
+    let mut pct_map: HashMap<String, LatencyPercentiles> = HashMap::new();
+    for (mid, rows) in lats_by_monitor {
+        let len = rows.len();
+        if len == 0 {
+            continue;
+        }
+        let sum: i64 = rows.iter().map(|&v| v as i64).sum();
+        let avg = (sum / len as i64) as u32;
+        let calc_p = |pct: f64| -> u32 {
+            let idx = ((len as f64 - 1.0) * pct).round() as usize;
+            rows[idx.min(len - 1)].max(0) as u32
+        };
+        pct_map.insert(
+            mid,
+            LatencyPercentiles {
+                p50: calc_p(0.50),
+                p95: calc_p(0.95),
+                p99: calc_p(0.99),
+                avg,
+            },
+        );
+    }
+
+    // 4. 7-day daily uptime history
+    #[derive(sqlx::FromRow)]
+    struct DailyRow {
+        monitor_id: String,
+        day: String,
+        total: i64,
+        up_count: i64,
+    }
+    let daily_sql = format!(
+        r#"
+        SELECT monitor_id,
+               date(checked_at) AS day,
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END), 0) AS up_count
+        FROM check_logs
+        WHERE monitor_id IN ({placeholders})
+          AND checked_at >= datetime('now', '-7 days')
+        GROUP BY monitor_id, date(checked_at)
+        "#
+    );
+    let mut query = sqlx::query_as::<_, DailyRow>(&daily_sql);
+    for id in monitor_ids {
+        query = query.bind(id);
+    }
+    let daily_rows = query.fetch_all(pool).await?;
+    let mut daily_by_monitor: HashMap<String, HashMap<String, (i64, i64)>> = HashMap::new();
+    for r in daily_rows {
+        daily_by_monitor
+            .entry(r.monitor_id)
+            .or_default()
+            .insert(r.day, (r.total, r.up_count));
+    }
+
+    let today = chrono::Utc::now().naive_utc().date();
+
+    // 5. 24-hour hourly latency history
+    #[derive(sqlx::FromRow)]
+    struct HourlyRow {
+        monitor_id: String,
+        hour_slot: String,
+        total: i64,
+        up_count: i64,
+        avg_latency: f64,
+    }
+    let hourly_sql = format!(
+        r#"
+        SELECT monitor_id,
+               strftime('%Y-%m-%d %H:00:00', checked_at) AS hour_slot,
+               COUNT(*) AS total,
+               COALESCE(SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END), 0) AS up_count,
+               COALESCE(AVG(COALESCE(response_time_ms, latency_ms)), 0.0) AS avg_latency
+        FROM check_logs
+        WHERE monitor_id IN ({placeholders})
+          AND checked_at >= datetime('now', '-24 hours')
+        GROUP BY monitor_id, strftime('%Y-%m-%d %H:00:00', checked_at)
+        "#
+    );
+    let mut query = sqlx::query_as::<_, HourlyRow>(&hourly_sql);
+    for id in monitor_ids {
+        query = query.bind(id);
+    }
+    let hourly_rows = query.fetch_all(pool).await?;
+    let mut hourly_by_monitor: HashMap<String, HashMap<String, (i64, i64, f64)>> = HashMap::new();
+    for r in hourly_rows {
+        hourly_by_monitor
+            .entry(r.monitor_id)
+            .or_default()
+            .insert(r.hour_slot, (r.total, r.up_count, r.avg_latency));
+    }
+
+    use chrono::Timelike;
+    let now = chrono::Utc::now();
+    let current_hour = now
+        .date_naive()
+        .and_hms_opt(now.hour(), 0, 0)
+        .unwrap_or_else(|| now.naive_utc());
+
+    // Assemble results
+    let mut results = HashMap::with_capacity(monitor_ids.len());
+    for id in monitor_ids {
+        let (latest_is_up, last_latency_ms) = match latest_map.get(id) {
+            Some(&(is_up, lat)) => (Some(is_up), lat),
+            None => (None, None),
+        };
+
+        let uptime_24h = uptime_map.get(id).copied().unwrap_or(100.0);
+
+        let latency = pct_map
+            .get(id)
+            .cloned()
+            .unwrap_or(LatencyPercentiles {
+                p50: 0,
+                p95: 0,
+                p99: 0,
+                avg: 0,
+            });
+
+        // 7-day buckets
+        let day_map = daily_by_monitor.get(id);
+        let mut uptime_history = Vec::with_capacity(7);
+        for i in (0..7).rev() {
+            let date_obj = today - chrono::Duration::days(i);
+            let date_str = date_obj.format("%Y-%m-%d").to_string();
+
+            let (uptime_pct, status) = match day_map.and_then(|m| m.get(&date_str)) {
+                Some(&(total, up_count)) if total > 0 => {
+                    let pct = ((up_count as f64 / total as f64) * 100.0 * 100.0).round() / 100.0;
+                    let status_str = if pct < 90.0 {
+                        "DOWN"
+                    } else if pct < 99.0 {
+                        "DEGRADED"
+                    } else {
+                        "UP"
+                    };
+                    (pct, status_str.to_string())
+                }
+                _ => (100.0, "NO_DATA".to_string()),
+            };
+
+            uptime_history.push(DailyUptime {
+                date: date_str,
+                uptime_pct,
+                status,
+            });
+        }
+
+        // 24-hour hourly latency buckets
+        let hour_map = hourly_by_monitor.get(id);
+        let mut latency_24h = Vec::with_capacity(24);
+        for i in (0..24).rev() {
+            let slot_time = current_hour - chrono::Duration::hours(i);
+            let sql_key = slot_time.format("%Y-%m-%d %H:00:00").to_string();
+            let timestamp = slot_time.format("%Y-%m-%dT%H:00:00Z").to_string();
+
+            let (avg_latency_ms, status) = match hour_map.and_then(|m| m.get(&sql_key)) {
+                Some(&(total, up_count, avg_lat)) if total > 0 => {
+                    let pct = (up_count as f64 / total as f64) * 100.0;
+                    let status_str = if pct < 90.0 {
+                        "DOWN"
+                    } else if pct < 99.0 {
+                        "DEGRADED"
+                    } else {
+                        "UP"
+                    };
+                    (avg_lat.round() as i64, status_str.to_string())
+                }
+                _ => (0, "NO_DATA".to_string()),
+            };
+
+            latency_24h.push(HourlyLatency {
+                timestamp,
+                avg_latency_ms,
+                status,
+            });
+        }
+
+        results.insert(
+            id.clone(),
+            BatchMonitorMetrics {
+                latest_is_up,
+                last_latency_ms,
+                uptime_24h,
+                uptime_history,
+                latency_24h,
+                latency,
+            },
+        );
+    }
+
+    Ok(results)
+}
 
 /// Response time percentiles and average for a monitor over a given time window.
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
@@ -135,6 +444,7 @@ struct RawCheckLogRow {
     error_msg: Option<String>,
     is_up: i32,
     domain_days_remaining: Option<i64>,
+    ssl_days_remaining: Option<i64>,
 }
 
 /// Fetch the most recent check logs for a monitor (up to limit entries).
@@ -152,10 +462,11 @@ pub async fn get_recent_check_logs(
             COALESCE(response_time_ms, latency_ms) AS response_time_ms,
             error_msg,
             is_up,
-            domain_days_remaining
+            domain_days_remaining,
+            ssl_days_remaining
         FROM check_logs
         WHERE monitor_id = ?
-        ORDER BY COALESCE(created_at, checked_at) DESC, id DESC
+        ORDER BY checked_at DESC, id DESC
         LIMIT ?
         "#,
     )
@@ -172,7 +483,7 @@ pub async fn get_recent_check_logs(
             status_code: r.status_code,
             response_time_ms: r.response_time_ms,
             error_message: r.error_msg,
-            tls_days_remaining: None,
+            tls_days_remaining: r.ssl_days_remaining,
             domain_days_remaining: r.domain_days_remaining,
             is_up: r.is_up == 1,
         })
