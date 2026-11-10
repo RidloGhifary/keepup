@@ -102,10 +102,8 @@ pub async fn is_monitor_in_maintenance(
         FROM maintenance_windows mw
         JOIN maintenance_monitors mm ON mw.id = mm.maintenance_id
         WHERE (mm.monitor_id = ? OR mm.monitor_id = '*')
-          AND (
-            (datetime('now') >= datetime(mw.start_time) AND datetime('now') <= datetime(mw.end_time))
-            OR (CURRENT_TIMESTAMP >= mw.start_time AND CURRENT_TIMESTAMP <= mw.end_time)
-          )
+          AND datetime('now') >= datetime(mw.start_time)
+          AND datetime('now') <= datetime(mw.end_time)
         LIMIT 1
         "#,
     )
@@ -310,6 +308,8 @@ pub async fn update_maintenance_window(
     let start_str = start_dt.to_rfc3339();
     let end_str = end_dt.to_rfc3339();
 
+    let mut tx = pool.begin().await?;
+
     sqlx::query(
         r#"
         UPDATE maintenance_windows
@@ -322,13 +322,13 @@ pub async fn update_maintenance_window(
     .bind(&start_str)
     .bind(&end_str)
     .bind(id)
-    .execute(pool)
+    .execute(&mut *tx)
     .await?;
 
     let monitor_ids = if let Some(new_monitors) = payload.monitor_ids {
         sqlx::query("DELETE FROM maintenance_monitors WHERE maintenance_id = ?")
             .bind(id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
 
         for monitor_id in &new_monitors {
@@ -337,13 +337,15 @@ pub async fn update_maintenance_window(
             )
             .bind(id)
             .bind(monitor_id)
-            .execute(pool)
+            .execute(&mut *tx)
             .await?;
         }
         new_monitors
     } else {
         existing.monitor_ids
     };
+
+    tx.commit().await?;
 
     let now = Utc::now();
     let is_active = now >= start_dt && now <= end_dt;
@@ -384,11 +386,9 @@ pub async fn get_public_maintenance_windows(
         r#"
         SELECT id, title, description, start_time, end_time, created_at
         FROM maintenance_windows
-        WHERE (
-            (datetime(start_time) <= datetime('now', '+7 days') AND datetime(end_time) >= datetime('now'))
-            OR (CURRENT_TIMESTAMP <= datetime(start_time, '+7 days') AND CURRENT_TIMESTAMP <= end_time)
-        )
-        ORDER BY start_time ASC
+        WHERE datetime(start_time) <= datetime('now', '+7 days')
+          AND datetime(end_time) >= datetime('now')
+        ORDER BY datetime(start_time) ASC
         "#,
     )
     .fetch_all(pool)
@@ -524,5 +524,70 @@ mod tests {
         assert!(parse_datetime_str("2026-10-31T14:30").is_ok());
         assert!(parse_datetime_str("2026-10-31 14:30:00").is_ok());
         assert!(parse_datetime_str("invalid").is_err());
+    }
+
+    #[tokio::test]
+    async fn test_overnight_maintenance_window_not_active_after_end_and_future_7d_cap() {
+        use chrono::Timelike;
+        let pool = setup_test_db().await;
+
+        let now = Utc::now();
+        let today = now.date_naive();
+        // Window ended earlier on the same calendar day (or if running between 00:00..02:00 UTC, test +20d cap & yesterday->today 00:00:01Z)
+        let (overnight_start, overnight_end) = if now.hour() >= 2 {
+            let start = (today - Duration::days(1))
+                .and_hms_opt(23, 0, 0)
+                .unwrap()
+                .and_utc();
+            let end = today.and_hms_opt(1, 0, 0).unwrap().and_utc();
+            (start, end)
+        } else {
+            let start = (today - Duration::days(1))
+                .and_hms_opt(22, 0, 0)
+                .unwrap()
+                .and_utc();
+            let end = (now - Duration::seconds(5)).max(start + Duration::minutes(1));
+            (start, end)
+        };
+
+        create_maintenance_window(
+            &pool,
+            CreateMaintenanceDto {
+                title: "Overnight Window".to_string(),
+                description: None,
+                start_time: overnight_start.to_rfc3339(),
+                end_time: overnight_end.to_rfc3339(),
+                monitor_ids: vec!["mon-1".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+        let active = is_monitor_in_maintenance(&pool, "mon-1").await.unwrap();
+        assert!(
+            !active,
+            "overnight maintenance window ({overnight_start} -> {overnight_end}) must NOT be active at {now}"
+        );
+
+        // Window starting 15 days in the future must NOT appear in get_public_maintenance_windows
+        create_maintenance_window(
+            &pool,
+            CreateMaintenanceDto {
+                title: "Far Future Maintenance".to_string(),
+                description: None,
+                start_time: (now + Duration::days(15)).to_rfc3339(),
+                end_time: (now + Duration::days(15) + Duration::hours(2)).to_rfc3339(),
+                monitor_ids: vec!["mon-1".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+        let pub_windows = get_public_maintenance_windows(&pool).await.unwrap();
+        assert!(
+            pub_windows.is_empty(),
+            "past overnight window and +15d future window must both be excluded from public windows: got {:?}",
+            pub_windows
+        );
     }
 }

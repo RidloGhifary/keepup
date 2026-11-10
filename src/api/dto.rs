@@ -27,6 +27,16 @@ pub struct UpdateMonitorDto {
     pub port: Option<i32>,
     pub dns_record_type: Option<String>,
     pub dns_expected_value: Option<String>,
+    pub http_method: Option<String>,
+    pub expected_status: Option<String>,
+    pub request_headers: Option<String>,
+    pub body_keyword: Option<String>,
+    pub json_pointer: Option<String>,
+    pub json_expected: Option<String>,
+    pub degraded_latency_ms: Option<i64>,
+    pub dns_expected: Option<String>,
+    pub resend_interval_mins: Option<i32>,
+    pub grace_secs: Option<i32>,
 }
 
 impl UpdateMonitorDto {
@@ -80,23 +90,37 @@ impl UpdateMonitorDto {
             }
         }
         if let Some(interval) = self.check_interval_secs {
-            if interval < 1 {
+            if !(5..=86400).contains(&interval) {
                 return Err(AppError::BadRequest(
-                    "check_interval_secs must be at least 1 second".to_string(),
+                    "check_interval_secs must be between 5 and 86400".to_string(),
                 ));
             }
         }
         if let Some(timeout) = self.timeout_secs {
-            if timeout < 1 {
+            if !(1..=60).contains(&timeout) {
                 return Err(AppError::BadRequest(
-                    "timeout_secs must be at least 1 second".to_string(),
+                    "timeout_secs must be between 1 and 60".to_string(),
                 ));
             }
         }
         if let Some(retries) = self.max_retries {
-            if retries < 1 {
+            if !(1..=10).contains(&retries) {
                 return Err(AppError::BadRequest(
-                    "max_retries must be at least 1".to_string(),
+                    "max_retries must be between 1 and 10".to_string(),
+                ));
+            }
+        }
+        if let Some(domain_days) = self.domain_warning_days {
+            if !(1..=365).contains(&domain_days) {
+                return Err(AppError::BadRequest(
+                    "domain_warning_days must be between 1 and 365".to_string(),
+                ));
+            }
+        }
+        if let Some(ssl_days) = self.ssl_warning_days {
+            if !(1..=365).contains(&ssl_days) {
+                return Err(AppError::BadRequest(
+                    "ssl_warning_days must be between 1 and 365".to_string(),
                 ));
             }
         }
@@ -114,130 +138,6 @@ impl UpdateMonitorDto {
                 ));
             }
         }
-        Ok(())
-    }
-}
-
-// ── Webhook DTOs ─────────────────────────────────────────────────────────────
-
-/// Payload for registering a new alert webhook.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CreateWebhookRequest {
-    pub name: String,
-    pub provider: String,
-    pub url: String,
-    #[serde(default = "default_true")]
-    pub is_enabled: bool,
-    #[serde(default = "default_true")]
-    pub use_default_template: bool,
-    #[serde(default = "default_true")]
-    pub notify_on_resolve: bool,
-    pub message_template: Option<String>,
-}
-
-pub type CreateWebhookDto = CreateWebhookRequest;
-
-impl CreateWebhookRequest {
-    pub fn validate(&self) -> Result<(), AppError> {
-        if self.name.trim().is_empty() {
-            return Err(AppError::BadRequest(
-                "Webhook name cannot be empty".to_string(),
-            ));
-        }
-
-        let provider = self.provider.to_lowercase();
-        if provider != "discord" && provider != "slack" && provider != "generic" && provider != "generic_webhook" {
-            return Err(AppError::BadRequest(format!(
-                "Invalid provider '{}'. Allowed values are: discord, slack, generic",
-                self.provider
-            )));
-        }
-
-        let u = self.url.trim();
-        if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
-            return Err(AppError::BadRequest(
-                "Webhook URL must be a valid http or https URL".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-}
-
-/// Payload for updating an existing alert webhook.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct UpdateWebhookRequest {
-    pub name: Option<String>,
-    pub provider: Option<String>,
-    pub url: Option<String>,
-    pub is_enabled: Option<bool>,
-    pub use_default_template: Option<bool>,
-    pub notify_on_resolve: Option<bool>,
-    pub message_template: Option<String>,
-}
-
-pub type UpdateWebhookDto = UpdateWebhookRequest;
-
-impl UpdateWebhookRequest {
-    pub fn validate(&self) -> Result<(), AppError> {
-        if let Some(ref name) = self.name {
-            if name.trim().is_empty() {
-                return Err(AppError::BadRequest(
-                    "Webhook name cannot be empty".to_string(),
-                ));
-            }
-        }
-
-        if let Some(ref provider) = self.provider {
-            let p = provider.to_lowercase();
-            if p != "discord" && p != "slack" && p != "generic" && p != "generic_webhook" {
-                return Err(AppError::BadRequest(format!(
-                    "Invalid provider '{}'. Allowed values are: discord, slack, generic",
-                    provider
-                )));
-            }
-        }
-
-        if let Some(ref url) = self.url {
-            let u = url.trim();
-            if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
-                return Err(AppError::BadRequest(
-                    "Webhook URL must be a valid http or https URL".to_string(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-}
-
-/// Payload for testing an alert webhook endpoint on-the-fly.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TestWebhookRequest {
-    pub url: String,
-    pub provider: String,
-    #[serde(default = "default_true")]
-    pub use_default_template: bool,
-    pub message_template: Option<String>,
-}
-
-impl TestWebhookRequest {
-    pub fn validate(&self) -> Result<(), AppError> {
-        let provider = self.provider.to_lowercase();
-        if provider != "discord" && provider != "slack" && provider != "generic" && provider != "generic_webhook" {
-            return Err(AppError::BadRequest(format!(
-                "Invalid provider '{}'. Allowed values are: discord, slack, generic",
-                self.provider
-            )));
-        }
-
-        let u = self.url.trim();
-        if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
-            return Err(AppError::BadRequest(
-                "Webhook URL must be a valid http or https URL".to_string(),
-            ));
-        }
-
         Ok(())
     }
 }

@@ -63,33 +63,39 @@ pub async fn by_monitor(
 }
 
 /// `GET /api/v1/public/monitors/:id/history` — last 24 h of latency data
-/// points for a **public** monitor (response-time graph).
+/// points for a **public** active monitor (response-time graph).
 pub async fn public_history(
     State(state): State<Arc<AppState>>,
     Path(id): Path<String>,
 ) -> Result<Json<Vec<LogEntry>>, AppError> {
-    // Verify the monitor exists and is public.
-    let is_public: Option<(i32,)> =
-        sqlx::query_as("SELECT is_public FROM monitors WHERE id = ?")
+    // Verify the monitor exists, is public, and is active (uniform 404 to prevent oracle).
+    let monitor: Option<(i32, i32)> =
+        sqlx::query_as("SELECT is_public, is_active FROM monitors WHERE id = ?")
             .bind(&id)
             .fetch_optional(&state.db)
             .await?;
 
-    match is_public {
-        None => return Err(AppError::NotFound(format!("Monitor {id} not found"))),
-        Some((0,)) => return Err(AppError::NotFound("Monitor is not public".to_string())),
-        _ => {}
+    match monitor {
+        Some((1, 1)) => {}
+        _ => return Err(AppError::NotFound("Monitor not found".to_string())),
     }
 
-    let rows = sqlx::query_as::<_, LogEntry>(
+    let mut rows = sqlx::query_as::<_, LogEntry>(
         "SELECT id, monitor_id, status_code, latency_ms, is_up, error_msg, checked_at \
          FROM   check_logs \
-         WHERE  monitor_id = ? AND checked_at > datetime('now', '-24 hours') \
-         ORDER  BY checked_at DESC",
+         WHERE  monitor_id = ? AND checked_at >= datetime('now', '-24 hours') \
+         ORDER  BY checked_at DESC \
+         LIMIT 1000",
     )
     .bind(&id)
     .fetch_all(&state.db)
     .await?;
+
+    for row in &mut rows {
+        if let Some(ref err) = row.error_msg {
+            row.error_msg = Some(crate::api::admin::sanitize_public_error(err));
+        }
+    }
 
     Ok(Json(rows))
 }
