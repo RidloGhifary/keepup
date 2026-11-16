@@ -67,8 +67,8 @@ pub async fn clone_monitor(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
                                check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
-                               check_type, port, dns_record_type, dns_expected_value) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&new_id)
     .bind(&new_name)
@@ -86,13 +86,17 @@ pub async fn clone_monitor(
     .bind(source.port)
     .bind(&source.dns_record_type)
     .bind(&source.dns_expected_value)
+    .bind(source.expiry_threshold_days)
     .execute(&state.db)
     .await?;
 
     // Copy attached notification channels
-    let attached_channels = crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id).await?;
+    let attached_channels =
+        crate::db::notifications::get_channel_ids_for_monitor(&state.db, &id).await?;
     if !attached_channels.is_empty() {
-        let _ = crate::db::notifications::set_monitor_channels(&state.db, &new_id, &attached_channels).await;
+        let _ =
+            crate::db::notifications::set_monitor_channels(&state.db, &new_id, &attached_channels)
+                .await;
     }
 
     let cloned = monitors::get_monitor_by_id(&state.db, &new_id).await?;
@@ -138,6 +142,23 @@ pub struct MonitorDetailInfo {
     pub port: Option<i32>,
     pub dns_record_type: Option<String>,
     pub dns_expected_value: Option<String>,
+    pub expiry_threshold_days: i32,
+    pub max_retries: i32,
+    pub current_consecutive_fails: i32,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_serial_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_signature_algorithm: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_sans: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_issued_at: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caa_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caa_details: Option<String>,
 }
 
 #[derive(Debug, Clone, Serialize, Deserialize)]
@@ -228,6 +249,16 @@ pub async fn get_monitor_details(
         port: monitor.port,
         dns_record_type: monitor.dns_record_type.clone(),
         dns_expected_value: monitor.dns_expected_value.clone(),
+        expiry_threshold_days: monitor.expiry_threshold_days,
+        max_retries: monitor.max_retries,
+        current_consecutive_fails: monitor.current_consecutive_fails,
+        ssl_issuer: monitor.ssl_issuer.clone(),
+        ssl_serial_number: monitor.ssl_serial_number.clone(),
+        ssl_signature_algorithm: monitor.ssl_signature_algorithm.clone(),
+        ssl_sans: monitor.ssl_sans.clone(),
+        ssl_issued_at: monitor.ssl_issued_at.clone(),
+        caa_status: monitor.caa_status.clone(),
+        caa_details: monitor.caa_details.clone(),
     };
 
     Ok(Json(MonitorDetailResponse {
@@ -266,11 +297,14 @@ pub async fn ping_monitor(
     )
     .await;
 
-    let is_http = monitor.check_type.is_empty() || monitor.check_type == "http";
+    let is_expiry = monitor.check_type == "expiry";
+    let is_http = (monitor.check_type.is_empty() || monitor.check_type == "http") && !is_expiry;
 
     let mut domain_days = monitor.domain_days_remaining;
-    if is_http && monitor.check_domain_expiry == 1 {
-        if let Ok(info) = crate::checker::domain::check_domain_expiration(&state.http_client, &monitor.url).await {
+    if (is_http && monitor.check_domain_expiry == 1) || is_expiry {
+        if let Ok(info) =
+            crate::checker::domain::check_domain_expiration(&state.http_client, &monitor.url).await
+        {
             domain_days = Some(info.days_remaining as i32);
             let _ = monitors::update_domain_expiry(
                 &state.db,
@@ -283,17 +317,69 @@ pub async fn ping_monitor(
     }
 
     let mut ssl_days = monitor.ssl_days_remaining;
-    if is_http && monitor.check_ssl == 1 {
-        if let Ok(info) = crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64).await {
+    if (is_http && monitor.check_ssl == 1) || is_expiry {
+        if let Ok(info) =
+            crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64)
+                .await
+        {
             ssl_days = Some(info.days_remaining as i32);
-            let _ = monitors::update_ssl_expiry(
+            let caa_res = crate::checker::caa::inspect_caa_records(
+                &monitor.url,
+                info.issuer_cn.as_deref(),
+                info.issuer_org.as_deref(),
+                &info.issuer_full,
+                monitor.timeout_secs as u64,
+            )
+            .await;
+
+            let sans_str = if info.sans.is_empty() {
+                None
+            } else {
+                Some(info.sans.join(", "))
+            };
+
+            let _ = monitors::update_ssl_and_caa(
                 &state.db,
                 &monitor.id,
                 Some(&info.expires_at),
                 Some(info.days_remaining as i32),
+                info.issued_at.as_deref(),
+                Some(&info.issuer_full),
+                info.serial_number.as_deref(),
+                info.signature_algorithm.as_deref(),
+                sans_str.as_deref(),
+                Some(&caa_res.status),
+                Some(&caa_res.details),
             )
             .await;
         }
+    }
+
+    if is_expiry {
+        let min_days = match (ssl_days, domain_days) {
+            (Some(s), Some(d)) => Some(s.min(d)),
+            (Some(s), None) => Some(s),
+            (None, Some(d)) => Some(d),
+            (None, None) => None,
+        };
+        let status_str = match min_days {
+            None => "DOWN",
+            Some(days) if days <= 0 => "DOWN",
+            Some(days) if days <= monitor.expiry_threshold_days => "DEGRADED",
+            _ => "UP",
+        };
+        let down_since = if status_str == "DOWN" {
+            Some(chrono::Utc::now().to_rfc3339())
+        } else {
+            None
+        };
+        let _ = monitors::update_monitor_status(
+            &state.db,
+            &monitor.id,
+            status_str,
+            down_since.as_deref(),
+        )
+        .await;
     }
 
     // Persist check log to SQLite
@@ -321,13 +407,9 @@ pub async fn ping_monitor(
         Some(chrono::Utc::now().to_rfc3339())
     };
 
-    let _ = monitors::update_monitor_status(
-        &state.db,
-        &monitor.id,
-        status_str,
-        down_since.as_deref(),
-    )
-    .await;
+    let _ =
+        monitors::update_monitor_status(&state.db, &monitor.id, status_str, down_since.as_deref())
+            .await;
 
     info!(
         monitor_id = %monitor.id,
@@ -392,7 +474,9 @@ pub async fn resume_all_monitors(
     let (global_state, active, total) = monitors::get_global_monitoring_state(&state.db).await?;
 
     // Instantly trigger an out-of-band synthetic evaluation check for all targets
-    let all_monitors = monitors::get_all_monitors(&state.db).await.unwrap_or_default();
+    let all_monitors = monitors::get_all_monitors(&state.db)
+        .await
+        .unwrap_or_default();
     for monitor in all_monitors {
         let _ = state.reload_tx.send(monitor.id.clone());
 
@@ -412,7 +496,11 @@ pub async fn resume_all_monitors(
             let is_up = res.is_up;
             let status_str = if is_up { "UP" } else { "DOWN" };
             let now_rfc3339 = chrono::Utc::now().to_rfc3339();
-            let down_since = if is_up { None } else { Some(now_rfc3339.as_str()) };
+            let down_since = if is_up {
+                None
+            } else {
+                Some(now_rfc3339.as_str())
+            };
 
             let _ = sqlx::query(
                 r#"
@@ -431,13 +519,8 @@ pub async fn resume_all_monitors(
             .execute(&pool)
             .await;
 
-            let _ = monitors::update_monitor_status(
-                &pool,
-                &monitor.id,
-                status_str,
-                down_since,
-            )
-            .await;
+            let _ =
+                monitors::update_monitor_status(&pool, &monitor.id, status_str, down_since).await;
         });
     }
 
@@ -503,10 +586,7 @@ pub async fn bulk_pause_monitors(
 ) -> Result<Json<BulkBatchActionResponse>, AppError> {
     let ids = payload.ids();
     let updated = monitors::bulk_pause_monitors(&state.db, ids).await?;
-    info!(
-        count = updated,
-        "Executed bulk pause for selected monitors"
-    );
+    info!(count = updated, "Executed bulk pause for selected monitors");
     state.status_cache.invalidate(None).await;
     Ok(Json(BulkBatchActionResponse {
         message: format!("Successfully paused {updated} monitors"),
@@ -522,7 +602,9 @@ pub async fn bulk_resume_monitors(
     let ids = payload.ids();
     let updated = monitors::bulk_resume_monitors(&state.db, ids).await?;
 
-    let resumed_monitors = monitors::get_monitors_by_ids(&state.db, ids).await.unwrap_or_default();
+    let resumed_monitors = monitors::get_monitors_by_ids(&state.db, ids)
+        .await
+        .unwrap_or_default();
     for monitor in resumed_monitors {
         let _ = state.reload_tx.send(monitor.id.clone());
 
@@ -542,7 +624,11 @@ pub async fn bulk_resume_monitors(
             let is_up = res.is_up;
             let status_str = if is_up { "UP" } else { "DOWN" };
             let now_rfc3339 = chrono::Utc::now().to_rfc3339();
-            let down_since = if is_up { None } else { Some(now_rfc3339.as_str()) };
+            let down_since = if is_up {
+                None
+            } else {
+                Some(now_rfc3339.as_str())
+            };
 
             let _ = sqlx::query(
                 r#"
@@ -561,13 +647,8 @@ pub async fn bulk_resume_monitors(
             .execute(&pool)
             .await;
 
-            let _ = monitors::update_monitor_status(
-                &pool,
-                &monitor.id,
-                status_str,
-                down_since,
-            )
-            .await;
+            let _ =
+                monitors::update_monitor_status(&pool, &monitor.id, status_str, down_since).await;
         });
     }
 
@@ -596,7 +677,9 @@ pub async fn bulk_delete_monitors(
     );
     state.status_cache.invalidate(None).await;
     Ok(Json(BulkDeleteResponse {
-        message: format!("Successfully deleted {deleted_mons} monitors and {deleted_logs} historical logs"),
+        message: format!(
+            "Successfully deleted {deleted_mons} monitors and {deleted_logs} historical logs"
+        ),
         deleted_monitors: deleted_mons,
         deleted_logs,
     }))
@@ -709,13 +792,38 @@ pub async fn refresh_monitor_assets(
 ) -> Result<Json<AssetExpiryItem>, AppError> {
     let mut monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
-    if monitor.check_ssl == 1 {
-        if let Ok(info) = crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64).await {
-            let _ = monitors::update_ssl_expiry(
+    if monitor.check_ssl == 1 || monitor.check_type == "expiry" {
+        if let Ok(info) =
+            crate::checker::tls::check_ssl_expiration(&monitor.url, monitor.timeout_secs as u64)
+                .await
+        {
+            let caa_res = crate::checker::caa::inspect_caa_records(
+                &monitor.url,
+                info.issuer_cn.as_deref(),
+                info.issuer_org.as_deref(),
+                &info.issuer_full,
+                monitor.timeout_secs as u64,
+            )
+            .await;
+
+            let sans_str = if info.sans.is_empty() {
+                None
+            } else {
+                Some(info.sans.join(", "))
+            };
+
+            let _ = monitors::update_ssl_and_caa(
                 &state.db,
                 &monitor.id,
                 Some(&info.expires_at),
                 Some(info.days_remaining as i32),
+                info.issued_at.as_deref(),
+                Some(&info.issuer_full),
+                info.serial_number.as_deref(),
+                info.signature_algorithm.as_deref(),
+                sans_str.as_deref(),
+                Some(&caa_res.status),
+                Some(&caa_res.details),
             )
             .await;
             monitor.ssl_expires_at = Some(info.expires_at);
@@ -723,8 +831,10 @@ pub async fn refresh_monitor_assets(
         }
     }
 
-    if monitor.check_domain_expiry == 1 {
-        if let Ok(info) = crate::checker::domain::check_domain_expiration(&state.http_client, &monitor.url).await {
+    if monitor.check_domain_expiry == 1 || monitor.check_type == "expiry" {
+        if let Ok(info) =
+            crate::checker::domain::check_domain_expiration(&state.http_client, &monitor.url).await
+        {
             let _ = monitors::update_domain_expiry(
                 &state.db,
                 &monitor.id,
@@ -737,8 +847,8 @@ pub async fn refresh_monitor_assets(
         }
     }
 
-    let ssl_enabled = monitor.check_ssl == 1;
-    let domain_enabled = monitor.check_domain_expiry == 1;
+    let ssl_enabled = monitor.check_ssl == 1 || monitor.check_type == "expiry";
+    let domain_enabled = monitor.check_domain_expiry == 1 || monitor.check_type == "expiry";
     let urgency = compute_urgency(
         monitor.ssl_days_remaining,
         monitor.domain_days_remaining,
@@ -835,42 +945,69 @@ impl CreateChannelRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         let name = self.name.trim();
         if name.is_empty() {
-            return Err(AppError::BadRequest("Channel name cannot be empty".to_string()));
+            return Err(AppError::BadRequest(
+                "Channel name cannot be empty".to_string(),
+            ));
         }
         let ctype = self.channel_type.trim().to_lowercase();
         if !["discord", "slack", "webhook", "telegram", "generic"].contains(&ctype.as_str()) {
             return Err(AppError::BadRequest(
-                "Invalid channel type. Supported types: discord, slack, webhook, telegram".to_string(),
+                "Invalid channel type. Supported types: discord, slack, webhook, telegram"
+                    .to_string(),
             ));
         }
 
         if ctype == "telegram" {
-            let has_token = self.telegram_bot_token.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some();
-            let has_chat = self.telegram_chat_id.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some();
-            let has_url = self.url.as_deref().map(str::trim).filter(|s| !s.is_empty()).is_some();
+            let has_token = self
+                .telegram_bot_token
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some();
+            let has_chat = self
+                .telegram_chat_id
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some();
+            let has_url = self
+                .url
+                .as_deref()
+                .map(str::trim)
+                .filter(|s| !s.is_empty())
+                .is_some();
 
             if !has_url && (!has_token || !has_chat) {
                 return Err(AppError::BadRequest(
-                    "Telegram channel requires both Bot Token and Chat ID (or endpoint URL)".to_string(),
+                    "Telegram channel requires both Bot Token and Chat ID (or endpoint URL)"
+                        .to_string(),
                 ));
             }
             if let Some(ref u) = self.url {
                 let trimmed = u.trim();
-                if !trimmed.is_empty() && !(trimmed.starts_with("http://") || trimmed.starts_with("https://")) {
-                    return Err(AppError::BadRequest("Channel URL must begin with http:// or https://".to_string()));
+                if !trimmed.is_empty()
+                    && !(trimmed.starts_with("http://") || trimmed.starts_with("https://"))
+                {
+                    return Err(AppError::BadRequest(
+                        "Channel URL must begin with http:// or https://".to_string(),
+                    ));
                 }
             }
         } else {
             let u = self.url.as_deref().map(str::trim).unwrap_or("");
             if !(u.starts_with("http://") || u.starts_with("https://")) {
-                return Err(AppError::BadRequest("Channel URL must begin with http:// or https://".to_string()));
+                return Err(AppError::BadRequest(
+                    "Channel URL must begin with http:// or https://".to_string(),
+                ));
             }
         }
 
         if let Some(ref av) = self.avatar_url {
             let a = av.trim();
             if !a.is_empty() && !(a.starts_with("http://") || a.starts_with("https://")) {
-                return Err(AppError::BadRequest("Avatar URL must begin with http:// or https://".to_string()));
+                return Err(AppError::BadRequest(
+                    "Avatar URL must begin with http:// or https://".to_string(),
+                ));
             }
         }
         Ok(())
@@ -895,27 +1032,34 @@ impl UpdateChannelRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         if let Some(ref name) = self.name {
             if name.trim().is_empty() {
-                return Err(AppError::BadRequest("Channel name cannot be empty".to_string()));
+                return Err(AppError::BadRequest(
+                    "Channel name cannot be empty".to_string(),
+                ));
             }
         }
         if let Some(ref url) = self.url {
             let u = url.trim();
             if !u.is_empty() && !(u.starts_with("http://") || u.starts_with("https://")) {
-                return Err(AppError::BadRequest("Channel URL must begin with http:// or https://".to_string()));
+                return Err(AppError::BadRequest(
+                    "Channel URL must begin with http:// or https://".to_string(),
+                ));
             }
         }
         if let Some(ref ctype) = self.channel_type {
             let c = ctype.trim().to_lowercase();
             if !["discord", "slack", "webhook", "telegram", "generic"].contains(&c.as_str()) {
                 return Err(AppError::BadRequest(
-                    "Invalid channel type. Supported types: discord, slack, webhook, telegram".to_string(),
+                    "Invalid channel type. Supported types: discord, slack, webhook, telegram"
+                        .to_string(),
                 ));
             }
         }
         if let Some(ref av) = self.avatar_url {
             let a = av.trim();
             if !a.is_empty() && !(a.starts_with("http://") || a.starts_with("https://")) {
-                return Err(AppError::BadRequest("Avatar URL must begin with http:// or https://".to_string()));
+                return Err(AppError::BadRequest(
+                    "Avatar URL must begin with http:// or https://".to_string(),
+                ));
             }
         }
         Ok(())
@@ -934,7 +1078,13 @@ pub async fn list_channels(
 pub async fn create_channel(
     State(state): State<Arc<AppState>>,
     Json(payload): Json<CreateChannelRequest>,
-) -> Result<(axum::http::StatusCode, Json<crate::db::notifications::NotificationChannel>), AppError> {
+) -> Result<
+    (
+        axum::http::StatusCode,
+        Json<crate::db::notifications::NotificationChannel>,
+    ),
+    AppError,
+> {
     payload.validate()?;
 
     let bot_name = payload
@@ -1003,13 +1153,21 @@ pub async fn update_channel(
         .await?
         .ok_or_else(|| AppError::NotFound(format!("Notification channel {id} not found")))?;
 
-    let name = payload.name.as_deref().map(str::trim).unwrap_or(&existing.name);
+    let name = payload
+        .name
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or(&existing.name);
     let channel_type = payload
         .channel_type
         .as_deref()
         .map(|s| s.trim().to_lowercase())
         .unwrap_or(existing.channel_type);
-    let url = payload.url.as_deref().map(str::trim).unwrap_or(&existing.url);
+    let url = payload
+        .url
+        .as_deref()
+        .map(str::trim)
+        .unwrap_or(&existing.url);
     let is_default = payload.is_default.unwrap_or(existing.is_default);
 
     let bot_name = match payload.bot_name {
@@ -1093,7 +1251,9 @@ pub async fn delete_channel(
 ) -> Result<axum::http::StatusCode, AppError> {
     let deleted = crate::db::notifications::delete_channel(&state.db, &id).await?;
     if !deleted {
-        return Err(AppError::NotFound(format!("Notification channel {id} not found")));
+        return Err(AppError::NotFound(format!(
+            "Notification channel {id} not found"
+        )));
     }
     Ok(axum::http::StatusCode::NO_CONTENT)
 }
@@ -1170,17 +1330,44 @@ pub use crate::api::webhooks::{
 
 #[allow(unused_imports)]
 pub use crate::api::status_pages::{
-    create_status_page, delete_status_page, get_status_page, list_status_pages,
-    update_status_page,
+    create_status_page, delete_status_page, get_status_page, list_status_pages, update_status_page,
 };
 
 // ── Maintenance Window Admin Handlers (delegated to crate::api::maintenance) ──
 
 #[allow(unused_imports)]
 pub use crate::api::maintenance::{
-    create_maintenance, delete_maintenance, get_maintenance, list_maintenance,
-    update_maintenance,
+    create_maintenance, delete_maintenance, get_maintenance, list_maintenance, update_maintenance,
 };
+
+// ── Memory Diagnostics & Heap Profiling Handlers ─────────────────────────────
+
+/// `GET /api/admin/diagnostics/memory`
+///
+/// Returns live process and allocator memory telemetry (RSS, Allocated, Mapped, Active, Fragmentation).
+pub async fn get_memory_diagnostics() -> Result<Json<crate::diagnostics::memory::MemoryStats>, AppError> {
+    let stats = crate::diagnostics::memory::get_memory_stats()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to retrieve memory diagnostics: {e}")))?;
+    Ok(Json(stats))
+}
+
+/// `POST /api/admin/diagnostics/memory/purge`
+///
+/// Triggers an immediate arena purge to release unused memory back to the host operating system.
+pub async fn purge_memory_diagnostics() -> Result<Json<crate::diagnostics::memory::PurgeResult>, AppError> {
+    let result = crate::diagnostics::memory::purge_memory()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to purge memory arena: {e}")))?;
+    Ok(Json(result))
+}
+
+/// `POST /api/admin/diagnostics/memory/heap-dump`
+///
+/// Triggers a programmatic jemalloc raw heap profiling snapshot written to `/data/profiles/`.
+pub async fn dump_heap_diagnostics() -> Result<Json<crate::diagnostics::memory::HeapDumpResult>, AppError> {
+    let result = crate::diagnostics::memory::dump_heap_profile()
+        .map_err(|e| AppError::Internal(anyhow::anyhow!("Failed to dump heap profile: {e}")))?;
+    Ok(Json(result))
+}
 
 #[cfg(test)]
 mod tests {
@@ -1225,11 +1412,9 @@ mod tests {
     async fn test_change_password_flow() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // 1. Unauthenticated request should fail (401)
         let req = Request::builder()
@@ -1263,7 +1448,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["error"], "Invalid current password");
 
@@ -1300,7 +1487,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["message"], "Password updated successfully");
 
@@ -1343,11 +1532,9 @@ mod tests {
     async fn test_monitor_details_and_ping_endpoints() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // Seed a public monitor and a private monitor
         sqlx::query(
@@ -1393,7 +1580,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let details: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(details["monitor"]["id"], "mon-pub");
         assert_eq!(details["monitor"]["name"], "Public Test");
@@ -1430,28 +1619,118 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let ping_res: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert!(ping_res["status"] == "UP" || ping_res["status"] == "DOWN");
         assert!(ping_res.get("latency_ms").is_some());
 
         // Check that check_logs has a new row (now 4 logs)
-        let log_count: i64 = sqlx::query_scalar("SELECT COUNT(*) FROM check_logs WHERE monitor_id = 'mon-pub'")
-            .fetch_one(&state.db)
+        let log_count: i64 =
+            sqlx::query_scalar("SELECT COUNT(*) FROM check_logs WHERE monitor_id = 'mon-pub'")
+                .fetch_one(&state.db)
+                .await
+                .unwrap();
+        assert_eq!(log_count, 4);
+    }
+
+    #[tokio::test]
+    async fn test_monitor_details_ssl_ca_and_caa_compliance() {
+        let (app, state) = setup_test_app().await;
+
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
+
+        // Seed monitor with SSL certificate and CAA telemetry
+        sqlx::query(
+            r#"
+            INSERT INTO monitors (
+                id, name, url, is_active, is_public, check_type, check_ssl,
+                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans,
+                ssl_issued_at, caa_status, caa_details
+            ) VALUES (
+                'mon-caa-1', 'Secure Gateway', 'https://secure.example.com', 1, 1, 'expiry', 1,
+                'Let''s Encrypt', '04A812C9F', 'sha256WithRSAEncryption', 'secure.example.com, api.example.com',
+                '2026-01-01T00:00:00Z', 'VALID', 'Authorized CA: letsencrypt.org'
+            )
+            "#,
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // Seed a check log with CAA mismatch
+        sqlx::query(
+            r#"
+            INSERT INTO check_logs (
+                monitor_id, status_code, latency_ms, is_up, error_msg,
+                ssl_issuer, ssl_serial_number, caa_status, caa_details,
+                checked_at, created_at
+            ) VALUES (
+                'mon-caa-1', 200, 35, 1, 'CAA Security Warning',
+                'Let''s Encrypt', '04A812C9F', 'MISMATCH', 'Active issuer Let''s Encrypt not authorized in CAA',
+                datetime('now'), datetime('now')
+            )
+            "#,
+        )
+        .execute(&state.db)
+        .await
+        .unwrap();
+
+        // Request monitor details
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/admin/monitors/mon-caa-1/details")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 64)
             .await
             .unwrap();
-        assert_eq!(log_count, 4);
+        let details: serde_json::Value = serde_json::from_slice(&body).unwrap();
+
+        assert_eq!(details["monitor"]["id"], "mon-caa-1");
+        assert_eq!(details["monitor"]["check_type"], "expiry");
+        assert_eq!(details["monitor"]["ssl_issuer"], "Let's Encrypt");
+        assert_eq!(details["monitor"]["ssl_serial_number"], "04A812C9F");
+        assert_eq!(
+            details["monitor"]["ssl_signature_algorithm"],
+            "sha256WithRSAEncryption"
+        );
+        assert_eq!(
+            details["monitor"]["ssl_sans"],
+            "secure.example.com, api.example.com"
+        );
+        assert_eq!(details["monitor"]["caa_status"], "VALID");
+        assert_eq!(
+            details["monitor"]["caa_details"],
+            "Authorized CA: letsencrypt.org"
+        );
+
+        // Verify check log contains caa_status
+        let logs = details["logs"].as_array().unwrap();
+        assert_eq!(logs.len(), 1);
+        assert_eq!(logs[0]["caa_status"], "MISMATCH");
+        assert_eq!(
+            logs[0]["caa_details"],
+            "Active issuer Let's Encrypt not authorized in CAA"
+        );
+        assert_eq!(logs[0]["ssl_issuer"], "Let's Encrypt");
+        assert_eq!(logs[0]["ssl_serial_number"], "04A812C9F");
     }
 
     #[tokio::test]
     async fn test_asset_expiry_endpoints() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // 1. Unauthenticated request should return 401
         let req = Request::builder()
@@ -1493,7 +1772,7 @@ mod tests {
         // mon-ignored: No SSL or domain monitoring enabled
         sqlx::query(
             "INSERT INTO monitors (id, name, url, is_active, check_ssl, check_domain_expiry)
-             VALUES ('mon-ignored', 'Plain HTTP', 'http://plain.example.com', 1, 0, 0)"
+             VALUES ('mon-ignored', 'Plain HTTP', 'http://plain.example.com', 1, 0, 0)",
         )
         .execute(&state.db)
         .await
@@ -1509,7 +1788,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let items: Vec<AssetExpiryItem> = serde_json::from_slice(&body).unwrap();
         assert_eq!(items.len(), 3);
 
@@ -1546,7 +1827,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let refreshed: AssetExpiryItem = serde_json::from_slice(&body).unwrap();
         assert_eq!(refreshed.monitor_id, "mon-crit");
         assert!(refreshed.ssl_enabled);
@@ -1556,11 +1839,9 @@ mod tests {
     async fn test_notification_channels_crud_and_monitor_attachment() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // 1. Unauthenticated requests to /api/admin/channels should return 401
         let req = Request::builder()
@@ -1591,13 +1872,18 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let chan_discord: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(chan_discord.name, "Engineering Discord");
         assert_eq!(chan_discord.channel_type, "discord");
         assert_eq!(chan_discord.bot_name.as_deref(), Some("KeepUp Sentinel"));
-        assert_eq!(chan_discord.avatar_url.as_deref(), Some("https://example.com/sentinel.png"));
+        assert_eq!(
+            chan_discord.avatar_url.as_deref(),
+            Some("https://example.com/sentinel.png")
+        );
         assert!(!chan_discord.is_default);
 
         // 3. Create "Ops Slack" channel (default = true)
@@ -1618,7 +1904,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let chan_slack: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(chan_slack.name, "Ops Slack");
@@ -1633,7 +1921,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let channels: Vec<crate::db::notifications::NotificationChannel> =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(channels.len(), 2);
@@ -1655,12 +1945,17 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let updated_chan: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(updated_chan.name, "Engineering Discord Updated");
         assert_eq!(updated_chan.bot_name.as_deref(), Some("KeepUp Ops Bot"));
-        assert_eq!(updated_chan.avatar_url.as_deref(), Some("https://example.com/new-avatar.png"));
+        assert_eq!(
+            updated_chan.avatar_url.as_deref(),
+            Some("https://example.com/new-avatar.png")
+        );
 
         // 6. Create a monitor attaching Engineering Discord explicitly
         let req = Request::builder()
@@ -1679,7 +1974,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let created_mon: Monitor = serde_json::from_slice(&body).unwrap();
 
         // 7. Verify monitor details returns the attached channel ID
@@ -1691,9 +1988,14 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 32).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 32)
+            .await
+            .unwrap();
         let detail_resp: MonitorDetailResponse = serde_json::from_slice(&body).unwrap();
-        assert_eq!(detail_resp.monitor.channel_ids, vec![chan_discord.id.clone()]);
+        assert_eq!(
+            detail_resp.monitor.channel_ids,
+            vec![chan_discord.id.clone()]
+        );
 
         // 8. Verify effective channels returns BOTH explicitly attached + default channel
         let effective = crate::db::notifications::get_effective_channels_for_monitor(
@@ -1722,12 +2024,10 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let attached_ids = crate::db::notifications::get_channel_ids_for_monitor(
-            &state.db,
-            &created_mon.id,
-        )
-        .await
-        .unwrap();
+        let attached_ids =
+            crate::db::notifications::get_channel_ids_for_monitor(&state.db, &created_mon.id)
+                .await
+                .unwrap();
         assert_eq!(attached_ids.len(), 2);
 
         // 10. Delete channel
@@ -1741,12 +2041,10 @@ mod tests {
         assert_eq!(res.status(), StatusCode::NO_CONTENT);
 
         // Verify monitor association was cascaded
-        let attached_ids_after = crate::db::notifications::get_channel_ids_for_monitor(
-            &state.db,
-            &created_mon.id,
-        )
-        .await
-        .unwrap();
+        let attached_ids_after =
+            crate::db::notifications::get_channel_ids_for_monitor(&state.db, &created_mon.id)
+                .await
+                .unwrap();
         assert_eq!(attached_ids_after, vec![chan_slack.id]);
     }
 
@@ -1757,11 +2055,9 @@ mod tests {
 
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // Spin up a mock HTTP server on 127.0.0.1
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1800,7 +2096,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let chan: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
 
@@ -1846,11 +2144,9 @@ mod tests {
 
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // Spin up mock server capturing request body
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -1895,11 +2191,16 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let chan: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(chan.bot_name.as_deref(), Some("KeepUp Sentinel"));
-        assert_eq!(chan.avatar_url.as_deref(), Some("https://example.com/custom-avatar.png"));
+        assert_eq!(
+            chan.avatar_url.as_deref(),
+            Some("https://example.com/custom-avatar.png")
+        );
 
         // 2. Dispatch test alert via POST /api/admin/channels/:id/test
         let req = Request::builder()
@@ -1915,8 +2216,14 @@ mod tests {
         let payload_str = captured_body.lock().await.clone();
         let payload: Value = serde_json::from_str(&payload_str).unwrap();
         assert_eq!(payload["username"], "KeepUp Sentinel");
-        assert_eq!(payload["avatar_url"], "https://example.com/custom-avatar.png");
-        assert_eq!(payload["embeds"][0]["color"], crate::checker::alerting::COLOR_STATUS_GREEN);
+        assert_eq!(
+            payload["avatar_url"],
+            "https://example.com/custom-avatar.png"
+        );
+        assert_eq!(
+            payload["embeds"][0]["color"],
+            crate::checker::alerting::COLOR_STATUS_GREEN
+        );
 
         // 4. Update channel to remove custom bot name and avatar (fallback to default branding)
         let req = Request::builder()
@@ -1947,8 +2254,14 @@ mod tests {
 
         let fallback_str = captured_body.lock().await.clone();
         let fallback_payload: Value = serde_json::from_str(&fallback_str).unwrap();
-        assert_eq!(fallback_payload["username"], crate::checker::alerting::DEFAULT_BOT_NAME);
-        assert_eq!(fallback_payload["avatar_url"], crate::checker::alerting::DEFAULT_AVATAR_URL);
+        assert_eq!(
+            fallback_payload["username"],
+            crate::checker::alerting::DEFAULT_BOT_NAME
+        );
+        assert_eq!(
+            fallback_payload["avatar_url"],
+            crate::checker::alerting::DEFAULT_AVATAR_URL
+        );
     }
 
     #[tokio::test]
@@ -1957,11 +2270,9 @@ mod tests {
 
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // Spin up mock server capturing request body and destination
         let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
@@ -2005,12 +2316,17 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let chan: crate::db::notifications::NotificationChannel =
             serde_json::from_slice(&body).unwrap();
         assert_eq!(chan.name, "DevOps Supergroup");
         assert_eq!(chan.channel_type, "telegram");
-        assert_eq!(chan.telegram_bot_token.as_deref(), Some("123456:TESTBOTTOKENABC"));
+        assert_eq!(
+            chan.telegram_bot_token.as_deref(),
+            Some("123456:TESTBOTTOKENABC")
+        );
         assert_eq!(chan.telegram_chat_id.as_deref(), Some("-1001987654321"));
         assert_eq!(chan.telegram_thread_id.as_deref(), Some("42"));
 
@@ -2072,11 +2388,9 @@ mod tests {
     async fn test_bulk_pause_and_resume_all_endpoints() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // Seed 2 active monitors
         sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('bulk-1', 'B1', 'https://example.com', 1, 1)")
@@ -2102,14 +2416,18 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["global_state"], "ALL_PAUSED");
         assert_eq!(json_body["active_monitors"], 0);
         assert_eq!(json_body["updated_count"], 2);
 
         // Verify SQLite state
-        let (state_str, active, total) = monitors::get_global_monitoring_state(&state.db).await.unwrap();
+        let (state_str, active, total) = monitors::get_global_monitoring_state(&state.db)
+            .await
+            .unwrap();
         assert_eq!(state_str, "ALL_PAUSED");
         assert_eq!(active, 0);
         assert_eq!(total, 2);
@@ -2123,14 +2441,18 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["global_state"], "ALL_ACTIVE");
         assert_eq!(json_body["active_monitors"], 2);
         assert_eq!(json_body["updated_count"], 2);
 
         // Verify SQLite state
-        let (state_str, active, total) = monitors::get_global_monitoring_state(&state.db).await.unwrap();
+        let (state_str, active, total) = monitors::get_global_monitoring_state(&state.db)
+            .await
+            .unwrap();
         assert_eq!(state_str, "ALL_ACTIVE");
         assert_eq!(active, 2);
         assert_eq!(total, 2);
@@ -2140,11 +2462,9 @@ mod tests {
     async fn test_bulk_batch_endpoints() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // Seed 3 monitors
         sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('batch-1', 'B1', 'https://example.com', 1, 1)")
@@ -2165,11 +2485,15 @@ mod tests {
             .uri("/api/admin/monitors/bulk-preview")
             .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
-            .body(Body::from(json!({ "monitor_ids": ["batch-1", "batch-2"] }).to_string()))
+            .body(Body::from(
+                json!({ "monitor_ids": ["batch-1", "batch-2"] }).to_string(),
+            ))
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["monitor_count"], 2);
         assert_eq!(json_body["check_logs_count"], 2);
@@ -2180,18 +2504,26 @@ mod tests {
             .uri("/api/admin/monitors/bulk-pause")
             .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
-            .body(Body::from(json!({ "monitor_ids": ["batch-1", "batch-2"] }).to_string()))
+            .body(Body::from(
+                json!({ "monitor_ids": ["batch-1", "batch-2"] }).to_string(),
+            ))
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["updated_count"], 2);
 
         // Verify batch-1 is paused, batch-3 is still active
-        let b1 = monitors::get_monitor_by_id(&state.db, "batch-1").await.unwrap();
+        let b1 = monitors::get_monitor_by_id(&state.db, "batch-1")
+            .await
+            .unwrap();
         assert_eq!(b1.is_active, 0);
-        let b3 = monitors::get_monitor_by_id(&state.db, "batch-3").await.unwrap();
+        let b3 = monitors::get_monitor_by_id(&state.db, "batch-3")
+            .await
+            .unwrap();
         assert_eq!(b3.is_active, 1);
 
         // 3. Bulk Resume batch-1
@@ -2204,7 +2536,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let b1 = monitors::get_monitor_by_id(&state.db, "batch-1").await.unwrap();
+        let b1 = monitors::get_monitor_by_id(&state.db, "batch-1")
+            .await
+            .unwrap();
         assert_eq!(b1.is_active, 1);
 
         // 4. Bulk Delete batch-1 and batch-2
@@ -2213,29 +2547,37 @@ mod tests {
             .uri("/api/admin/monitors/bulk-delete")
             .header("Authorization", format!("Bearer {token}"))
             .header("Content-Type", "application/json")
-            .body(Body::from(json!({ "monitor_ids": ["batch-1", "batch-2"] }).to_string()))
+            .body(Body::from(
+                json!({ "monitor_ids": ["batch-1", "batch-2"] }).to_string(),
+            ))
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let json_body: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(json_body["deleted_monitors"], 2);
         assert_eq!(json_body["deleted_logs"], 2);
 
-        assert!(monitors::get_monitor_by_id(&state.db, "batch-1").await.is_err());
-        assert!(monitors::get_monitor_by_id(&state.db, "batch-2").await.is_err());
-        assert!(monitors::get_monitor_by_id(&state.db, "batch-3").await.is_ok());
+        assert!(monitors::get_monitor_by_id(&state.db, "batch-1")
+            .await
+            .is_err());
+        assert!(monitors::get_monitor_by_id(&state.db, "batch-2")
+            .await
+            .is_err());
+        assert!(monitors::get_monitor_by_id(&state.db, "batch-3")
+            .await
+            .is_ok());
     }
 
     #[tokio::test]
     async fn test_multi_protocol_monitors_crud_and_ping() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // 1. Invalid check_type rejection
         let req = Request::builder()
@@ -2273,7 +2615,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let tcp_mon: Monitor = serde_json::from_slice(&body).unwrap();
         assert_eq!(tcp_mon.check_type, "tcp");
         assert_eq!(tcp_mon.port, Some(5432));
@@ -2297,7 +2641,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let dns_mon: Monitor = serde_json::from_slice(&body).unwrap();
         assert_eq!(dns_mon.check_type, "dns");
         assert_eq!(dns_mon.dns_record_type.as_deref(), Some("A"));
@@ -2320,7 +2666,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let ping_mon: Monitor = serde_json::from_slice(&body).unwrap();
         assert_eq!(ping_mon.check_type, "ping");
 
@@ -2333,7 +2681,9 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let ping_resp: serde_json::Value = serde_json::from_slice(&body).unwrap();
         assert_eq!(ping_resp["status"], "UP");
 
@@ -2346,22 +2696,121 @@ mod tests {
             .unwrap();
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let detail_resp: MonitorDetailResponse = serde_json::from_slice(&body).unwrap();
         assert_eq!(detail_resp.monitor.check_type, "dns");
         assert_eq!(detail_resp.monitor.dns_record_type.as_deref(), Some("A"));
-        assert_eq!(detail_resp.monitor.dns_expected_value.as_deref(), Some("1.1.1.1"));
+        assert_eq!(
+            detail_resp.monitor.dns_expected_value.as_deref(),
+            Some("1.1.1.1")
+        );
+
+        // 7. Create Expiry Monitor
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/monitors")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                json!({
+                    "name": "RustLang Expiry Monitor",
+                    "url": "rust-lang.org",
+                    "check_type": "expiry",
+                    "expiry_threshold_days": 45
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
+        let expiry_mon: Monitor = serde_json::from_slice(&body).unwrap();
+        assert_eq!(expiry_mon.check_type, "expiry");
+        assert_eq!(expiry_mon.expiry_threshold_days, 45);
+        assert_eq!(expiry_mon.check_domain_expiry, 1);
+        assert_eq!(expiry_mon.check_ssl, 1);
+        assert_eq!(expiry_mon.url, "rust-lang.org");
+
+        // 7b. Create Expiry Monitor with full HTTPS URL and path/query to verify sanitization
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/v1/monitors")
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                json!({
+                    "name": "Subdomain Expiry URL Test",
+                    "url": "https://api.example.com/health/check?query=1#frag",
+                    "check_type": "expiry",
+                    "expiry_threshold_days": 30
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::CREATED);
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
+        let sanitized_expiry_mon: Monitor = serde_json::from_slice(&body).unwrap();
+        assert_eq!(sanitized_expiry_mon.check_type, "expiry");
+        assert_eq!(sanitized_expiry_mon.url, "api.example.com");
+        assert_eq!(sanitized_expiry_mon.check_domain_expiry, 1);
+        assert_eq!(sanitized_expiry_mon.check_ssl, 1);
+
+        // 8. Update Expiry Monitor threshold days and URL
+        let req = Request::builder()
+            .method("PUT")
+            .uri(format!("/api/monitors/{}", expiry_mon.id))
+            .header("Authorization", format!("Bearer {token}"))
+            .header("Content-Type", "application/json")
+            .body(Body::from(
+                json!({
+                    "url": "https://crates.io/api/v1/crates",
+                    "expiry_threshold_days": 60
+                })
+                .to_string(),
+            ))
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
+        let updated_mon: Monitor = serde_json::from_slice(&body).unwrap();
+        assert_eq!(updated_mon.expiry_threshold_days, 60);
+        assert_eq!(updated_mon.url, "crates.io");
+        assert_eq!(updated_mon.check_domain_expiry, 1);
+        assert_eq!(updated_mon.check_ssl, 1);
+
+        // 9. Monitor details endpoint contains expiry fields
+        let req = Request::builder()
+            .method("GET")
+            .uri(format!("/api/admin/monitors/{}/details", expiry_mon.id))
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
+        let detail_resp: MonitorDetailResponse = serde_json::from_slice(&body).unwrap();
+        assert_eq!(detail_resp.monitor.check_type, "expiry");
+        assert_eq!(detail_resp.monitor.expiry_threshold_days, 60);
     }
 
     #[tokio::test]
     async fn test_clone_monitor_and_delete_workflow() {
         let (app, state) = setup_test_app().await;
 
-        let token = crate::api::auth::create_jwt(
-            &state.config.admin_user,
-            &state.config.jwt_secret,
-        )
-        .unwrap();
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
 
         // 1. Create a notification channel to test channel inheritance during cloning
         let channel = crate::db::notifications::NotificationChannel {
@@ -2389,8 +2838,8 @@ mod tests {
             "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                    max_retries, is_active, is_public, last_status, \
                                    check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
-                                   check_type, port, dns_record_type, dns_expected_value) \
-             VALUES (?, 'Production API', 'https://api.example.com', 120, 10, 2, 1, 1, 'UP', 1, 15, 1, 20, 'http', NULL, NULL, NULL)",
+                                   check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days) \
+             VALUES (?, 'Production API', 'https://api.example.com', 120, 10, 2, 1, 1, 'UP', 1, 15, 1, 20, 'expiry', NULL, NULL, NULL, 42)",
         )
         .bind(source_id)
         .execute(&state.db)
@@ -2411,7 +2860,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::CREATED);
 
-        let body = axum::body::to_bytes(res.into_body(), 1024 * 16).await.unwrap();
+        let body = axum::body::to_bytes(res.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let cloned_mon: Monitor = serde_json::from_slice(&body).unwrap();
 
         assert_ne!(cloned_mon.id, source_id);
@@ -2424,16 +2875,21 @@ mod tests {
         assert_eq!(cloned_mon.domain_warning_days, 15);
         assert_eq!(cloned_mon.check_ssl, 1);
         assert_eq!(cloned_mon.ssl_warning_days, 20);
+        assert_eq!(cloned_mon.check_type, "expiry");
+        assert_eq!(cloned_mon.expiry_threshold_days, 42);
 
         // 4. Verify cloned monitor inherited the notification channels
-        let cloned_channels = crate::db::notifications::get_channel_ids_for_monitor(&state.db, &cloned_mon.id)
-            .await
-            .unwrap();
+        let cloned_channels =
+            crate::db::notifications::get_channel_ids_for_monitor(&state.db, &cloned_mon.id)
+                .await
+                .unwrap();
         assert_eq!(cloned_channels.len(), 1);
         assert_eq!(cloned_channels[0], channel.id);
 
         // 5. Verify source monitor is intact
-        let src = monitors::get_monitor_by_id(&state.db, source_id).await.unwrap();
+        let src = monitors::get_monitor_by_id(&state.db, source_id)
+            .await
+            .unwrap();
         assert_eq!(src.name, "Production API");
 
         // 6. Delete the cloned monitor
@@ -2447,7 +2903,75 @@ mod tests {
         assert_eq!(del_res.status(), StatusCode::NO_CONTENT);
 
         // Cloned monitor is gone, source monitor remains
-        assert!(monitors::get_monitor_by_id(&state.db, &cloned_mon.id).await.is_err());
-        assert!(monitors::get_monitor_by_id(&state.db, source_id).await.is_ok());
+        assert!(monitors::get_monitor_by_id(&state.db, &cloned_mon.id)
+            .await
+            .is_err());
+        assert!(monitors::get_monitor_by_id(&state.db, source_id)
+            .await
+            .is_ok());
+    }
+
+    #[tokio::test]
+    async fn test_memory_diagnostics_endpoints() {
+        let (app, state) = setup_test_app().await;
+
+        let token =
+            crate::api::auth::create_jwt(&state.config.admin_user, &state.config.jwt_secret)
+                .unwrap();
+
+        // 1. Unauthenticated requests must return 401
+        for (method, uri) in [
+            ("GET", "/api/admin/diagnostics/memory"),
+            ("POST", "/api/admin/diagnostics/memory/purge"),
+            ("POST", "/api/admin/diagnostics/memory/heap-dump"),
+        ] {
+            let req = Request::builder()
+                .method(method)
+                .uri(uri)
+                .body(Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(res.status(), StatusCode::UNAUTHORIZED);
+        }
+
+        // 2. Authenticated GET /api/admin/diagnostics/memory
+        let req = Request::builder()
+            .method("GET")
+            .uri("/api/admin/diagnostics/memory")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+        let stats: crate::diagnostics::memory::MemoryStats = serde_json::from_slice(&bytes).unwrap();
+        assert!(!stats.allocator.is_empty());
+        assert!(!stats.timestamp.is_empty());
+
+        // 3. Authenticated POST /api/admin/diagnostics/memory/purge
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/admin/diagnostics/memory/purge")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+        let purge: crate::diagnostics::memory::PurgeResult = serde_json::from_slice(&bytes).unwrap();
+        assert!(purge.success);
+
+        // 4. Authenticated POST /api/admin/diagnostics/memory/heap-dump
+        let req = Request::builder()
+            .method("POST")
+            .uri("/api/admin/diagnostics/memory/heap-dump")
+            .header("Authorization", format!("Bearer {token}"))
+            .body(Body::empty())
+            .unwrap();
+        let res = app.clone().oneshot(req).await.unwrap();
+        assert_eq!(res.status(), StatusCode::OK);
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 1024).await.unwrap();
+        let dump: crate::diagnostics::memory::HeapDumpResult = serde_json::from_slice(&bytes).unwrap();
+        assert!(dump.success);
     }
 }

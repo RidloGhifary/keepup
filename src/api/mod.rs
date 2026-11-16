@@ -156,6 +156,12 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/channels/:id/test", post(admin::test_channel))
         .route("/admin/monitors/:id/channels", get(admin::get_monitor_channels))
         .route("/monitors/:id/channels", get(admin::get_monitor_channels))
+        .route("/admin/diagnostics/memory", get(admin::get_memory_diagnostics))
+        .route("/admin/diagnostics/memory/purge", post(admin::purge_memory_diagnostics))
+        .route("/admin/diagnostics/memory/heap-dump", post(admin::dump_heap_diagnostics))
+        .route("/diagnostics/memory", get(admin::get_memory_diagnostics))
+        .route("/diagnostics/memory/purge", post(admin::purge_memory_diagnostics))
+        .route("/diagnostics/memory/heap-dump", post(admin::dump_heap_diagnostics))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::require_auth,
@@ -257,6 +263,12 @@ pub fn router(state: Arc<AppState>) -> Router<Arc<AppState>> {
         .route("/channels/:id/test", post(admin::test_channel))
         .route("/admin/monitors/:id/channels", get(admin::get_monitor_channels))
         .route("/monitors/:id/channels", get(admin::get_monitor_channels))
+        .route("/admin/diagnostics/memory", get(admin::get_memory_diagnostics))
+        .route("/admin/diagnostics/memory/purge", post(admin::purge_memory_diagnostics))
+        .route("/admin/diagnostics/memory/heap-dump", post(admin::dump_heap_diagnostics))
+        .route("/diagnostics/memory", get(admin::get_memory_diagnostics))
+        .route("/diagnostics/memory/purge", post(admin::purge_memory_diagnostics))
+        .route("/diagnostics/memory/heap-dump", post(admin::dump_heap_diagnostics))
         .route_layer(axum::middleware::from_fn_with_state(
             state.clone(),
             crate::middleware::auth::require_auth,

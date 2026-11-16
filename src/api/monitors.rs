@@ -44,6 +44,8 @@ pub struct CreateMonitor {
     pub dns_record_type: Option<String>,
     #[serde(default)]
     pub dns_expected_value: Option<String>,
+    #[serde(default = "default_warning_days")]
+    pub expiry_threshold_days: i32,
 }
 
 fn default_check_type() -> String {
@@ -68,16 +70,16 @@ fn default_warning_days() -> i32 {
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
 /// `GET /api/v1/monitors` — list all monitors.
-pub async fn list(
-    State(state): State<Arc<AppState>>,
-) -> Result<Json<Vec<MonitorRow>>, AppError> {
+pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<MonitorRow>>, AppError> {
     let rows = sqlx::query_as::<_, MonitorRow>(
         "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
                is_active, is_public, last_status, down_since, created_at, \
                check_domain_expiry, domain_warning_days, domain_expires_at, \
                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-               check_type, port, dns_record_type, dns_expected_value \
+               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+               ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
+               current_consecutive_fails \
          FROM monitors ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
@@ -97,7 +99,9 @@ pub async fn get_one(
                check_domain_expiry, domain_warning_days, domain_expires_at, \
                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-               check_type, port, dns_record_type, dns_expected_value \
+               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+               ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
+               current_consecutive_fails \
          FROM monitors WHERE id = ?",
     )
     .bind(&id)
@@ -114,26 +118,47 @@ pub async fn create(
     Json(body): Json<CreateMonitor>,
 ) -> Result<(StatusCode, Json<MonitorRow>), AppError> {
     if body.name.trim().is_empty() {
-        return Err(AppError::BadRequest("Monitor name cannot be empty".to_string()));
+        return Err(AppError::BadRequest(
+            "Monitor name cannot be empty".to_string(),
+        ));
     }
     let check_type = body.check_type.trim().to_lowercase();
-    if check_type != "http" && check_type != "tcp" && check_type != "dns" && check_type != "ping" {
+    if check_type != "http"
+        && check_type != "tcp"
+        && check_type != "dns"
+        && check_type != "ping"
+        && check_type != "expiry"
+    {
         return Err(AppError::BadRequest(format!(
-            "Invalid check_type '{check_type}'. Allowed: http, tcp, dns, ping"
+            "Invalid check_type '{check_type}'. Allowed: http, tcp, dns, ping, expiry"
         )));
     }
-    let u = body.url.trim();
-    if u.is_empty() {
-        return Err(AppError::BadRequest("Target URL/host cannot be empty".to_string()));
+    let target_url = if check_type == "expiry" {
+        let clean = crate::checker::expiry::sanitize_domain_target(&body.url);
+        if clean.is_empty() {
+            return Err(AppError::BadRequest(
+                "Target domain cannot be empty".to_string(),
+            ));
+        }
+        clean
+    } else {
+        body.url.trim().to_string()
+    };
+    if target_url.is_empty() {
+        return Err(AppError::BadRequest(
+            "Target URL/host cannot be empty".to_string(),
+        ));
     }
-    if check_type == "http" && !u.starts_with("http://") && !u.starts_with("https://") {
+    if check_type == "http" && !target_url.starts_with("http://") && !target_url.starts_with("https://") {
         return Err(AppError::BadRequest(
             "HTTP Monitor URL must start with http:// or https://".to_string(),
         ));
     }
     if let Some(port) = body.port {
         if !(1..=65535).contains(&port) {
-            return Err(AppError::BadRequest("TCP port must be between 1 and 65535".to_string()));
+            return Err(AppError::BadRequest(
+                "TCP port must be between 1 and 65535".to_string(),
+            ));
         }
     }
     if let Some(ref rtype) = body.dns_record_type {
@@ -146,48 +171,59 @@ pub async fn create(
     }
 
     let id = uuid::Uuid::new_v4().to_string();
+    let check_domain_expiry = if check_type == "expiry" {
+        1
+    } else {
+        body.check_domain_expiry as i32
+    };
+    let check_ssl = if check_type == "expiry" {
+        1
+    } else {
+        body.check_ssl as i32
+    };
 
     sqlx::query(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
                                check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
-                               check_type, port, dns_record_type, dns_expected_value) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&body.name)
-    .bind(&body.url)
+    .bind(&target_url)
     .bind(body.check_interval_secs)
     .bind(body.timeout_secs)
     .bind(body.max_retries)
     .bind(body.is_active as i32)
     .bind(body.is_public as i32)
-    .bind(body.check_domain_expiry as i32)
+    .bind(check_domain_expiry)
     .bind(body.domain_warning_days)
-    .bind(body.check_ssl as i32)
+    .bind(check_ssl)
     .bind(body.ssl_warning_days)
     .bind(&check_type)
     .bind(body.port)
     .bind(&body.dns_record_type)
     .bind(&body.dns_expected_value)
+    .bind(body.expiry_threshold_days)
     .execute(&state.db)
     .await?;
 
     // Bind notification channels: explicitly selected or defaults if omitted
     let channel_ids_to_assign = match body.channel_ids {
         Some(ref ids) => ids.clone(),
-        None => {
-            crate::db::notifications::list_channels(&state.db)
-                .await
-                .unwrap_or_default()
-                .into_iter()
-                .filter(|c| c.is_default)
-                .map(|c| c.id)
-                .collect()
-        }
+        None => crate::db::notifications::list_channels(&state.db)
+            .await
+            .unwrap_or_default()
+            .into_iter()
+            .filter(|c| c.is_default)
+            .map(|c| c.id)
+            .collect(),
     };
     if !channel_ids_to_assign.is_empty() {
-        let _ = crate::db::notifications::set_monitor_channels(&state.db, &id, &channel_ids_to_assign).await;
+        let _ =
+            crate::db::notifications::set_monitor_channels(&state.db, &id, &channel_ids_to_assign)
+                .await;
     }
 
     let row = sqlx::query_as::<_, MonitorRow>(
@@ -196,7 +232,9 @@ pub async fn create(
                check_domain_expiry, domain_warning_days, domain_expires_at, \
                domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-               check_type, port, dns_record_type, dns_expected_value \
+               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+               ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
+               current_consecutive_fails \
          FROM monitors WHERE id = ?",
     )
     .bind(&id)

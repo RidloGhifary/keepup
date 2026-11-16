@@ -1,20 +1,48 @@
-use std::sync::Arc;
-use std::time::Duration;
 use chrono::{DateTime, Utc};
 use rustls_pki_types::ServerName;
+use std::sync::Arc;
+use std::time::Duration;
 use tokio::net::TcpStream;
 use tokio::time::timeout;
-use tokio_rustls::rustls::client::danger::{HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier};
-use tokio_rustls::rustls::{ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme};
+use tokio_rustls::rustls::client::danger::{
+    HandshakeSignatureValid, ServerCertVerified, ServerCertVerifier,
+};
+use tokio_rustls::rustls::{
+    ClientConfig, DigitallySignedStruct, Error as RustlsError, SignatureScheme,
+};
 use tokio_rustls::TlsConnector;
+use x509_parser::extensions::GeneralName;
 use x509_parser::prelude::*;
 
 /// Output of a TLS / SSL certificate inspection.
-#[derive(Debug, Clone, PartialEq, Eq)]
+#[derive(Debug, Clone, PartialEq, Eq, serde::Serialize, serde::Deserialize)]
 pub struct SslExpiryInfo {
     pub host: String,
+    pub issued_at: Option<String>,
     pub expires_at: String,
     pub days_remaining: i64,
+    pub issuer_cn: Option<String>,
+    pub issuer_org: Option<String>,
+    pub issuer_full: String,
+    pub serial_number: Option<String>,
+    pub signature_algorithm: Option<String>,
+    pub sans: Vec<String>,
+}
+
+fn format_signature_algorithm(oid_str: &str) -> String {
+    match oid_str {
+        "1.2.840.113549.1.1.11" => "sha256WithRSAEncryption".to_string(),
+        "1.2.840.113549.1.1.12" => "sha384WithRSAEncryption".to_string(),
+        "1.2.840.113549.1.1.13" => "sha512WithRSAEncryption".to_string(),
+        "1.2.840.113549.1.1.14" => "sha224WithRSAEncryption".to_string(),
+        "1.2.840.113549.1.1.5" => "sha1WithRSAEncryption".to_string(),
+        "1.2.840.10045.4.3.2" => "ecdsa-with-SHA256".to_string(),
+        "1.2.840.10045.4.3.3" => "ecdsa-with-SHA384".to_string(),
+        "1.2.840.10045.4.3.4" => "ecdsa-with-SHA512".to_string(),
+        "1.3.101.112" => "Ed25519".to_string(),
+        "1.3.101.113" => "Ed448".to_string(),
+        other => other.to_string(),
+    }
 }
 
 #[derive(Debug, thiserror::Error)]
@@ -108,7 +136,10 @@ pub fn extract_host_port(raw_url: &str) -> Result<(String, u16), SslCheckError> 
 }
 
 /// Connects to the host via TLS, retrieves the server certificate, and extracts expiration details.
-pub async fn check_ssl_expiration(raw_url: &str, timeout_secs: u64) -> Result<SslExpiryInfo, SslCheckError> {
+pub async fn check_ssl_expiration(
+    raw_url: &str,
+    timeout_secs: u64,
+) -> Result<SslExpiryInfo, SslCheckError> {
     let (host, port) = extract_host_port(raw_url)?;
 
     timeout(Duration::from_secs(timeout_secs), async {
@@ -146,6 +177,10 @@ pub async fn check_ssl_expiration(raw_url: &str, timeout_secs: u64) -> Result<Ss
         let (_, cert) = parse_x509_certificate(leaf_der.as_ref())
             .map_err(|e| SslCheckError::Parse(e.to_string()))?;
 
+        let not_before = cert.validity().not_before;
+        let not_before_dt = DateTime::<Utc>::from_timestamp(not_before.timestamp(), 0);
+        let issued_at = not_before_dt.map(|dt| dt.to_rfc3339());
+
         let not_after = cert.validity().not_after;
         let not_after_timestamp = not_after.timestamp();
         let not_after_dt = DateTime::<Utc>::from_timestamp(not_after_timestamp, 0)
@@ -155,10 +190,64 @@ pub async fn check_ssl_expiration(raw_url: &str, timeout_secs: u64) -> Result<Ss
         let duration = not_after_dt.signed_duration_since(now);
         let days_remaining = duration.num_days();
 
+        let issuer_cn = cert
+            .issuer()
+            .iter_common_name()
+            .next()
+            .and_then(|a| a.as_str().ok())
+            .map(|s| s.to_string());
+
+        let issuer_org = cert
+            .issuer()
+            .iter_organization()
+            .next()
+            .and_then(|a| a.as_str().ok())
+            .map(|s| s.to_string());
+
+        let issuer_full = cert.issuer().to_string();
+
+        let serial_number = Some(cert.raw_serial_as_string());
+
+        let sig_oid = cert.signature_algorithm.algorithm.to_id_string();
+        let signature_algorithm = Some(format_signature_algorithm(&sig_oid));
+
+        let mut sans = Vec::new();
+        if let Ok(Some(san_ext)) = cert.subject_alternative_name() {
+            for name in &san_ext.value.general_names {
+                match name {
+                    GeneralName::DNSName(s) => sans.push(s.to_string()),
+                    GeneralName::IPAddress(b) => {
+                        if b.len() == 4 {
+                            sans.push(format!("{}.{}.{}.{}", b[0], b[1], b[2], b[3]));
+                        } else if b.len() == 16 {
+                            let mut segments = Vec::new();
+                            for chunk in b.chunks(2) {
+                                segments.push(format!(
+                                    "{:x}",
+                                    u16::from_be_bytes([chunk[0], chunk[1]])
+                                ));
+                            }
+                            sans.push(segments.join(":"));
+                        }
+                    }
+                    GeneralName::RFC822Name(s) => sans.push(s.to_string()),
+                    GeneralName::URI(s) => sans.push(s.to_string()),
+                    _ => {}
+                }
+            }
+        }
+
         Ok(SslExpiryInfo {
             host,
+            issued_at,
             expires_at: not_after_dt.to_rfc3339(),
             days_remaining,
+            issuer_cn,
+            issuer_org,
+            issuer_full,
+            serial_number,
+            signature_algorithm,
+            sans,
         })
     })
     .await
@@ -171,9 +260,21 @@ mod tests {
 
     #[test]
     fn test_extract_host_port() {
-        assert_eq!(extract_host_port("https://example.com").unwrap(), ("example.com".to_string(), 443));
-        assert_eq!(extract_host_port("https://example.com:8443/path?q=1").unwrap(), ("example.com".to_string(), 8443));
-        assert_eq!(extract_host_port("http://api.sub.domain.org/health").unwrap(), ("api.sub.domain.org".to_string(), 443));
-        assert_eq!(extract_host_port("internal.service:9000").unwrap(), ("internal.service".to_string(), 9000));
+        assert_eq!(
+            extract_host_port("https://example.com").unwrap(),
+            ("example.com".to_string(), 443)
+        );
+        assert_eq!(
+            extract_host_port("https://example.com:8443/path?q=1").unwrap(),
+            ("example.com".to_string(), 8443)
+        );
+        assert_eq!(
+            extract_host_port("http://api.sub.domain.org/health").unwrap(),
+            ("api.sub.domain.org".to_string(), 443)
+        );
+        assert_eq!(
+            extract_host_port("internal.service:9000").unwrap(),
+            ("internal.service".to_string(), 9000)
+        );
     }
 }

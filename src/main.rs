@@ -4,10 +4,19 @@ mod banner;
 mod checker;
 mod config;
 mod db;
+mod diagnostics;
 mod error;
 mod middleware;
 mod notifier;
 mod ui;
+
+#[cfg(target_os = "linux")]
+#[global_allocator]
+static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
+
+#[cfg(target_os = "linux")]
+#[export_name = "malloc_conf"]
+pub static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true\0";
 
 use std::sync::Arc;
 

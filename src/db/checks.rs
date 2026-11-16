@@ -124,6 +124,14 @@ pub struct DetailCheckLog {
     pub tls_days_remaining: Option<i64>,
     pub domain_days_remaining: Option<i64>,
     pub is_up: bool,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_issuer: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_serial_number: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caa_status: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub caa_details: Option<String>,
 }
 
 #[derive(Debug, sqlx::FromRow)]
@@ -135,6 +143,16 @@ struct RawCheckLogRow {
     error_msg: Option<String>,
     is_up: i32,
     domain_days_remaining: Option<i64>,
+    #[sqlx(default)]
+    ssl_days_remaining: Option<i64>,
+    #[sqlx(default)]
+    ssl_issuer: Option<String>,
+    #[sqlx(default)]
+    ssl_serial_number: Option<String>,
+    #[sqlx(default)]
+    caa_status: Option<String>,
+    #[sqlx(default)]
+    caa_details: Option<String>,
 }
 
 /// Fetch the most recent check logs for a monitor (up to limit entries).
@@ -152,7 +170,12 @@ pub async fn get_recent_check_logs(
             COALESCE(response_time_ms, latency_ms) AS response_time_ms,
             error_msg,
             is_up,
-            domain_days_remaining
+            domain_days_remaining,
+            ssl_days_remaining,
+            ssl_issuer,
+            ssl_serial_number,
+            caa_status,
+            caa_details
         FROM check_logs
         WHERE monitor_id = ?
         ORDER BY COALESCE(created_at, checked_at) DESC, id DESC
@@ -172,9 +195,13 @@ pub async fn get_recent_check_logs(
             status_code: r.status_code,
             response_time_ms: r.response_time_ms,
             error_message: r.error_msg,
-            tls_days_remaining: None,
+            tls_days_remaining: r.ssl_days_remaining,
             domain_days_remaining: r.domain_days_remaining,
             is_up: r.is_up == 1,
+            ssl_issuer: r.ssl_issuer,
+            ssl_serial_number: r.ssl_serial_number,
+            caa_status: r.caa_status,
+            caa_details: r.caa_details,
         })
         .collect();
 
@@ -274,7 +301,9 @@ pub mod tests {
         .await
         .unwrap();
 
-        let res = get_latency_percentiles(&pool, "m-single", 24).await.unwrap();
+        let res = get_latency_percentiles(&pool, "m-single", 24)
+            .await
+            .unwrap();
         assert_eq!(
             res,
             LatencyPercentiles {
@@ -352,12 +381,16 @@ pub mod tests {
         .await
         .unwrap();
 
-        let res = get_latency_percentiles(&pool, "m-window", 24).await.unwrap();
+        let res = get_latency_percentiles(&pool, "m-window", 24)
+            .await
+            .unwrap();
         assert_eq!(res.p50, 50);
         assert_eq!(res.avg, 50);
 
         // When requesting 48 hours, both are included
-        let res_48 = get_latency_percentiles(&pool, "m-window", 48).await.unwrap();
+        let res_48 = get_latency_percentiles(&pool, "m-window", 48)
+            .await
+            .unwrap();
         assert_eq!(res_48.avg, (50 + 999) / 2);
     }
 

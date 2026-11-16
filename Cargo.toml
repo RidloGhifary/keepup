@@ -53,3 +53,9 @@ sha2 = "0.10"
 hex = "0.4"
 hickory-resolver = "0.26"
 surge-ping = "0.9"
+libc = "0.2"
+
+[target.'cfg(target_os = "linux")'.dependencies]
+tikv-jemallocator = { version = "0.6", features = ["profiling", "stats", "unprefixed_malloc_on_supported_platforms"] }
+tikv-jemalloc-ctl = { version = "0.6", features = ["stats", "use_std"] }
+

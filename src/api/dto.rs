@@ -27,6 +27,7 @@ pub struct UpdateMonitorDto {
     pub port: Option<i32>,
     pub dns_record_type: Option<String>,
     pub dns_expected_value: Option<String>,
+    pub expiry_threshold_days: Option<i32>,
 }
 
 impl UpdateMonitorDto {
@@ -40,28 +41,43 @@ impl UpdateMonitorDto {
         }
         if let Some(ref ctype) = self.check_type {
             let t = ctype.trim().to_lowercase();
-            if t != "http" && t != "tcp" && t != "dns" && t != "ping" {
+            if t != "http" && t != "tcp" && t != "dns" && t != "ping" && t != "expiry" {
                 return Err(AppError::BadRequest(format!(
-                    "Invalid check_type '{ctype}'. Allowed values: http, tcp, dns, ping"
+                    "Invalid check_type '{ctype}'. Allowed values: http, tcp, dns, ping, expiry"
                 )));
             }
         }
         if let Some(ref url) = self.url {
-            let u = url.trim();
-            if u.is_empty() {
-                return Err(AppError::BadRequest(
-                    "Target URL/host cannot be empty".to_string(),
-                ));
-            }
-            let is_http = self
+            let is_expiry = self
                 .check_type
                 .as_deref()
-                .map(|t| t.eq_ignore_ascii_case("http"))
-                .unwrap_or(u.starts_with("http://") || u.starts_with("https://"));
-            if is_http && !u.starts_with("http://") && !u.starts_with("https://") {
-                return Err(AppError::BadRequest(
-                    "HTTP Monitor URL must start with http:// or https://".to_string(),
-                ));
+                .map(|t| t.eq_ignore_ascii_case("expiry"))
+                .unwrap_or(false);
+
+            if is_expiry {
+                let clean = crate::checker::expiry::sanitize_domain_target(url);
+                if clean.is_empty() {
+                    return Err(AppError::BadRequest(
+                        "Target domain cannot be empty".to_string(),
+                    ));
+                }
+            } else {
+                let u = url.trim();
+                if u.is_empty() {
+                    return Err(AppError::BadRequest(
+                        "Target URL/host cannot be empty".to_string(),
+                    ));
+                }
+                let is_http = self
+                    .check_type
+                    .as_deref()
+                    .map(|t| t.eq_ignore_ascii_case("http"))
+                    .unwrap_or(u.starts_with("http://") || u.starts_with("https://"));
+                if is_http && !u.starts_with("http://") && !u.starts_with("https://") {
+                    return Err(AppError::BadRequest(
+                        "HTTP Monitor URL must start with http:// or https://".to_string(),
+                    ));
+                }
             }
         }
         if let Some(port) = self.port {
@@ -114,6 +130,13 @@ impl UpdateMonitorDto {
                 ));
             }
         }
+        if let Some(days) = self.expiry_threshold_days {
+            if days < 1 {
+                return Err(AppError::BadRequest(
+                    "expiry_threshold_days must be at least 1 day".to_string(),
+                ));
+            }
+        }
         Ok(())
     }
 }
@@ -146,7 +169,11 @@ impl CreateWebhookRequest {
         }
 
         let provider = self.provider.to_lowercase();
-        if provider != "discord" && provider != "slack" && provider != "generic" && provider != "generic_webhook" {
+        if provider != "discord"
+            && provider != "slack"
+            && provider != "generic"
+            && provider != "generic_webhook"
+        {
             return Err(AppError::BadRequest(format!(
                 "Invalid provider '{}'. Allowed values are: discord, slack, generic",
                 self.provider
@@ -224,7 +251,11 @@ pub struct TestWebhookRequest {
 impl TestWebhookRequest {
     pub fn validate(&self) -> Result<(), AppError> {
         let provider = self.provider.to_lowercase();
-        if provider != "discord" && provider != "slack" && provider != "generic" && provider != "generic_webhook" {
+        if provider != "discord"
+            && provider != "slack"
+            && provider != "generic"
+            && provider != "generic_webhook"
+        {
             return Err(AppError::BadRequest(format!(
                 "Invalid provider '{}'. Allowed values are: discord, slack, generic",
                 self.provider

@@ -556,6 +556,14 @@
             </svg>
             <span>Maintenance</span>
           </button>
+
+          <!-- 6. System Diagnostics Tab -->
+          <button id="nav-btn-diagnostics" onclick="switchAdminView('diagnostics')" class="h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer" title="System Telemetry & Memory Diagnostics">
+            <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 3v2m6-2v2M9 19v2m6-2v2M5 9H3m2 6H3m18-6h-2m2 6h-2M7 19h10a2 2 0 002-2V7a2 2 0 00-2-2H7a2 2 0 00-2 2v10a2 2 0 002 2zM9 9h6v6H9V9z"/>
+            </svg>
+            <span>System</span>
+          </button>
         </div>
       </nav>
 
@@ -850,6 +858,133 @@
       </div>
     </div>
 
+    <!-- ── System Telemetry & Memory Diagnostics Panel ────────────── -->
+    <div id="diagnostics-panel" class="space-y-6 hidden">
+      <!-- Section Header -->
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3 pt-2">
+        <div>
+          <h2 class="text-xl font-bold tracking-tight text-white">System &amp; Memory Diagnostics</h2>
+          <p class="text-xs text-white/50 mt-0.5">Real-time jemalloc heap telemetry, process memory tracking, and arena controls</p>
+        </div>
+
+        <div class="flex items-center gap-2">
+          <button id="mem-refresh-btn" onclick="loadMemoryDiagnostics(true)" class="text-xs text-white/80 hover:text-white px-3 py-1.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 transition flex items-center gap-1.5 cursor-pointer" title="Refresh Diagnostics">
+            <svg id="mem-refresh-icon" class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 4v5h.582m15.356 2A8.001 8.001 0 004.582 9m0 0H9m11 11v-5h-.581m0 0a8.003 8.003 0 01-15.357-2m15.357 2H15"/>
+            </svg>
+            <span>Refresh</span>
+          </button>
+        </div>
+      </div>
+
+      <!-- 4 Primary Metric Cards -->
+      <div class="grid grid-cols-1 sm:grid-cols-2 lg:grid-cols-4 gap-4">
+        <!-- 1. Resident Set Size (RSS) -->
+        <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+          <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
+            <span>Resident Set Size (RSS)</span>
+            <span id="mem-stat-allocator" class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-white/5 text-neutral-400 border border-white/10">JEMALLOC</span>
+          </div>
+          <p id="mem-stat-rss" class="mt-2 text-3xl font-bold tracking-tight text-white font-mono">—</p>
+          <p class="text-[11px] text-white/40 mt-1">Physical RAM mapped into process space</p>
+        </div>
+
+        <!-- 2. Active Heap -->
+        <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+          <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
+            <span>Active Heap</span>
+            <span class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-emerald-500/10 text-emerald-400 border border-emerald-500/20">LIVE</span>
+          </div>
+          <p id="mem-stat-active" class="mt-2 text-3xl font-bold tracking-tight text-[#30d158] font-mono">—</p>
+          <p class="text-[11px] text-white/40 mt-1">Pages currently held by allocations</p>
+        </div>
+
+        <!-- 3. Allocated Memory -->
+        <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+          <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
+            <span>Allocated Memory</span>
+            <span class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-blue-500/10 text-[#0a84ff] border border-blue-500/20">APP</span>
+          </div>
+          <p id="mem-stat-allocated" class="mt-2 text-3xl font-bold tracking-tight text-white font-mono">—</p>
+          <p class="text-[11px] text-white/40 mt-1">Active bytes requested by application</p>
+        </div>
+
+        <!-- 4. Memory Fragmentation -->
+        <div class="glass-card rounded-2xl p-5 shadow-xl transition hover:border-white/20">
+          <div class="flex items-center justify-between text-white/50 text-xs font-medium uppercase tracking-wider">
+            <span>Fragmentation</span>
+            <span id="mem-stat-frag-badge" class="inline-flex items-center px-2 py-0.5 rounded-md text-[10px] font-mono bg-amber-500/10 text-amber-400 border border-amber-500/20">RATIO</span>
+          </div>
+          <p id="mem-stat-fragmentation" class="mt-2 text-3xl font-bold tracking-tight text-[#ffd60a] font-mono">—</p>
+          <p class="text-[11px] text-white/40 mt-1">Active vs allocated heap efficiency</p>
+        </div>
+      </div>
+
+      <!-- Secondary Metrics Row & Operational Controls -->
+      <div class="grid grid-cols-1 lg:grid-cols-3 gap-6">
+        <!-- Virtual Memory Breakdown (2 Cols on lg) -->
+        <div class="lg:col-span-2 glass-card bg-white/5 border border-white/10 rounded-2xl p-6 shadow-xl space-y-4">
+          <div class="flex items-center justify-between border-b border-white/5 pb-3">
+            <div>
+              <h3 class="text-sm font-semibold text-white tracking-tight">Virtual Memory Breakdown</h3>
+              <p class="text-xs text-white/40 mt-0.5">Underlying virtual memory mapping and retention statistics</p>
+            </div>
+            <span id="mem-stat-timestamp" class="text-[10px] font-mono text-white/40">—</span>
+          </div>
+
+          <div class="grid grid-cols-1 sm:grid-cols-3 gap-4 pt-1">
+            <div class="p-3.5 rounded-xl bg-white/5 border border-white/5">
+              <span class="text-[11px] font-medium text-white/50 uppercase tracking-wider">Mapped Memory</span>
+              <p id="mem-stat-mapped" class="mt-1 text-xl font-bold text-white font-mono">—</p>
+              <p class="text-[10px] text-white/40 mt-0.5">Total extents mapped via mmap</p>
+            </div>
+            <div class="p-3.5 rounded-xl bg-white/5 border border-white/5">
+              <span class="text-[11px] font-medium text-white/50 uppercase tracking-wider">Retained Memory</span>
+              <p id="mem-stat-retained" class="mt-1 text-xl font-bold text-white font-mono">—</p>
+              <p class="text-[10px] text-white/40 mt-0.5">Unmapped virtual memory pages</p>
+            </div>
+            <div class="p-3.5 rounded-xl bg-white/5 border border-white/5">
+              <span class="text-[11px] font-medium text-white/50 uppercase tracking-wider">Engine Driver</span>
+              <p id="mem-stat-driver" class="mt-1 text-xl font-bold text-white font-mono uppercase">—</p>
+              <p class="text-[10px] text-white/40 mt-0.5">Global allocator backend</p>
+            </div>
+          </div>
+        </div>
+
+        <!-- Operational Action Controls (1 Col on lg) -->
+        <div class="glass-card bg-white/5 border border-white/10 rounded-2xl p-6 shadow-xl flex flex-col justify-between space-y-4">
+          <div>
+            <h3 class="text-sm font-semibold text-white tracking-tight">Arena &amp; Profile Actions</h3>
+            <p class="text-xs text-white/40 mt-0.5">Direct non-blocking allocator maintenance and diagnostic dump triggers</p>
+          </div>
+
+          <div class="space-y-3">
+            <!-- Purge Button -->
+            <button id="mem-purge-btn" onclick="purgeMemoryArena()" class="w-full px-4 py-2.5 rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 hover:border-white/20 text-white text-xs font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm">
+              <svg id="mem-purge-icon" class="w-4 h-4 text-[#ffd60a]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16" />
+              </svg>
+              <span>Purge Arenas (Decay Unused)</span>
+            </button>
+
+            <!-- Heap Dump Button -->
+            <button id="mem-dump-btn" onclick="generateHeapSnapshot()" class="w-full px-4 py-2.5 rounded-xl bg-[#0a84ff]/20 hover:bg-[#0a84ff]/30 text-[#0a84ff] border border-[#0a84ff]/40 text-xs font-semibold transition flex items-center justify-center gap-2 cursor-pointer shadow-sm">
+              <svg id="mem-dump-icon" class="w-4 h-4 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M4 16v1a3 3 0 003 3h10a3 3 0 003-3v-1m-4-4l-4 4m0 0l-4-4m4 4V4" />
+              </svg>
+              <span>Capture Heap Profile (.prof)</span>
+            </button>
+          </div>
+
+          <!-- Inline Action Result Box -->
+          <div id="mem-action-feedback" class="hidden rounded-xl bg-black/40 border border-white/10 p-3 text-xs font-mono space-y-1">
+            <div class="text-[10px] uppercase tracking-wider text-white/40 font-bold">Execution Result</div>
+            <div id="mem-action-feedback-text" class="text-emerald-400 break-all text-[11px]"></div>
+          </div>
+        </div>
+      </div>
+    </div>
+
   </main>
 
   <!-- ── 5. Footer ─────────────────────────────────────────────────────────── -->
@@ -857,7 +992,7 @@
     <div class="max-w-7xl mx-auto px-4 sm:px-6 lg:px-8 flex flex-col sm:flex-row items-center justify-between gap-3">
       <div class="flex items-center gap-2">
         <span class="h-2 w-2 rounded-full bg-[#30d158]"></span>
-        <span>Powered by <strong class="text-white/80 font-semibold tracking-tight">KeepUp</strong> — Zero-overhead uptime engine</span>
+        <span>Powered by&nbsp;<strong class="text-white/80 font-semibold tracking-tight">KeepUp</strong> — Zero-overhead uptime engine</span>
       </div>
       <div class="flex items-center gap-4 text-white/50">
         <a href="/status" class="hover:text-white transition">Public Status</a>
@@ -907,6 +1042,7 @@
                   <option value="tcp">TCP Port</option>
                   <option value="dns">DNS Record Lookup</option>
                   <option value="ping">ICMP Ping</option>
+                  <option value="expiry">SSL &amp; Domain Expiry</option>
                 </select>
               </div>
 
@@ -955,19 +1091,31 @@
                 </div>
               </div>
 
+              <!-- Expiry Fields (visible for SSL & Domain Expiry) -->
+              <div id="m-expiry-fields" class="space-y-4 hidden">
+                <div>
+                  <label for="m-expiry-threshold-days" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Warning Threshold (Days Remaining)</label>
+                  <input id="m-expiry-threshold-days" type="number" min="1" max="365" value="30" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                  <p class="text-[11px] text-white/40 mt-1">Triggers degraded warning alerts when certificate or domain registration reaches this threshold</p>
+                </div>
+              </div>
+
               <!-- Interval, Timeout, Max Retries Grid -->
-              <div class="grid grid-cols-3 gap-3">
-                <div>
-                  <label for="m-interval" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Interval (s)</label>
-                  <input required id="m-interval" type="number" min="1" value="60" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+              <div id="m-timing-fields" class="space-y-4">
+                <div class="grid grid-cols-2 gap-3">
+                  <div>
+                    <label for="m-interval" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Interval (s)</label>
+                    <input required id="m-interval" type="number" min="1" value="60" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                  </div>
+                  <div>
+                    <label for="m-timeout" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Timeout (s)</label>
+                    <input required id="m-timeout" type="number" min="1" max="60" value="5" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                  </div>
                 </div>
                 <div>
-                  <label for="m-timeout" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Timeout (s)</label>
-                  <input required id="m-timeout" type="number" min="1" max="60" value="5" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
-                </div>
-                <div>
-                  <label for="m-retries" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Max Retries</label>
-                  <input required id="m-retries" type="number" min="1" max="10" value="3" class="w-full rounded-xl px-3 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                  <label for="monitor-max-retries" class="block font-medium text-white/80 text-xs sm:text-sm mb-1.5">Failure Threshold (Max Retries)</label>
+                  <input required id="monitor-max-retries" name="max_retries" type="number" min="1" max="10" value="3" class="w-full rounded-xl px-3.5 py-2.5 focus:outline-none focus:ring-2 focus:ring-[#30d158]/50 transition font-mono text-xs sm:text-sm bg-black/40 border border-white/10 text-white" />
+                  <p class="text-[11px] text-white/40 mt-1">Number of consecutive failed checks before alerting and marking down to avoid false alarms from network blips.</p>
                 </div>
               </div>
             </div>
@@ -1011,10 +1159,13 @@
                   <div class="border-t border-white/5 pt-3">
                     <div class="flex items-center justify-between">
                       <div>
-                        <div class="font-medium text-white text-xs sm:text-sm">Domain Expiration Check (RDAP)</div>
+                        <div class="font-medium text-white text-xs sm:text-sm flex items-center gap-2">
+                          <span>Domain Expiration Check (RDAP)</span>
+                          <span id="m-domain-lock-badge" class="hidden px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-white/10 text-white/70 border border-white/10 tracking-wider">LOCKED</span>
+                        </div>
                         <div class="text-[11px] text-white/40">Query HTTPS RDAP / TCP WHOIS registry renewal deadlines</div>
                       </div>
-                      <label class="relative inline-flex items-center cursor-pointer">
+                      <label id="m-domain-expiry-label" class="relative inline-flex items-center cursor-pointer">
                         <input id="m-domain-expiry" type="checkbox" onchange="toggleDomainWarningInput()" class="sr-only peer">
                         <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
                       </label>
@@ -1029,10 +1180,13 @@
                   <div class="border-t border-white/5 pt-3">
                     <div class="flex items-center justify-between">
                       <div>
-                        <div class="font-medium text-white text-xs sm:text-sm">TLS / SSL Expiration Check</div>
+                        <div class="font-medium text-white text-xs sm:text-sm flex items-center gap-2">
+                          <span>TLS / SSL Expiration Check</span>
+                          <span id="m-ssl-lock-badge" class="hidden px-1.5 py-0.5 rounded text-[9px] font-mono font-semibold bg-white/10 text-white/70 border border-white/10 tracking-wider">LOCKED</span>
+                        </div>
                         <div class="text-[11px] text-white/40">Inspect remote X.509 certificate validity and expiry dates</div>
                       </div>
-                      <label class="relative inline-flex items-center cursor-pointer">
+                      <label id="m-ssl-label" class="relative inline-flex items-center cursor-pointer">
                         <input id="m-ssl" type="checkbox" onchange="toggleSslWarningInput()" class="sr-only peer">
                         <div class="w-11 h-6 bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-5 after:w-5 after:transition-all peer-checked:bg-[#30d158]"></div>
                       </label>
@@ -1621,8 +1775,10 @@
             <h3 id="detail-modal-name" class="text-lg sm:text-xl font-bold tracking-tight text-white truncate">Monitor Details</h3>
             <span id="detail-modal-method" class="px-2 py-0.5 rounded text-[10px] font-mono font-bold bg-white/10 text-neutral-300 border border-white/10 uppercase tracking-wider">GET</span>
             <span id="detail-modal-status-badge" class="px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border-emerald-500/20">UP</span>
+            <span id="detail-modal-fails-badge" class="hidden px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border"></span>
             <span id="detail-modal-domain-badge" class="hidden px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border"></span>
             <span id="detail-modal-ssl-badge" class="hidden px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border"></span>
+            <span id="detail-modal-caa-badge" class="hidden px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border uppercase tracking-wider"></span>
           </div>
           <p id="detail-modal-url" class="text-xs text-neutral-400 font-mono truncate select-all">https://...</p>
         </div>
@@ -1696,6 +1852,48 @@
               <span>24 hours ago</span>
               <span>Hourly Average Response Time</span>
               <span>Current Hour</span>
+            </div>
+          </div>
+        </div>
+
+        <!-- SSL Security & CA Certificate Telemetry Card -->
+        <div id="detail-ssl-security-card" class="space-y-3 hidden">
+          <div class="flex items-center justify-between">
+            <span class="text-[11px] font-mono uppercase tracking-wider text-neutral-400">SSL Security &amp; CA Certificate</span>
+            <span id="detail-caa-status-pill" class="px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border"></span>
+          </div>
+          <div class="bg-black/40 border border-white/10 rounded-xl p-4 space-y-3">
+            <div class="grid grid-cols-1 sm:grid-cols-2 gap-3 text-xs">
+              <div class="space-y-1">
+                <div class="text-[10px] font-mono uppercase tracking-wider text-neutral-400">Certificate Authority (Issuer)</div>
+                <div id="detail-ssl-issuer" class="font-mono text-white truncate" title="CA Issuer">--</div>
+              </div>
+              <div class="space-y-1">
+                <div class="text-[10px] font-mono uppercase tracking-wider text-neutral-400">Signature Algorithm</div>
+                <div id="detail-ssl-algo" class="font-mono text-neutral-200 truncate">--</div>
+              </div>
+              <div class="space-y-1">
+                <div class="text-[10px] font-mono uppercase tracking-wider text-neutral-400">Certificate Serial Number</div>
+                <div id="detail-ssl-serial" class="font-mono text-neutral-300 truncate select-all" title="Serial Number">--</div>
+              </div>
+              <div class="space-y-1">
+                <div class="text-[10px] font-mono uppercase tracking-wider text-neutral-400">Subject Alternative Names (SANs)</div>
+                <div id="detail-ssl-sans" class="font-mono text-neutral-300 truncate" title="SANs">--</div>
+              </div>
+            </div>
+            <div class="grid grid-cols-1 sm:grid-cols-3 gap-3 pt-3 border-t border-white/5 text-[11px] font-mono">
+              <div>
+                <span class="text-neutral-500 block text-[10px] uppercase tracking-wider">Issued On</span>
+                <span id="detail-ssl-issued" class="text-neutral-300">--</span>
+              </div>
+              <div>
+                <span class="text-neutral-500 block text-[10px] uppercase tracking-wider">Expires On</span>
+                <span id="detail-ssl-expires" class="text-neutral-300">--</span>
+              </div>
+              <div>
+                <span class="text-neutral-500 block text-[10px] uppercase tracking-wider">CAA Policy Details</span>
+                <span id="detail-caa-details" class="text-neutral-300 truncate block" title="CAA details">--</span>
+              </div>
             </div>
           </div>
         </div>

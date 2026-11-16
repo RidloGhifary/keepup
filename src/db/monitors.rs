@@ -9,6 +9,10 @@ fn default_check_type() -> String {
     "http".to_string()
 }
 
+fn default_expiry_threshold() -> i32 {
+    30
+}
+
 /// Full monitor database row model.
 #[derive(Debug, Clone, Serialize, Deserialize, sqlx::FromRow)]
 pub struct Monitor {
@@ -47,6 +51,25 @@ pub struct Monitor {
     pub dns_record_type: Option<String>,
     #[sqlx(default)]
     pub dns_expected_value: Option<String>,
+    #[serde(default = "default_expiry_threshold")]
+    #[sqlx(default)]
+    pub expiry_threshold_days: i32,
+    #[sqlx(default)]
+    pub ssl_issuer: Option<String>,
+    #[sqlx(default)]
+    pub ssl_serial_number: Option<String>,
+    #[sqlx(default)]
+    pub ssl_signature_algorithm: Option<String>,
+    #[sqlx(default)]
+    pub ssl_sans: Option<String>,
+    #[sqlx(default)]
+    pub ssl_issued_at: Option<String>,
+    #[sqlx(default)]
+    pub caa_status: Option<String>,
+    #[sqlx(default)]
+    pub caa_details: Option<String>,
+    #[sqlx(default)]
+    pub current_consecutive_fails: i32,
 }
 
 /// Fetch a single monitor by its primary ID.
@@ -57,7 +80,9 @@ pub async fn get_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Monitor, A
                 check_domain_expiry, domain_warning_days, domain_expires_at, \
                 domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-                check_type, port, dns_record_type, dns_expected_value \
+                check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
+                current_consecutive_fails \
          FROM monitors WHERE id = ?",
     )
     .bind(id)
@@ -75,7 +100,6 @@ pub async fn update_monitor(
     let existing = get_monitor_by_id(pool, id).await?;
 
     let name = payload.name.unwrap_or(existing.name);
-    let url = payload.url.unwrap_or(existing.url);
     let check_interval_secs = payload
         .check_interval_secs
         .unwrap_or(existing.check_interval_secs);
@@ -89,24 +113,44 @@ pub async fn update_monitor(
         .is_public
         .map(|b| if b { 1 } else { 0 })
         .unwrap_or(existing.is_public);
-    let check_domain_expiry = payload
-        .check_domain_expiry
-        .map(|b| if b { 1 } else { 0 })
-        .unwrap_or(existing.check_domain_expiry);
+    let check_type = payload.check_type.unwrap_or(existing.check_type);
+    let is_expiry = check_type.eq_ignore_ascii_case("expiry");
+
+    let raw_url = payload.url.unwrap_or(existing.url);
+    let url = if is_expiry {
+        crate::checker::expiry::sanitize_domain_target(&raw_url)
+    } else {
+        raw_url
+    };
+
+    let check_domain_expiry = if is_expiry {
+        1
+    } else {
+        payload
+            .check_domain_expiry
+            .map(|b| if b { 1 } else { 0 })
+            .unwrap_or(existing.check_domain_expiry)
+    };
     let domain_warning_days = payload
         .domain_warning_days
         .unwrap_or(existing.domain_warning_days);
-    let check_ssl = payload
-        .check_ssl
-        .map(|b| if b { 1 } else { 0 })
-        .unwrap_or(existing.check_ssl);
+    let check_ssl = if is_expiry {
+        1
+    } else {
+        payload
+            .check_ssl
+            .map(|b| if b { 1 } else { 0 })
+            .unwrap_or(existing.check_ssl)
+    };
     let ssl_warning_days = payload
         .ssl_warning_days
         .unwrap_or(existing.ssl_warning_days);
-    let check_type = payload.check_type.unwrap_or(existing.check_type);
     let port = payload.port.or(existing.port);
     let dns_record_type = payload.dns_record_type.or(existing.dns_record_type);
     let dns_expected_value = payload.dns_expected_value.or(existing.dns_expected_value);
+    let expiry_threshold_days = payload
+        .expiry_threshold_days
+        .unwrap_or(existing.expiry_threshold_days);
 
     sqlx::query(
         "UPDATE monitors \
@@ -114,7 +158,7 @@ pub async fn update_monitor(
              max_retries = ?, is_active = ?, is_public = ?, \
              check_domain_expiry = ?, domain_warning_days = ?, \
              check_ssl = ?, ssl_warning_days = ?, \
-             check_type = ?, port = ?, dns_record_type = ?, dns_expected_value = ? \
+             check_type = ?, port = ?, dns_record_type = ?, dns_expected_value = ?, expiry_threshold_days = ? \
          WHERE id = ?",
     )
     .bind(&name)
@@ -132,6 +176,7 @@ pub async fn update_monitor(
     .bind(port)
     .bind(&dns_record_type)
     .bind(&dns_expected_value)
+    .bind(expiry_threshold_days)
     .bind(id)
     .execute(pool)
     .await?;
@@ -161,6 +206,7 @@ pub async fn update_domain_expiry(
 }
 
 /// Update SSL certificate expiration telemetry for a monitor.
+#[allow(dead_code)]
 pub async fn update_ssl_expiry(
     pool: &SqlitePool,
     id: &str,
@@ -181,7 +227,44 @@ pub async fn update_ssl_expiry(
     Ok(())
 }
 
-/// Query all active monitors where either check_ssl or check_domain_expiry is enabled.
+/// Update SSL certificate and CAA authorization telemetry for a monitor.
+pub async fn update_ssl_and_caa(
+    pool: &SqlitePool,
+    id: &str,
+    expires_at: Option<&str>,
+    days_remaining: Option<i32>,
+    issued_at: Option<&str>,
+    issuer: Option<&str>,
+    serial_number: Option<&str>,
+    signature_algorithm: Option<&str>,
+    sans: Option<&str>,
+    caa_status: Option<&str>,
+    caa_details: Option<&str>,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE monitors \
+         SET ssl_expires_at = ?, ssl_days_remaining = ?, ssl_last_checked_at = datetime('now'), \
+             ssl_issued_at = ?, ssl_issuer = ?, ssl_serial_number = ?, ssl_signature_algorithm = ?, \
+             ssl_sans = ?, caa_status = ?, caa_details = ? \
+         WHERE id = ?",
+    )
+    .bind(expires_at)
+    .bind(days_remaining)
+    .bind(issued_at)
+    .bind(issuer)
+    .bind(serial_number)
+    .bind(signature_algorithm)
+    .bind(sans)
+    .bind(caa_status)
+    .bind(caa_details)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Query all active monitors where either check_ssl or check_domain_expiry is enabled, or check_type is expiry.
 pub async fn get_asset_expiry_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, AppError> {
     let rows = sqlx::query_as::<_, Monitor>(
         "SELECT id, name, url, check_interval_secs, timeout_secs, max_retries, \
@@ -189,9 +272,11 @@ pub async fn get_asset_expiry_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>
                 check_domain_expiry, domain_warning_days, domain_expires_at, \
                 domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-                check_type, port, dns_record_type, dns_expected_value \
+                check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
+                current_consecutive_fails \
          FROM monitors \
-         WHERE is_active = 1 AND (check_ssl = 1 OR check_domain_expiry = 1)",
+         WHERE is_active = 1 AND (check_ssl = 1 OR check_domain_expiry = 1 OR check_type = 'expiry')",
     )
     .fetch_all(pool)
     .await?;
@@ -232,6 +317,25 @@ pub async fn update_monitor_status(
     )
     .bind(status)
     .bind(down_since)
+    .bind(id)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
+
+/// Update the consecutive failure count for a monitor.
+pub async fn update_consecutive_fails(
+    pool: &SqlitePool,
+    id: &str,
+    current_consecutive_fails: i32,
+) -> Result<(), sqlx::Error> {
+    sqlx::query(
+        "UPDATE monitors \
+         SET current_consecutive_fails = ? \
+         WHERE id = ?",
+    )
+    .bind(current_consecutive_fails)
     .bind(id)
     .execute(pool)
     .await?;
@@ -281,7 +385,8 @@ pub async fn get_7day_uptime_history(
     .fetch_all(pool)
     .await?;
 
-    let mut day_map: std::collections::HashMap<String, (i64, i64)> = std::collections::HashMap::new();
+    let mut day_map: std::collections::HashMap<String, (i64, i64)> =
+        std::collections::HashMap::new();
     for r in rows {
         day_map.insert(r.day, (r.total, r.up_count));
     }
@@ -361,7 +466,8 @@ pub async fn get_24h_latency_history(
     .fetch_all(pool)
     .await?;
 
-    let mut slot_map: std::collections::HashMap<String, (i64, i64, f64)> = std::collections::HashMap::new();
+    let mut slot_map: std::collections::HashMap<String, (i64, i64, f64)> =
+        std::collections::HashMap::new();
     for r in rows {
         slot_map.insert(r.hour_slot, (r.total, r.up_count, r.avg_latency));
     }
@@ -451,7 +557,9 @@ pub async fn get_all_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, AppErro
                 check_domain_expiry, domain_warning_days, domain_expires_at, \
                 domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-                check_type, port, dns_record_type, dns_expected_value \
+                check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
+                current_consecutive_fails \
          FROM monitors ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -506,7 +614,8 @@ pub async fn bulk_delete_monitors(
     let mut tx = pool.begin().await?;
 
     // Count check logs first to report accurate purged log count
-    let count_query = format!("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ({placeholders})");
+    let count_query =
+        format!("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ({placeholders})");
     let mut q = sqlx::query_as::<_, (i64,)>(&count_query);
     for id in ids {
         q = q.bind(id);
@@ -550,7 +659,8 @@ pub async fn get_bulk_monitors_stats(
     }
     let placeholders = ids.iter().map(|_| "?").collect::<Vec<_>>().join(",");
 
-    let count_logs_sql = format!("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ({placeholders})");
+    let count_logs_sql =
+        format!("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ({placeholders})");
     let mut q = sqlx::query_as::<_, (i64,)>(&count_logs_sql);
     for id in ids {
         q = q.bind(id);
@@ -582,7 +692,9 @@ pub async fn get_monitors_by_ids(
                 check_domain_expiry, domain_warning_days, domain_expires_at, \
                 domain_days_remaining, last_domain_alert_days, domain_last_checked_at, \
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
-                check_type, port, dns_record_type, dns_expected_value \
+                check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
+                current_consecutive_fails \
          FROM monitors WHERE id IN ({placeholders})"
     );
     let mut q = sqlx::query_as::<_, Monitor>(&sql);
@@ -643,7 +755,9 @@ mod tests {
         }
         assert_eq!(days.len(), 7);
         assert_eq!(days[6], today.format("%Y-%m-%d").to_string());
-        let expected_first = (today - chrono::Duration::days(6)).format("%Y-%m-%d").to_string();
+        let expected_first = (today - chrono::Duration::days(6))
+            .format("%Y-%m-%d")
+            .to_string();
         assert_eq!(days[0], expected_first);
     }
 
@@ -678,7 +792,7 @@ mod tests {
                 error_msg TEXT,
                 checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );"
+            );",
         )
         .execute(&pool)
         .await
@@ -686,7 +800,7 @@ mod tests {
 
         let monitor_id = "test-mon-7day";
         sqlx::query(
-            "INSERT INTO monitors (id, name, url, is_active, is_public) VALUES (?, ?, ?, 1, 1)"
+            "INSERT INTO monitors (id, name, url, is_active, is_public) VALUES (?, ?, ?, 1, 1)",
         )
         .bind(monitor_id)
         .bind("Test Monitor")
@@ -771,7 +885,7 @@ mod tests {
                 error_msg TEXT,
                 checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );"
+            );",
         )
         .execute(&pool)
         .await
@@ -779,7 +893,7 @@ mod tests {
 
         let monitor_id = "test-mon-24h";
         sqlx::query(
-            "INSERT INTO monitors (id, name, url, is_active, is_public) VALUES (?, ?, ?, 1, 1)"
+            "INSERT INTO monitors (id, name, url, is_active, is_public) VALUES (?, ?, ?, 1, 1)",
         )
         .bind(monitor_id)
         .bind("Test Monitor 24h")
@@ -852,10 +966,7 @@ mod tests {
             .await
             .unwrap();
 
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
         let monitor_id = "test-mon-domain-persist";
         sqlx::query(
@@ -880,7 +991,10 @@ mod tests {
             .unwrap();
 
         let updated = get_monitor_by_id(&pool, monitor_id).await.unwrap();
-        assert_eq!(updated.domain_expires_at.as_deref(), Some("2028-01-01T00:00:00Z"));
+        assert_eq!(
+            updated.domain_expires_at.as_deref(),
+            Some("2028-01-01T00:00:00Z")
+        );
         assert_eq!(updated.domain_days_remaining, Some(450));
         assert!(updated.domain_last_checked_at.is_some());
 
@@ -900,10 +1014,7 @@ mod tests {
             .await
             .unwrap();
 
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
         // Seed 3 monitors: 2 active, 1 paused
         sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('m1', 'Mon 1', 'https://a.com', 1, 1)")
@@ -949,10 +1060,7 @@ mod tests {
             .await
             .unwrap();
 
-        sqlx::migrate!("./migrations")
-            .run(&pool)
-            .await
-            .unwrap();
+        sqlx::migrate!("./migrations").run(&pool).await.unwrap();
 
         // Seed 3 monitors
         sqlx::query("INSERT INTO monitors (id, name, url, is_active, is_public) VALUES ('b1', 'Batch 1', 'https://1.com', 1, 1)")
@@ -989,7 +1097,9 @@ mod tests {
         assert_eq!(b3.is_active, 1);
 
         // Test bulk_resume_monitors for b1 only
-        let resumed = bulk_resume_monitors(&pool, &["b1".to_string()]).await.unwrap();
+        let resumed = bulk_resume_monitors(&pool, &["b1".to_string()])
+            .await
+            .unwrap();
         assert_eq!(resumed, 1);
         let b1 = get_monitor_by_id(&pool, "b1").await.unwrap();
         assert_eq!(b1.is_active, 1);
@@ -1004,8 +1114,11 @@ mod tests {
         assert!(get_monitor_by_id(&pool, "b2").await.is_err());
         assert!(get_monitor_by_id(&pool, "b3").await.is_ok());
 
-        let remaining_logs: (i64,) = sqlx::query_as("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ('b1', 'b2')")
-            .fetch_one(&pool).await.unwrap();
+        let remaining_logs: (i64,) =
+            sqlx::query_as("SELECT COUNT(*) FROM check_logs WHERE monitor_id IN ('b1', 'b2')")
+                .fetch_one(&pool)
+                .await
+                .unwrap();
         assert_eq!(remaining_logs.0, 0);
     }
 }

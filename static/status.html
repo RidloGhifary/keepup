@@ -520,7 +520,7 @@
           <span>•</span>
           <span class="inline-flex items-center gap-1.5 px-2.5 py-0.5 rounded-full bg-white/5 border border-white/10 text-[11px] text-white/70">
             <span class="h-1.5 w-1.5 rounded-full bg-[#30d158] animate-pulse"></span>
-            <span>Refresh in <strong id="countdown-seconds" class="text-white font-mono">30</strong>s</span>
+            <span>Refresh in&nbsp;<strong id="countdown-seconds" class="text-white font-mono">30</strong>s</span>
           </span>
         </div>
 
@@ -552,12 +552,40 @@
 
     <!-- ── Monitors & Services List ──────────────────────────────────────── -->
     <section class="space-y-4">
-      <div class="flex items-center justify-between">
+      <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
         <div>
           <h2 class="text-base font-semibold text-white tracking-tight">Public Components &amp; APIs</h2>
           <p class="text-xs text-white/40 mt-0.5">Real-time health telemetry across core public services</p>
         </div>
-        <span id="services-count-badge" class="text-xs px-2.5 py-0.5 rounded-full bg-white/10 text-white/60 font-mono">Loading...</span>
+        <div class="flex items-center gap-2.5">
+          <!-- Conditional Search Input Container (Hidden by default, revealed dynamically when monitors > 10) -->
+          <div id="status-search-container" class="relative hidden w-full sm:w-64">
+            <input
+              id="status-search-input"
+              type="text"
+              placeholder="Search components... (/ or ⌘K)"
+              autocomplete="off"
+              spellcheck="false"
+              oninput="applyStatusSearchFilter()"
+              class="w-full bg-white/5 border border-white/10 rounded-xl pl-9 pr-8 py-1.5 text-xs text-white placeholder-white/30 focus:outline-none focus:ring-2 focus:ring-[#0a84ff]/50 transition h-8"
+            />
+            <svg class="w-3.5 h-3.5 text-white/40 absolute left-3 top-2.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+            </svg>
+            <button
+              id="status-search-clear"
+              type="button"
+              onclick="clearStatusSearch()"
+              class="hidden absolute right-2 top-1.5 text-white/40 hover:text-white transition p-1 rounded-md hover:bg-white/10 cursor-pointer"
+              title="Clear search query"
+            >
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+                <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+              </svg>
+            </button>
+          </div>
+          <span id="services-count-badge" class="text-xs px-2.5 py-0.5 rounded-full bg-white/10 text-white/60 font-mono shrink-0">Loading...</span>
+        </div>
       </div>
 
       <!-- Services Container -->
@@ -589,7 +617,7 @@
     <div class="max-w-4xl mx-auto px-4 flex flex-col sm:flex-row items-center justify-between gap-3">
       <div class="flex items-center gap-2">
         <span class="h-2 w-2 rounded-full bg-[#30d158]"></span>
-        <span>Powered by <strong class="text-white/80 font-semibold tracking-tight">KeepUp</strong> — Zero-overhead uptime engine</span>
+        <span>Powered by&nbsp;<strong class="text-white/80 font-semibold tracking-tight">KeepUp</strong> — Zero-overhead uptime engine</span>
       </div>
       <div class="flex items-center gap-4 text-white/50">
         <a href="/" class="hover:text-white transition">Dashboard</a>

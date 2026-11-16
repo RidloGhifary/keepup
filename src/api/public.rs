@@ -132,6 +132,12 @@ pub struct PublicMonitor {
     pub latency: crate::db::checks::LatencyPercentiles,
     #[serde(default = "default_check_type")]
     pub check_type: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub domain_days_remaining: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub ssl_days_remaining: Option<i32>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub expiry_threshold_days: Option<i32>,
 }
 
 fn default_check_type() -> String {
@@ -147,6 +153,14 @@ struct MonitorIdName {
     url: String,
     #[sqlx(default)]
     check_type: String,
+    #[sqlx(default)]
+    domain_days_remaining: Option<i32>,
+    #[sqlx(default)]
+    ssl_days_remaining: Option<i32>,
+    #[sqlx(default)]
+    expiry_threshold_days: Option<i32>,
+    #[sqlx(default)]
+    last_status: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -171,6 +185,14 @@ struct AssignedMonitorRow {
     display_order: i64,
     #[sqlx(default)]
     check_type: String,
+    #[sqlx(default)]
+    domain_days_remaining: Option<i32>,
+    #[sqlx(default)]
+    ssl_days_remaining: Option<i32>,
+    #[sqlx(default)]
+    expiry_threshold_days: Option<i32>,
+    #[sqlx(default)]
+    last_status: Option<String>,
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -184,7 +206,15 @@ pub async fn get_public_status_impl(
         return Ok(cached);
     }
 
-    let (title, description, allow_indexing, meta_title, meta_description, og_image_url, canonical_url) = if slug == "default" {
+    let (
+        title,
+        description,
+        allow_indexing,
+        meta_title,
+        meta_description,
+        og_image_url,
+        canonical_url,
+    ) = if slug == "default" {
         if let Some(page) = crate::db::status_pages::get_status_page(&state.db, "default").await? {
             (
                 page.title,
@@ -211,7 +241,9 @@ pub async fn get_public_status_impl(
             .await?
             .ok_or_else(|| AppError::NotFound(format!("Status page '{slug}' not found")))?;
         if page.is_public == 0 {
-            return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
+            return Err(AppError::NotFound(format!(
+                "Status page '{slug}' not found"
+            )));
         }
         (
             page.title,
@@ -229,7 +261,11 @@ pub async fn get_public_status_impl(
         SELECT 
             m.id, m.name, m.url, 
             spm.group_name, spm.display_order,
-            m.check_type
+            m.check_type,
+            m.domain_days_remaining,
+            m.ssl_days_remaining,
+            m.expiry_threshold_days,
+            m.last_status
         FROM status_page_monitors spm
         INNER JOIN monitors m ON m.id = spm.monitor_id
         WHERE LOWER(spm.status_page_slug) = LOWER(?)
@@ -242,7 +278,8 @@ pub async fn get_public_status_impl(
 
     if assigned.is_empty() && slug == "default" {
         let all_monitors = sqlx::query_as::<_, MonitorIdName>(
-            "SELECT id, name, url, check_type FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
+            "SELECT id, name, url, check_type, domain_days_remaining, ssl_days_remaining, expiry_threshold_days, last_status \
+             FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
         )
         .fetch_all(&state.db)
         .await?;
@@ -257,11 +294,16 @@ pub async fn get_public_status_impl(
                 group_name: "Services".to_string(),
                 display_order: i as i64,
                 check_type: m.check_type,
+                domain_days_remaining: m.domain_days_remaining,
+                ssl_days_remaining: m.ssl_days_remaining,
+                expiry_threshold_days: m.expiry_threshold_days,
+                last_status: m.last_status,
             })
             .collect();
     }
 
-    let maintenance_windows = crate::db::maintenance::get_public_maintenance_windows(&state.db).await?;
+    let maintenance_windows =
+        crate::db::maintenance::get_public_maintenance_windows(&state.db).await?;
 
     let mut public_monitors: Vec<PublicMonitor> = Vec::with_capacity(assigned.len());
     let mut groups_map: Vec<(String, Vec<PublicMonitor>)> = Vec::new();
@@ -286,12 +328,28 @@ pub async fn get_public_status_impl(
             ("MAINTENANCE".to_string(), latest.and_then(|c| c.latency_ms))
         } else {
             match &latest {
-                Some(c) if c.is_up == 1 => ("UP".to_string(), c.latency_ms),
-                Some(c) => {
+                Some(c) if c.is_up == 0 => {
                     any_down = true;
                     ("DOWN".to_string(), c.latency_ms)
                 }
-                None => ("UNKNOWN".to_string(), None),
+                Some(c) if m.last_status.as_deref() == Some("DEGRADED") => {
+                    any_degraded = true;
+                    ("DEGRADED".to_string(), c.latency_ms)
+                }
+                Some(c) => ("UP".to_string(), c.latency_ms),
+                None => {
+                    if m.last_status.as_deref() == Some("DEGRADED") {
+                        any_degraded = true;
+                        ("DEGRADED".to_string(), None)
+                    } else if m.last_status.as_deref() == Some("DOWN") {
+                        any_down = true;
+                        ("DOWN".to_string(), None)
+                    } else if m.last_status.as_deref() == Some("UP") {
+                        ("UP".to_string(), None)
+                    } else {
+                        ("UNKNOWN".to_string(), None)
+                    }
+                }
             }
         };
 
@@ -336,6 +394,9 @@ pub async fn get_public_status_impl(
             latency_24h,
             latency,
             check_type: m.check_type.clone(),
+            domain_days_remaining: m.domain_days_remaining,
+            ssl_days_remaining: m.ssl_days_remaining,
+            expiry_threshold_days: m.expiry_threshold_days,
         };
 
         public_monitors.push(pub_m.clone());
@@ -408,7 +469,8 @@ pub async fn public_status(
         axum::http::HeaderValue::from_static(robots_val),
     );
     if let Some(ref canon) = status.canonical_url {
-        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\"")) {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\""))
+        {
             headers.insert(axum::http::header::LINK, val);
         }
     }
@@ -434,7 +496,8 @@ pub async fn public_status_by_slug(
         axum::http::HeaderValue::from_static(robots_val),
     );
     if let Some(ref canon) = status.canonical_url {
-        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\"")) {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\""))
+        {
             headers.insert(axum::http::header::LINK, val);
         }
     }
@@ -477,9 +540,9 @@ pub async fn robots_txt(State(state): State<Arc<AppState>>) -> impl IntoResponse
 }
 
 pub use public_status as get_default_status;
-pub use public_status_by_slug as get_status_by_slug;
 #[allow(unused_imports)]
 pub use public_status as get_public_status_handler;
+pub use public_status_by_slug as get_status_by_slug;
 #[allow(unused_imports)]
 pub use public_status_by_slug as get_public_status_by_slug_handler;
 
@@ -714,8 +777,17 @@ pub async fn badge(
                 };
                 let right = status_enum.default_label().to_string();
                 let title = format!("{left}: {right}");
-                (left, right, status_enum.bg_color(), status_enum.text_color(), title)
-            } else if crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id).await.unwrap_or(false) {
+                (
+                    left,
+                    right,
+                    status_enum.bg_color(),
+                    status_enum.text_color(),
+                    title,
+                )
+            } else if crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id)
+                .await
+                .unwrap_or(false)
+            {
                 let right = "maintenance".to_string();
                 let title = format!("{left}: maintenance");
                 (
@@ -756,9 +828,7 @@ pub async fn badge(
 
                 // Determine operational state
                 let (status_enum, right) = match &latest {
-                    Some(c) if c.is_up == 0 => {
-                        (MonitorBadgeStatus::Down, "downtime".to_string())
-                    }
+                    Some(c) if c.is_up == 0 => (MonitorBadgeStatus::Down, "downtime".to_string()),
                     Some(_) if uptime_24h < 99.0 => {
                         (MonitorBadgeStatus::Degraded, "degraded".to_string())
                     }
@@ -801,12 +871,16 @@ pub async fn badge(
                     (MonitorBadgeStatus::Maintenance, _) => {
                         format!("{left}: maintenance")
                     }
-                    (MonitorBadgeStatus::NotFound, _) => {
-                        "KeepUp: not found".to_string()
-                    }
+                    (MonitorBadgeStatus::NotFound, _) => "KeepUp: not found".to_string(),
                 };
 
-                (left, right, status_enum.bg_color(), status_enum.text_color(), title)
+                (
+                    left,
+                    right,
+                    status_enum.bg_color(),
+                    status_enum.text_color(),
+                    title,
+                )
             }
         }
         _ => {
@@ -819,7 +893,13 @@ pub async fn badge(
                 .unwrap_or_else(|| "KeepUp".to_string());
             let right = status_enum.default_label().to_string();
             let title = format!("{left}: not found");
-            (left, right, status_enum.bg_color(), status_enum.text_color(), title)
+            (
+                left,
+                right,
+                status_enum.bg_color(),
+                status_enum.text_color(),
+                title,
+            )
         }
     };
 
@@ -856,7 +936,13 @@ mod tests {
     #[test]
     fn test_render_badge_svg_colors_and_text() {
         // UP / Operational: #30D158
-        let svg_up = render_badge_svg("KeepUp | API Gateway", "operational", "#30D158", "#09090b", "API Gateway: operational");
+        let svg_up = render_badge_svg(
+            "KeepUp | API Gateway",
+            "operational",
+            "#30D158",
+            "#09090b",
+            "API Gateway: operational",
+        );
         assert!(svg_up.contains("#30D158"));
         assert!(svg_up.contains("KeepUp | API Gateway"));
         assert!(svg_up.contains("operational"));
@@ -864,24 +950,48 @@ mod tests {
         assert!(svg_up.contains("</svg>"));
 
         // DOWN / Downtime: #FF453A
-        let svg_down = render_badge_svg("KeepUp | Database", "downtime", "#FF453A", "#ffffff", "Database: downtime");
+        let svg_down = render_badge_svg(
+            "KeepUp | Database",
+            "downtime",
+            "#FF453A",
+            "#ffffff",
+            "Database: downtime",
+        );
         assert!(svg_down.contains("#FF453A"));
         assert!(svg_down.contains("downtime"));
 
         // DEGRADED: #FFD60A
-        let svg_deg = render_badge_svg("KeepUp | Payment", "degraded", "#FFD60A", "#09090b", "Payment: degraded");
+        let svg_deg = render_badge_svg(
+            "KeepUp | Payment",
+            "degraded",
+            "#FFD60A",
+            "#09090b",
+            "Payment: degraded",
+        );
         assert!(svg_deg.contains("#FFD60A"));
         assert!(svg_deg.contains("degraded"));
 
         // NOT_FOUND: #71717A
-        let svg_nf = render_badge_svg("KeepUp", "not found", "#71717A", "#ffffff", "KeepUp: monitor not found");
+        let svg_nf = render_badge_svg(
+            "KeepUp",
+            "not found",
+            "#71717A",
+            "#ffffff",
+            "KeepUp: monitor not found",
+        );
         assert!(svg_nf.contains("#71717A"));
         assert!(svg_nf.contains("not found"));
     }
 
     #[test]
     fn test_render_badge_svg_xml_escaping() {
-        let svg = render_badge_svg("Auth & <Billing> \"v1\"", "status", "#30D158", "#09090b", "Title & 'Quotes'");
+        let svg = render_badge_svg(
+            "Auth & <Billing> \"v1\"",
+            "status",
+            "#30D158",
+            "#09090b",
+            "Title & 'Quotes'",
+        );
         assert!(svg.contains("Auth &amp; &lt;Billing&gt; &quot;v1&quot;"));
         assert!(svg.contains("Title &amp; &apos;Quotes&apos;"));
     }
@@ -945,7 +1055,7 @@ mod tests {
                 error_msg TEXT,
                 checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );"
+            );",
         )
         .execute(&pool)
         .await
@@ -971,7 +1081,7 @@ mod tests {
 
         // Check log: UP, 18ms
         sqlx::query(
-            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('api-srv', 1, 18)"
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('api-srv', 1, 18)",
         )
         .execute(&pool)
         .await
@@ -997,7 +1107,9 @@ mod tests {
             "no-cache, max-age=30"
         );
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
         assert!(body_str.contains("#30D158"));
         assert!(body_str.contains("KeepUp | API Gateway"));
@@ -1014,7 +1126,9 @@ mod tests {
         .into_response();
 
         assert_eq!(res_nf.status(), StatusCode::OK);
-        let nf_bytes = axum::body::to_bytes(res_nf.into_body(), 1024 * 64).await.unwrap();
+        let nf_bytes = axum::body::to_bytes(res_nf.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let nf_str = String::from_utf8(nf_bytes.to_vec()).unwrap();
         assert!(nf_str.contains("#71717A"));
         assert!(nf_str.contains("not found"));
@@ -1036,7 +1150,9 @@ mod tests {
         .unwrap()
         .into_response();
 
-        let down_bytes = axum::body::to_bytes(res_down.into_body(), 1024 * 64).await.unwrap();
+        let down_bytes = axum::body::to_bytes(res_down.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let down_str = String::from_utf8(down_bytes.to_vec()).unwrap();
         assert!(down_str.contains("#FF453A"));
         assert!(down_str.contains("downtime"));
@@ -1058,7 +1174,9 @@ mod tests {
         .unwrap()
         .into_response();
 
-        let deg_bytes = axum::body::to_bytes(res_deg.into_body(), 1024 * 64).await.unwrap();
+        let deg_bytes = axum::body::to_bytes(res_deg.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let deg_str = String::from_utf8(deg_bytes.to_vec()).unwrap();
         assert!(deg_str.contains("#FFD60A"));
         assert!(deg_str.contains("degraded"));
@@ -1081,13 +1199,19 @@ mod tests {
         let res_lat = badge(
             State(state.clone()),
             Path("lat-srv.svg".to_string()),
-            Query(BadgeQuery { status: None, latency: Some(true), ..Default::default() }),
+            Query(BadgeQuery {
+                status: None,
+                latency: Some(true),
+                ..Default::default()
+            }),
         )
         .await
         .unwrap()
         .into_response();
 
-        let lat_bytes = axum::body::to_bytes(res_lat.into_body(), 1024 * 64).await.unwrap();
+        let lat_bytes = axum::body::to_bytes(res_lat.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let lat_str = String::from_utf8(lat_bytes.to_vec()).unwrap();
         assert!(lat_str.contains("operational | 24ms"));
         assert!(lat_str.contains("#30D158"));
@@ -1110,7 +1234,9 @@ mod tests {
         .into_response();
 
         assert_eq!(res_priv.status(), StatusCode::OK);
-        let priv_bytes = axum::body::to_bytes(res_priv.into_body(), 1024 * 64).await.unwrap();
+        let priv_bytes = axum::body::to_bytes(res_priv.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let priv_str = String::from_utf8(priv_bytes.to_vec()).unwrap();
         assert!(priv_str.contains("#71717A"));
         assert!(priv_str.contains("not found"));
@@ -1119,13 +1245,19 @@ mod tests {
         let res_override = badge(
             State(state.clone()),
             Path("api-srv.svg".to_string()),
-            Query(BadgeQuery { status: Some("degraded".to_string()), latency: None, ..Default::default() }),
+            Query(BadgeQuery {
+                status: Some("degraded".to_string()),
+                latency: None,
+                ..Default::default()
+            }),
         )
         .await
         .unwrap()
         .into_response();
 
-        let override_bytes = axum::body::to_bytes(res_override.into_body(), 1024 * 64).await.unwrap();
+        let override_bytes = axum::body::to_bytes(res_override.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let override_str = String::from_utf8(override_bytes.to_vec()).unwrap();
         assert!(override_str.contains("#FFD60A"));
         assert!(override_str.contains("degraded"));
@@ -1149,7 +1281,9 @@ mod tests {
             router_res.headers().get("cache-control").unwrap(),
             "no-cache, max-age=30"
         );
-        let router_bytes = axum::body::to_bytes(router_res.into_body(), 1024 * 64).await.unwrap();
+        let router_bytes = axum::body::to_bytes(router_res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let router_str = String::from_utf8(router_bytes.to_vec()).unwrap();
         assert!(router_str.contains("KeepUp | API Gateway"));
         assert!(router_str.contains("<svg"));
@@ -1165,8 +1299,13 @@ mod tests {
 
         let res2 = app2.oneshot(req2).await.unwrap();
         assert_eq!(res2.status(), StatusCode::OK);
-        assert_eq!(res2.headers().get("content-type").unwrap(), "image/svg+xml; charset=utf-8");
-        let bytes2 = axum::body::to_bytes(res2.into_body(), 1024 * 64).await.unwrap();
+        assert_eq!(
+            res2.headers().get("content-type").unwrap(),
+            "image/svg+xml; charset=utf-8"
+        );
+        let bytes2 = axum::body::to_bytes(res2.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let str2 = String::from_utf8(bytes2.to_vec()).unwrap();
         assert!(str2.contains("LANDINGPAGE"));
         assert!(str2.contains("DEGRADED"));
@@ -1182,8 +1321,13 @@ mod tests {
 
         let res3 = app3.oneshot(req3).await.unwrap();
         assert_eq!(res3.status(), StatusCode::OK);
-        assert_eq!(res3.headers().get("content-type").unwrap(), "image/svg+xml; charset=utf-8");
-        let bytes3 = axum::body::to_bytes(res3.into_body(), 1024 * 64).await.unwrap();
+        assert_eq!(
+            res3.headers().get("content-type").unwrap(),
+            "image/svg+xml; charset=utf-8"
+        );
+        let bytes3 = axum::body::to_bytes(res3.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let str3 = String::from_utf8(bytes3.to_vec()).unwrap();
         assert!(str3.contains("LANDINGPAGE"));
         assert!(str3.contains("NOT FOUND"));
@@ -1230,9 +1374,13 @@ mod tests {
 
         // Check logs for m1 (UP) and m2 (UP)
         sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('m1', 1, 20)")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
         sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('m2', 1, 35)")
-            .execute(&pool).await.unwrap();
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // 1. Default page without explicit assignments should return all active public monitors under "Services"
         let default_status = get_public_status_impl(&state, "default").await.unwrap();
@@ -1255,7 +1403,9 @@ mod tests {
             None,
             None,
             None,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         crate::db::status_pages::update_status_page(
             &pool,
@@ -1263,19 +1413,19 @@ mod tests {
             "Customer Dashboards",
             Some("Dashboard telemetry"),
             true,
-            Some(vec![
-                crate::db::status_pages::StatusPageMonitorAssignment {
-                    monitor_id: "m1".to_string(),
-                    group_name: "Gateways".to_string(),
-                    display_order: 1,
-                }
-            ]),
+            Some(vec![crate::db::status_pages::StatusPageMonitorAssignment {
+                monitor_id: "m1".to_string(),
+                group_name: "Gateways".to_string(),
+                display_order: 1,
+            }]),
             true,
             None,
             None,
             None,
             None,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         let custom_status = get_public_status_impl(&state, "dashboards").await.unwrap();
         assert_eq!(custom_status.title, "Customer Dashboards");
@@ -1327,7 +1477,9 @@ mod tests {
             None,
             None,
             None,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // 3. Assign 2 monitors with group label "Internal Dashboards"
         crate::db::status_pages::update_status_page(
@@ -1353,7 +1505,9 @@ mod tests {
             None,
             None,
             None,
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // 4. Test API via Router GET /api/public/status/dashboard
         let app = crate::api::router(state.clone()).with_state(state.clone());
@@ -1365,7 +1519,9 @@ mod tests {
 
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let payload: PublicStatus = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(payload.title, "Internal Dashboards Status");
@@ -1435,18 +1591,27 @@ mod tests {
                 end_time: end.to_rfc3339(),
                 monitor_ids: vec!["m-maint-1".to_string()],
             },
-        ).await.unwrap();
+        )
+        .await
+        .unwrap();
 
         // 3. Query public status
         let public_status = get_public_status_impl(&state, "default").await.unwrap();
 
         // Maintenance window must be included and active
         assert_eq!(public_status.maintenance_windows.len(), 1);
-        assert_eq!(public_status.maintenance_windows[0].title, "Planned Payments Gateway Upgrade");
+        assert_eq!(
+            public_status.maintenance_windows[0].title,
+            "Planned Payments Gateway Upgrade"
+        );
         assert!(public_status.maintenance_windows[0].is_active);
 
         // m-maint-1 must report "MAINTENANCE" instead of "DOWN"
-        let maint_mon = public_status.monitors.iter().find(|m| m.id == "m-maint-1").unwrap();
+        let maint_mon = public_status
+            .monitors
+            .iter()
+            .find(|m| m.id == "m-maint-1")
+            .unwrap();
         assert_eq!(maint_mon.current_status, "MAINTENANCE");
 
         // Overall status should not be marked as Major Outage since failure was in maintenance
@@ -1514,7 +1679,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let status_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
         let monitor = &status_json["monitors"][0];
@@ -1548,7 +1715,7 @@ mod tests {
         // 1. Seed 2 monitors
         sqlx::query(
             "INSERT INTO monitors (id, name, url, is_active, is_public, last_status) \
-             VALUES ('mon-api-1', 'Users Service', 'https://api.test/users', 1, 1, 'UP')"
+             VALUES ('mon-api-1', 'Users Service', 'https://api.test/users', 1, 1, 'UP')",
         )
         .execute(&pool)
         .await
@@ -1556,21 +1723,25 @@ mod tests {
 
         sqlx::query(
             "INSERT INTO monitors (id, name, url, is_active, is_public, last_status) \
-             VALUES ('mon-api-2', 'Auth Service', 'https://api.test/auth', 1, 1, 'UP')"
+             VALUES ('mon-api-2', 'Auth Service', 'https://api.test/auth', 1, 1, 'UP')",
         )
         .execute(&pool)
         .await
         .unwrap();
 
         // Check logs for monitors
-        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-1', 1, 15)")
-            .execute(&pool)
-            .await
-            .unwrap();
-        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-2', 1, 28)")
-            .execute(&pool)
-            .await
-            .unwrap();
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-1', 1, 15)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-2', 1, 28)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
 
         // 2. Create custom status page `slug: "api"`, `title: "API Services"` with monitors assigned under group `"Core Services"`
         crate::db::status_pages::create_status_page(
@@ -1601,10 +1772,11 @@ mod tests {
         .unwrap();
 
         // 3. Test get_public_status_page in DB
-        let (page_meta, page_monitors) = crate::db::status_pages::get_public_status_page(&pool, "api")
-            .await
-            .unwrap()
-            .expect("Status page 'api' must exist");
+        let (page_meta, page_monitors) =
+            crate::db::status_pages::get_public_status_page(&pool, "api")
+                .await
+                .unwrap()
+                .expect("Status page 'api' must exist");
 
         assert_eq!(page_meta.slug, "api");
         assert_eq!(page_meta.title, "API Services");
@@ -1623,7 +1795,9 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
         assert_eq!(json["title"], "API Services");
@@ -1714,7 +1888,9 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
         assert_eq!(json["title"], "DRI");
@@ -1735,13 +1911,19 @@ mod tests {
 
         // 6. Test UI status_page_handler for /status/dri serves HTML
         let uri_page = axum::http::Uri::from_static("/status/dri");
-        let html_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_page).await;
+        let html_res =
+            crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_page).await;
         assert_eq!(html_res.status(), StatusCode::OK);
         assert_eq!(
-            html_res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            html_res
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
             "text/html; charset=utf-8"
         );
-        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64).await.unwrap();
+        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let html_str = String::from_utf8_lossy(&html_bytes);
         assert!(html_str.contains("id=\"page-title\""));
         assert!(html_str.contains("id=\"monitors-container\""));
@@ -1750,18 +1932,19 @@ mod tests {
 
         // 7. Test UI status_page_handler for /status/status.js serves JS (NOT HTML!)
         let uri_js = axum::http::Uri::from_static("/status/status.js");
-        let js_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_js).await;
+        let js_res =
+            crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_js).await;
         assert_eq!(js_res.status(), StatusCode::OK);
-        assert!(
-            js_res
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap()
-                .to_str()
-                .unwrap()
-                .starts_with("application/javascript")
-        );
-        let js_bytes = axum::body::to_bytes(js_res.into_body(), 1024 * 64).await.unwrap();
+        assert!(js_res
+            .headers()
+            .get(axum::http::header::CONTENT_TYPE)
+            .unwrap()
+            .to_str()
+            .unwrap()
+            .starts_with("application/javascript"));
+        let js_bytes = axum::body::to_bytes(js_res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let js_str = String::from_utf8_lossy(&js_bytes);
         assert!(js_str.contains("loadStatusData"));
     }
@@ -1831,10 +2014,15 @@ mod tests {
         let res_robots = app.clone().oneshot(req_robots).await.unwrap();
         assert_eq!(res_robots.status(), StatusCode::OK);
         assert_eq!(
-            res_robots.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
+            res_robots
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap(),
             "text/plain; charset=utf-8"
         );
-        let robots_bytes = axum::body::to_bytes(res_robots.into_body(), 1024 * 16).await.unwrap();
+        let robots_bytes = axum::body::to_bytes(res_robots.into_body(), 1024 * 16)
+            .await
+            .unwrap();
         let robots_txt = String::from_utf8_lossy(&robots_bytes);
         assert!(robots_txt.contains("User-agent: *"));
         assert!(robots_txt.contains("Disallow: /admin/"));
@@ -1887,7 +2075,8 @@ mod tests {
 
         // 7. Test UI status_page_handler HTML tag injection
         let uri_seo = axum::http::Uri::from_static("/status/seo-public");
-        let html_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_seo).await;
+        let html_res =
+            crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_seo).await;
         assert_eq!(html_res.status(), StatusCode::OK);
         assert_eq!(
             html_res.headers().get("x-robots-tag").unwrap(),
@@ -1897,15 +2086,25 @@ mod tests {
             html_res.headers().get(axum::http::header::LINK).unwrap(),
             "<https://status.example.com/status/seo-public>; rel=\"canonical\""
         );
-        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64).await.unwrap();
+        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64)
+            .await
+            .unwrap();
         let html = String::from_utf8_lossy(&html_bytes);
         assert!(html.contains("<title>Custom SEO Title | Acme Inc</title>"));
-        assert!(html.contains(r#"<meta name="description" content="Acme Inc system health and uptime.">"#));
+        assert!(html
+            .contains(r#"<meta name="description" content="Acme Inc system health and uptime.">"#));
         assert!(html.contains(r#"<meta name="robots" content="index, follow">"#));
-        assert!(html.contains(r#"<meta property="og:title" content="Custom SEO Title | Acme Inc">"#));
-        assert!(html.contains(r#"<meta property="og:image" content="https://example.com/og-banner.png">"#));
-        assert!(html.contains(r#"<meta name="twitter:image" content="https://example.com/og-banner.png">"#));
-        assert!(html.contains(r#"<link rel="canonical" href="https://status.example.com/status/seo-public">"#));
+        assert!(
+            html.contains(r#"<meta property="og:title" content="Custom SEO Title | Acme Inc">"#)
+        );
+        assert!(html
+            .contains(r#"<meta property="og:image" content="https://example.com/og-banner.png">"#));
+        assert!(html.contains(
+            r#"<meta name="twitter:image" content="https://example.com/og-banner.png">"#
+        ));
+        assert!(html.contains(
+            r#"<link rel="canonical" href="https://status.example.com/status/seo-public">"#
+        ));
     }
 
     #[tokio::test]

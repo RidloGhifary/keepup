@@ -625,15 +625,86 @@ function renderMaintenanceBanners(windows) {
 
 // ── Monitors & Services List (Categorized Group Support) ─────────────────────
 
+function applyStatusSearchFilter() {
+  const searchInput = document.getElementById('status-search-input');
+  const clearBtn = document.getElementById('status-search-clear');
+  const emptyState = document.getElementById('status-search-empty');
+  const countBadge = document.getElementById('services-count-badge');
+  const container = document.getElementById('monitors-container') || document.getElementById('public-services-container');
+
+  if (!container) return;
+
+  const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
+
+  if (clearBtn) {
+    clearBtn.classList.toggle('hidden', query.length === 0);
+  }
+
+  const cards = container.querySelectorAll('.monitor-service-card');
+  let visibleCount = 0;
+
+  cards.forEach((card) => {
+    const text = card.dataset.searchTarget || '';
+    const matches = query.length === 0 || text.includes(query);
+    card.classList.toggle('hidden', !matches);
+    if (matches) visibleCount++;
+  });
+
+  // Handle groups: if all cards in a group are hidden, hide the group
+  const groups = container.querySelectorAll('.status-group');
+  groups.forEach((group) => {
+    const groupCards = group.querySelectorAll('.monitor-service-card');
+    const groupVisible = Array.from(groupCards).filter((c) => !c.classList.contains('hidden')).length;
+    group.classList.toggle('hidden', groupVisible === 0);
+    const groupCountBadge = group.querySelector('.group-count-badge');
+    if (groupCountBadge) {
+      groupCountBadge.innerText = `${groupVisible} component${groupVisible === 1 ? '' : 's'}`;
+    }
+  });
+
+  if (countBadge) {
+    if (query.length > 0) {
+      countBadge.innerText = `${visibleCount} of ${cards.length} component${cards.length === 1 ? '' : 's'}`;
+    } else {
+      countBadge.innerText = `${cards.length} component${cards.length === 1 ? '' : 's'}`;
+    }
+  }
+
+  if (emptyState) {
+    emptyState.classList.toggle('hidden', visibleCount > 0 || cards.length === 0);
+  }
+}
+window.applyStatusSearchFilter = applyStatusSearchFilter;
+
+function clearStatusSearch() {
+  const searchInput = document.getElementById('status-search-input');
+  if (searchInput) {
+    searchInput.value = '';
+    applyStatusSearchFilter();
+    searchInput.focus();
+  }
+}
+window.clearStatusSearch = clearStatusSearch;
+
 function renderMonitorsList(monitors, groups) {
   const container = document.getElementById('monitors-container') || document.getElementById('public-services-container');
   const countBadge = document.getElementById('services-count-badge');
+  const searchContainer = document.getElementById('status-search-container');
 
   if (!container) return;
 
   const totalCount = monitors.length;
   if (countBadge) {
     countBadge.innerText = `${totalCount} component${totalCount === 1 ? '' : 's'}`;
+  }
+
+  // Threshold Evaluation: show search bar if total monitors > 10, otherwise keep completely hidden
+  if (searchContainer) {
+    if (totalCount > 10) {
+      searchContainer.classList.remove('hidden');
+    } else {
+      searchContainer.classList.add('hidden');
+    }
   }
 
   if (totalCount === 0) {
@@ -650,18 +721,18 @@ function renderMonitorsList(monitors, groups) {
   if (groups && groups.length > 0) {
     html = groups
       .map((group) => `
-        <div class="status-group space-y-3 pt-3">
+        <div class="status-group space-y-3 pt-3" data-group-name="${escapeHtml(group.name.toLowerCase())}">
           <div class="flex items-center justify-between px-1">
             <h2 class="text-sm font-semibold tracking-tight text-white flex items-center gap-2">
               <span class="w-1.5 h-1.5 rounded-full bg-[#0a84ff]"></span>
               <span>${escapeHtml(group.name)}</span>
             </h2>
-            <span class="text-[11px] font-mono text-white/40 bg-white/5 px-2.5 py-0.5 rounded-full border border-white/5">
+            <span class="text-[11px] font-mono text-white/40 bg-white/5 px-2.5 py-0.5 rounded-full border border-white/5 group-count-badge">
               ${group.monitors.length} component${group.monitors.length === 1 ? '' : 's'}
             </span>
           </div>
-          <div class="space-y-3.5">
-            ${group.monitors.map((m) => renderServiceCard(m)).join('')}
+          <div class="space-y-3.5 status-group-cards">
+            ${group.monitors.map((m) => renderServiceCard(m, group.name)).join('')}
           </div>
         </div>
       `)
@@ -670,7 +741,19 @@ function renderMonitorsList(monitors, groups) {
     html = monitors.map((m) => renderServiceCard(m)).join('');
   }
 
+  html += `
+    <div id="status-search-empty" class="hidden glass-card rounded-2xl p-10 text-center text-white/50 space-y-2">
+      <svg class="w-8 h-8 mx-auto text-white/30 mb-1" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+        <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.5" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+      </svg>
+      <p class="text-sm font-medium text-white/80">No matching monitors found</p>
+      <p class="text-xs text-white/40">Try searching for a different keyword or target URL</p>
+    </div>
+  `;
+
   batchInsertHTML(container, html);
+
+  applyStatusSearchFilter();
 }
 
 // ── Protocol Badge Component ───────────────────────────────────────────────
@@ -684,6 +767,8 @@ function renderProtocolBadge(type) {
     badgeStyle = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
   } else if (t === 'PING') {
     badgeStyle = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+  } else if (t === 'EXPIRY') {
+    badgeStyle = 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30 font-semibold';
   }
   return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border ${badgeStyle} shrink-0">${t}</span>`;
 }
@@ -693,12 +778,13 @@ function formatProbeLabel(type) {
   if (t === 'tcp') return 'TCP Port Probe';
   if (t === 'dns') return 'DNS Record Probe';
   if (t === 'ping') return 'ICMP Ping Probe';
+  if (t === 'expiry') return 'SSL & Domain Expiry';
   return 'Global HTTP Probe';
 }
 
 // ── Single Public Service Card with 7-Day Interactive Uptime Bar ────────────
 
-function renderServiceCard(m) {
+function renderServiceCard(m, groupName = '') {
   const isUp = m.current_status === 'UP';
   const isDown = m.current_status === 'DOWN';
   const isMaintenance = m.current_status === 'MAINTENANCE';
@@ -721,17 +807,33 @@ function renderServiceCard(m) {
     statusText = 'Degraded';
   }
 
-  const latencyText =
-    m.last_latency_ms !== null && m.last_latency_ms !== undefined
-      ? `${m.last_latency_ms} ms`
-      : '—';
+  const isExpiry = (m.check_type || '').toLowerCase() === 'expiry';
+  let minDaysRemaining = null;
+  if (m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
+    minDaysRemaining = m.domain_days_remaining;
+  }
+  if (m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
+    minDaysRemaining = minDaysRemaining === null ? m.ssl_days_remaining : Math.min(minDaysRemaining, m.ssl_days_remaining);
+  }
+
+  const latencyText = isExpiry
+    ? (minDaysRemaining !== null ? `${minDaysRemaining}d remaining` : '—')
+    : (m.last_latency_ms !== null && m.last_latency_ms !== undefined ? `${m.last_latency_ms} ms` : '—');
 
   // Generate 24-Hour Hourly Latency Breakdown Bars
   const latencyBarsHtml = generate24hLatencyBars(m);
   const avgLatencyText = getAverageLatencyText(m);
 
+  const searchTerms = [
+    m.name || '',
+    m.url || '',
+    m.check_type || '',
+    formatProbeLabel(m.check_type) || '',
+    groupName || ''
+  ].join(' ').toLowerCase();
+
   return `
-    <div data-action="open-detail" data-id="${m.id}" class="glass-card rounded-2xl p-5 sm:p-6 shadow-xl transition-all duration-200 hover:border-white/20 space-y-4 cursor-pointer">
+    <div data-action="open-detail" data-id="${m.id}" data-search-target="${escapeHtml(searchTerms)}" class="glass-card monitor-service-card rounded-2xl p-4 sm:p-5 pb-3.5 sm:pb-4 shadow-xl transition-all duration-200 hover:border-white/20 space-y-3 cursor-pointer">
       <!-- Card Header -->
       <div class="flex items-center justify-between gap-3">
         <div class="flex items-center gap-3 min-w-0">
@@ -757,8 +859,7 @@ function renderServiceCard(m) {
 
       <!-- 24-Hour Latency Breakdown Chart -->
       <div class="space-y-2 pt-2 border-t border-black/5 dark:border-white/5">
-        <div class="flex items-center justify-between text-xs text-white/60 font-mono">
-          <span>24-Hour Latency Breakdown</span>
+        <div class="flex items-center justify-end text-xs text-white/60 font-mono">
           <div class="flex items-center gap-3 text-white/60 font-mono text-[11px]">
             <span>Current: <strong class="text-white/80 font-mono">${latencyText}</strong></span>
             <span>24h Avg: <strong class="text-white/80 font-mono">${avgLatencyText}</strong></span>
@@ -775,12 +876,6 @@ function renderServiceCard(m) {
           <span>24h ago</span>
           <span>12h ago</span>
           <span>Now</span>
-        </div>
-
-        <!-- 24-Hour Percentiles Summary Row -->
-        <div class="flex flex-wrap items-center justify-between gap-2 pt-2.5 border-t border-black/5 dark:border-white/5">
-          <span class="text-[11px] text-white/50 font-mono">24h Response Percentiles</span>
-          ${renderPercentilePills(m.latency)}
         </div>
       </div>
     </div>
@@ -873,14 +968,23 @@ function generate24hLatencyBars(monitor) {
       const date = new Date(slot.timestamp);
       const timeStr = formatSlotTime(date);
 
-      let barColorClass = 'bg-[#0a84ff] hover:bg-[#30d158]';
+      let barColorClass = 'bg-[#30d158]';
       let heightPct = 12;
       let tooltip = '';
 
       if (slot.status === 'NO_DATA') {
-        barColorClass = 'bg-neutral-300 dark:bg-neutral-700/40';
+        barColorClass = 'bg-neutral-300 dark:bg-zinc-800';
         heightPct = 12;
         tooltip = `${timeStr} • No Data`;
+      } else if (slot.status === 'MAINTENANCE') {
+        barColorClass = 'bg-[#a855f7]';
+        heightPct = Math.max(
+          14,
+          Math.min(100, Math.round((slot.avg_latency_ms / maxLatency) * 100))
+        );
+        tooltip = `${timeStr} • Planned Maintenance (${
+          slot.avg_latency_ms > 0 ? slot.avg_latency_ms + ' ms' : 'Maintenance'
+        })`;
       } else if (slot.status === 'DOWN') {
         barColorClass = 'bg-[#ff453a]';
         heightPct = 100;
@@ -895,7 +999,7 @@ function generate24hLatencyBars(monitor) {
         );
         tooltip = `${timeStr} • Degraded (${slot.avg_latency_ms} ms)`;
       } else {
-        barColorClass = 'bg-[#0a84ff] hover:bg-[#30d158]';
+        barColorClass = 'bg-[#30d158]';
         heightPct = Math.max(
           14,
           Math.min(100, Math.round((slot.avg_latency_ms / maxLatency) * 100))
@@ -970,7 +1074,10 @@ function generate7DayBars(monitor) {
       let tooltip = `${formattedDate} • Operational (Uptime: 100.00%)`;
 
       if (i === 0) {
-        if (isDown || uptimeVal < 90.0) {
+        if (monitor.current_status === 'MAINTENANCE') {
+          barColorClass = 'bg-[#a855f7]';
+          tooltip = `${formattedDate} • Planned Maintenance`;
+        } else if (isDown || uptimeVal < 90.0) {
           barColorClass = 'bg-[#ff453a]';
           tooltip = `${formattedDate} • Outage (Uptime: ${uptimeVal.toFixed(2)}%)`;
         } else if (uptimeVal < 99.0) {
@@ -1213,6 +1320,7 @@ function renderDetailHourlySvg(hourlyList) {
       if (status === 'UP') fill = '#30D158';
       else if (status === 'DEGRADED') fill = '#FFD60A';
       else if (status === 'DOWN') fill = '#FF453A';
+      else if (status === 'MAINTENANCE') fill = '#A855F7';
 
       const barHeight = Math.max(4, Math.round((lat / maxLat) * 55));
       const x = idx * 20 + 3;
@@ -1460,9 +1568,37 @@ document.addEventListener('click', (e) => {
   }
 });
 
-// Escape key listener for detail modal
+// Keyboard shortcut listener (/ or ⌘K for search focus, Escape for modal/search)
 document.addEventListener('keydown', (e) => {
+  const searchContainer = document.getElementById('status-search-container');
+  const searchInput = document.getElementById('status-search-input');
+
+  const isCmdK = (e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k';
+  const isSlash = e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey;
+
+  const targetTag = e.target.tagName ? e.target.tagName.toLowerCase() : '';
+  const isEditing = targetTag === 'input' || targetTag === 'textarea' || e.target.isContentEditable;
+
+  if (searchContainer && !searchContainer.classList.contains('hidden') && searchInput) {
+    if (isCmdK || (isSlash && !isEditing)) {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+      return;
+    }
+  }
+
   if (e.key === 'Escape') {
+    if (searchInput && document.activeElement === searchInput) {
+      if (searchInput.value.length > 0) {
+        searchInput.value = '';
+        applyStatusSearchFilter();
+      } else {
+        searchInput.blur();
+      }
+      return;
+    }
+
     const detailModal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
     if (detailModal && !detailModal.classList.contains('hidden')) {
       closeMonitorDetailModal();

@@ -715,7 +715,18 @@ function updateSingleMonitorCardDOM(m) {
   }
 
   // Metrics
-  const latencyText = live && live.last_latency_ms !== null && live.last_latency_ms !== undefined ? `${live.last_latency_ms} ms` : '—';
+  const isExpiry = (m.check_type || '').toLowerCase() === 'expiry';
+  let minDaysRemaining = null;
+  if (m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
+    minDaysRemaining = m.domain_days_remaining;
+  }
+  if (m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
+    minDaysRemaining = minDaysRemaining === null ? m.ssl_days_remaining : Math.min(minDaysRemaining, m.ssl_days_remaining);
+  }
+
+  const latencyText = isExpiry
+    ? (minDaysRemaining !== null ? `${minDaysRemaining}d` : '—')
+    : (live && live.last_latency_ms !== null && live.last_latency_ms !== undefined ? `${live.last_latency_ms} ms` : '—');
   const uptimeText = live && live.uptime_24h !== undefined ? `${live.uptime_24h.toFixed(1)}%` : '100%';
 
   const latencyEl = el.querySelector('[data-metric="latency"]');
@@ -726,6 +737,23 @@ function updateSingleMonitorCardDOM(m) {
   const uptimeEl = el.querySelector('[data-metric="uptime"]');
   if (uptimeEl && uptimeEl.textContent !== uptimeText) {
     uptimeEl.textContent = uptimeText;
+  }
+
+  // Failing badge container update
+  const failingContainer = el.querySelector('[data-failing-container]');
+  if (failingContainer) {
+    const fails = m.current_consecutive_fails || 0;
+    const maxRetries = m.max_retries || 3;
+    if (fails > 0 && fails < maxRetries) {
+      failingContainer.innerHTML = `
+        <span data-badge="failing" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono font-medium bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30" title="${fails} of ${maxRetries} consecutive checks failing">
+          <span class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse"></span>
+          ${fails}/${maxRetries} failing
+        </span>
+      `;
+    } else {
+      failingContainer.innerHTML = '';
+    }
   }
 
   return true;
@@ -821,6 +849,8 @@ function renderProtocolBadge(type) {
     badgeStyle = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
   } else if (t === 'PING') {
     badgeStyle = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
+  } else if (t === 'EXPIRY') {
+    badgeStyle = 'bg-cyan-500/10 text-cyan-400 border-cyan-500/30 font-semibold';
   }
   return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border ${badgeStyle} shrink-0">${t}</span>`;
 }
@@ -852,16 +882,38 @@ function renderMonitorCard(m) {
     statusLabel = 'DEGRADED';
   }
 
-  const latencyText =
-    live && live.last_latency_ms !== null && live.last_latency_ms !== undefined
-      ? `${live.last_latency_ms} ms`
-      : '—';
+  const isExpiry = (m.check_type || '').toLowerCase() === 'expiry';
+  let minDaysRemaining = null;
+  if (m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
+    minDaysRemaining = m.domain_days_remaining;
+  }
+  if (m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
+    minDaysRemaining = minDaysRemaining === null ? m.ssl_days_remaining : Math.min(minDaysRemaining, m.ssl_days_remaining);
+  }
+
+  const metric1Label = isExpiry ? 'Days Left' : 'Latency';
+  const latencyText = isExpiry
+    ? (minDaysRemaining !== null ? `${minDaysRemaining}d` : '—')
+    : (live && live.last_latency_ms !== null && live.last_latency_ms !== undefined ? `${live.last_latency_ms} ms` : '—');
+  const intervalText = isExpiry ? (m.check_interval_secs >= 86400 ? 'Daily' : `${Math.round(m.check_interval_secs / 3600)}h`) : `${m.check_interval_secs}s`;
 
   const uptimeText =
     live && live.uptime_24h !== undefined ? `${live.uptime_24h.toFixed(1)}%` : '100%';
 
   const logs = logsCache[m.id] || [];
   const barsHtml = renderUptimeTickBars(logs);
+
+  const fails = m.current_consecutive_fails || 0;
+  const maxRetries = m.max_retries || 3;
+  let failingBadge = '';
+  if (fails > 0 && fails < maxRetries) {
+    failingBadge = `
+      <span data-badge="failing" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono font-medium bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30" title="${fails} of ${maxRetries} consecutive checks failing">
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse"></span>
+        ${fails}/${maxRetries} failing
+      </span>
+    `;
+  }
 
   return `
     <div id="monitor-card-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
@@ -873,9 +925,10 @@ function renderMonitorCard(m) {
             <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
           </span>
           <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2">
+            <div class="flex items-center gap-2 flex-wrap">
               <h3 class="font-semibold text-neutral-900 dark:text-white text-sm sm:text-base truncate tracking-tight leading-snug">${escapeHtml(m.name)}</h3>
               ${renderProtocolBadge(m.check_type)}
+              <span data-failing-container="true">${failingBadge}</span>
             </div>
             <p class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</p>
           </div>
@@ -888,7 +941,7 @@ function renderMonitorCard(m) {
       <!-- Metrics Row -->
       <div class="grid grid-cols-3 gap-2 py-2 border-y border-black/5 dark:border-white/5 text-center">
         <div>
-          <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Latency</div>
+          <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">${metric1Label}</div>
           <div data-metric="latency" class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${latencyText}</div>
         </div>
         <div>
@@ -897,7 +950,7 @@ function renderMonitorCard(m) {
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Interval</div>
-          <div class="text-sm font-semibold text-neutral-700 dark:text-white/80 font-mono mt-0.5">${m.check_interval_secs}s</div>
+          <div class="text-sm font-semibold text-neutral-700 dark:text-white/80 font-mono mt-0.5">${intervalText}</div>
         </div>
       </div>
 
@@ -979,10 +1032,31 @@ function renderMonitorListRow(m) {
     statusLabel = 'DEGRADED';
   }
 
-  const latencyText =
-    live && live.last_latency_ms !== null && live.last_latency_ms !== undefined
-      ? `${live.last_latency_ms} ms`
-      : '—';
+  const isExpiry = (m.check_type || '').toLowerCase() === 'expiry';
+  let minDaysRemaining = null;
+  if (m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
+    minDaysRemaining = m.domain_days_remaining;
+  }
+  if (m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
+    minDaysRemaining = minDaysRemaining === null ? m.ssl_days_remaining : Math.min(minDaysRemaining, m.ssl_days_remaining);
+  }
+
+  const latencyText = isExpiry
+    ? (minDaysRemaining !== null ? `${minDaysRemaining}d remaining` : '—')
+    : (live && live.last_latency_ms !== null && live.last_latency_ms !== undefined ? `${live.last_latency_ms} ms` : '—');
+  const intervalText = isExpiry ? (m.check_interval_secs >= 86400 ? 'Daily' : `${Math.round(m.check_interval_secs / 3600)}h`) : `${m.check_interval_secs}s`;
+
+  const fails = m.current_consecutive_fails || 0;
+  const maxRetries = m.max_retries || 3;
+  let failingBadge = '';
+  if (fails > 0 && fails < maxRetries) {
+    failingBadge = `
+      <span data-badge="failing" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono font-medium bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30" title="${fails} of ${maxRetries} consecutive checks failing">
+        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse"></span>
+        ${fails}/${maxRetries} failing
+      </span>
+    `;
+  }
 
   return `
     <div id="monitor-row-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
@@ -995,9 +1069,10 @@ function renderMonitorListRow(m) {
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
         </span>
         <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2">
+          <div class="flex items-center gap-2 flex-wrap">
             <span class="font-semibold text-neutral-900 dark:text-white text-sm truncate tracking-tight">${escapeHtml(m.name)}</span>
             ${renderProtocolBadge(m.check_type)}
+            <span data-failing-container="true">${failingBadge}</span>
           </div>
           <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</div>
         </div>
@@ -1006,7 +1081,7 @@ function renderMonitorListRow(m) {
       <div class="flex items-center justify-between sm:justify-end gap-4 font-mono text-xs shrink-0">
         <div class="text-right">
           <span data-metric="latency" class="text-neutral-900 dark:text-white font-medium">${latencyText}</span>
-          <span class="text-neutral-500 dark:text-white/40 text-[10px] ml-1">(${m.check_interval_secs}s)</span>
+          <span class="text-neutral-500 dark:text-white/40 text-[10px] ml-1">(${intervalText})</span>
         </div>
 
         <div class="flex items-center gap-1.5 shrink-0">
@@ -1769,6 +1844,7 @@ function renderDetailHourlySvg(hourlyList) {
       if (status === 'UP') fill = '#30D158';
       else if (status === 'DEGRADED') fill = '#FFD60A';
       else if (status === 'DOWN') fill = '#FF453A';
+      else if (status === 'MAINTENANCE') fill = '#A855F7';
 
       const barHeight = Math.max(4, Math.round((lat / maxLat) * 55));
       const x = idx * 20 + 3;
@@ -1826,6 +1902,19 @@ function renderMonitorDetailData(data) {
     }
   }
 
+  const failsBadge = document.getElementById('detail-modal-fails-badge');
+  if (failsBadge) {
+    const fails = m.current_consecutive_fails || 0;
+    const maxRetries = m.max_retries || 3;
+    if (fails > 0) {
+      failsBadge.classList.remove('hidden');
+      failsBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20';
+      failsBadge.textContent = `⚠️ ${fails}/${maxRetries} failing`;
+    } else {
+      failsBadge.classList.add('hidden');
+    }
+  }
+
   const domainBadge = document.getElementById('detail-modal-domain-badge');
   if (domainBadge) {
     if (m.check_domain_expiry && m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
@@ -1865,6 +1954,108 @@ function renderMonitorDetailData(data) {
       }
     } else {
       sslBadge.classList.add('hidden');
+    }
+  }
+
+  const caaBadge = document.getElementById('detail-modal-caa-badge');
+  if (caaBadge) {
+    if (m.caa_status) {
+      caaBadge.classList.remove('hidden');
+      if (m.caa_status === 'VALID') {
+        caaBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-emerald-500/15 text-emerald-400 border-emerald-500/20';
+        caaBadge.textContent = '🛡️ CAA Valid';
+      } else if (m.caa_status === 'UNRESTRICTED') {
+        caaBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10';
+        caaBadge.textContent = '🛡️ CAA Unrestricted';
+      } else if (m.caa_status === 'MISMATCH') {
+        caaBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20 animate-pulse';
+        caaBadge.textContent = '🚨 CAA Mismatch';
+      } else {
+        caaBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-400 border-white/10';
+        caaBadge.textContent = `🛡️ CAA ${m.caa_status}`;
+      }
+    } else {
+      caaBadge.classList.add('hidden');
+    }
+  }
+
+  // 2. SSL Security & CA Certificate Card
+  const sslCard = document.getElementById('detail-ssl-security-card');
+  if (sslCard) {
+    const hasSslData = Boolean(m.ssl_issuer || m.caa_status || m.ssl_expires_at || m.check_ssl || (m.check_type && m.check_type.toLowerCase() === 'expiry'));
+    if (hasSslData) {
+      sslCard.classList.remove('hidden');
+      const caaPill = document.getElementById('detail-caa-status-pill');
+      if (caaPill) {
+        if (m.caa_status === 'VALID') {
+          caaPill.className = 'px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-emerald-500/15 text-emerald-400 border-emerald-500/20';
+          caaPill.textContent = 'CAA Valid';
+        } else if (m.caa_status === 'UNRESTRICTED') {
+          caaPill.className = 'px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-white/5 text-neutral-300 border-white/10';
+          caaPill.textContent = 'CAA Unrestricted';
+        } else if (m.caa_status === 'MISMATCH') {
+          caaPill.className = 'px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-rose-500/15 text-rose-400 border-rose-500/20 animate-pulse';
+          caaPill.textContent = 'CAA Mismatch';
+        } else {
+          caaPill.className = 'px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-neutral-500/15 text-neutral-400 border-neutral-500/20';
+          caaPill.textContent = m.caa_status || 'CAA Unknown';
+        }
+      }
+
+      const issuerEl = document.getElementById('detail-ssl-issuer');
+      const algoEl = document.getElementById('detail-ssl-algo');
+      const serialEl = document.getElementById('detail-ssl-serial');
+      const sansEl = document.getElementById('detail-ssl-sans');
+      const issuedEl = document.getElementById('detail-ssl-issued');
+      const expiresEl = document.getElementById('detail-ssl-expires');
+      const caaDetailsEl = document.getElementById('detail-caa-details');
+
+      if (issuerEl) issuerEl.textContent = m.ssl_issuer || '—';
+      if (algoEl) algoEl.textContent = m.ssl_signature_algorithm || '—';
+      if (serialEl) serialEl.textContent = m.ssl_serial_number || '—';
+      if (sansEl) {
+        if (m.ssl_sans) {
+          const sanList = m.ssl_sans.split(',').map((s) => s.trim()).filter(Boolean);
+          sansEl.textContent = sanList.length > 3 ? `${sanList.slice(0, 3).join(', ')} (+${sanList.length - 3} more)` : m.ssl_sans;
+          sansEl.title = m.ssl_sans;
+        } else {
+          sansEl.textContent = '—';
+          sansEl.title = '';
+        }
+      }
+
+      if (issuedEl) {
+        if (m.ssl_issued_at) {
+          try {
+            issuedEl.textContent = new Date(m.ssl_issued_at).toLocaleDateString();
+          } catch (_) {
+            issuedEl.textContent = m.ssl_issued_at;
+          }
+        } else {
+          issuedEl.textContent = '—';
+        }
+      }
+
+      if (expiresEl) {
+        if (m.ssl_expires_at) {
+          let expFormatted = m.ssl_expires_at;
+          try {
+            expFormatted = new Date(m.ssl_expires_at).toLocaleDateString();
+          } catch (_) {}
+          expiresEl.textContent = m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined
+            ? `${expFormatted} (${m.ssl_days_remaining}d left)`
+            : expFormatted;
+        } else {
+          expiresEl.textContent = '—';
+        }
+      }
+
+      if (caaDetailsEl) {
+        caaDetailsEl.textContent = m.caa_details || (m.caa_status === 'UNRESTRICTED' ? 'No CAA records present (all CAs allowed)' : '—');
+        caaDetailsEl.title = m.caa_details || '';
+      }
+    } else {
+      sslCard.classList.add('hidden');
     }
   }
 
@@ -1918,18 +2109,25 @@ function renderMonitorDetailData(data) {
       const isUp = log.is_up;
       const statusNum = log.status_code;
       const is2xx = statusNum && statusNum >= 200 && statusNum < 300;
+      const isCaaMismatch = log.caa_status === 'MISMATCH';
 
-      const rowClass = isUp && is2xx
-        ? 'hover:bg-white/5 transition'
-        : 'bg-rose-500/10 hover:bg-rose-500/15 text-rose-200 transition';
+      const rowClass = isCaaMismatch
+        ? 'bg-rose-500/20 hover:bg-rose-500/25 border-l-2 border-rose-500 text-rose-200 transition'
+        : (isUp && is2xx
+          ? 'hover:bg-white/5 transition'
+          : 'bg-rose-500/10 hover:bg-rose-500/15 text-rose-200 transition');
 
       const statusTag = is2xx
         ? `<span class="text-emerald-400 font-semibold">${statusNum}</span>`
         : `<span class="text-rose-400 font-semibold">${statusNum || '—'}</span>`;
 
-      const resultTag = isUp
+      let resultTag = isUp
         ? '<span class="text-emerald-400">UP</span>'
         : `<span class="text-rose-400 font-semibold">${log.error_message ? escapeHtml(log.error_message) : 'Check Failed'}</span>`;
+
+      if (isCaaMismatch) {
+        resultTag = `<span class="text-rose-400 font-semibold flex items-center gap-1.5"><span class="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[9px] font-mono uppercase">CAA MISMATCH</span> <span>${log.error_message ? escapeHtml(log.error_message) : 'Unauthorized CA'}</span></span>`;
+      }
 
       let dateStr = log.created_at;
       try {
@@ -2354,15 +2552,18 @@ function switchAdminView(view) {
   const monitorsPanel = document.getElementById('monitors-panel');
   const assetExpiryPanel = document.getElementById('asset-expiry-panel');
   const channelsPanel = document.getElementById('channels-panel');
+  const diagnosticsPanel = document.getElementById('diagnostics-panel');
   const navMonitorsBtn = document.getElementById('nav-btn-monitors');
   const navStatusPagesBtn = document.getElementById('nav-btn-status-pages');
   const navAssetsBtn = document.getElementById('nav-btn-assets');
   const navChannelsBtn = document.getElementById('nav-btn-channels');
   const navMaintenanceBtn = document.getElementById('nav-btn-maintenance');
+  const navDiagnosticsBtn = document.getElementById('nav-btn-diagnostics');
 
   if (monitorsPanel) monitorsPanel.classList.add('hidden');
   if (assetExpiryPanel) assetExpiryPanel.classList.add('hidden');
   if (channelsPanel) channelsPanel.classList.add('hidden');
+  if (diagnosticsPanel) diagnosticsPanel.classList.add('hidden');
 
   const inactiveBtnClass = 'h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
   const activeBtnClass = 'h-8 px-3 rounded-lg transition bg-white/15 text-white border border-white/20 shadow-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
@@ -2372,6 +2573,7 @@ function switchAdminView(view) {
   if (navAssetsBtn) navAssetsBtn.className = inactiveBtnClass;
   if (navChannelsBtn) navChannelsBtn.className = inactiveBtnClass;
   if (navMaintenanceBtn) navMaintenanceBtn.className = inactiveBtnClass;
+  if (navDiagnosticsBtn) navDiagnosticsBtn.className = inactiveBtnClass;
 
   if (view === 'assets') {
     if (assetExpiryPanel) assetExpiryPanel.classList.remove('hidden');
@@ -2381,6 +2583,10 @@ function switchAdminView(view) {
     if (channelsPanel) channelsPanel.classList.remove('hidden');
     if (navChannelsBtn) navChannelsBtn.className = activeBtnClass;
     loadNotificationChannels(true);
+  } else if (view === 'diagnostics') {
+    if (diagnosticsPanel) diagnosticsPanel.classList.remove('hidden');
+    if (navDiagnosticsBtn) navDiagnosticsBtn.className = activeBtnClass;
+    loadMemoryDiagnostics(true);
   } else {
     if (monitorsPanel) monitorsPanel.classList.remove('hidden');
     if (navMonitorsBtn) navMonitorsBtn.className = activeBtnClass;
@@ -3116,6 +3322,218 @@ async function submitChannelForm(e) {
 }
 window.submitChannelForm = submitChannelForm;
 
+// ── System & Memory Diagnostics Engine ──────────────────────────────────────
+
+let isDiagnosticsLoading = false;
+let isPurgingArena = false;
+let isDumpingHeap = false;
+
+function formatBytes(bytes) {
+  if (bytes === null || bytes === undefined || isNaN(bytes)) return '—';
+  if (bytes === 0) return '0 B';
+  const k = 1024;
+  const sizes = ['B', 'KB', 'MB', 'GB', 'TB'];
+  const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
+  const val = (bytes / Math.pow(k, i)).toFixed(i === 0 ? 0 : 2);
+  return `${val} ${sizes[i]}`;
+}
+window.formatBytes = formatBytes;
+
+async function loadMemoryDiagnostics(showLoader = true) {
+  if (isDiagnosticsLoading) return;
+  isDiagnosticsLoading = true;
+
+  const refreshIcon = document.getElementById('mem-refresh-icon');
+  if (refreshIcon && showLoader) {
+    refreshIcon.classList.add('animate-spin');
+  }
+
+  try {
+    const res = await apiFetch('/api/admin/diagnostics/memory');
+    if (!res || !res.ok) {
+      console.warn('Failed to fetch memory diagnostics:', res?.status);
+      return;
+    }
+
+    const stats = await res.json();
+    renderMemoryDiagnostics(stats);
+  } catch (err) {
+    console.error('Error fetching memory diagnostics:', err);
+  } finally {
+    isDiagnosticsLoading = false;
+    if (refreshIcon) {
+      refreshIcon.classList.remove('animate-spin');
+    }
+  }
+}
+window.loadMemoryDiagnostics = loadMemoryDiagnostics;
+
+function renderMemoryDiagnostics(stats) {
+  if (!stats) return;
+
+  const rssEl = document.getElementById('mem-stat-rss');
+  const activeEl = document.getElementById('mem-stat-active');
+  const allocEl = document.getElementById('mem-stat-allocated');
+  const fragEl = document.getElementById('mem-stat-fragmentation');
+  const mappedEl = document.getElementById('mem-stat-mapped');
+  const retainedEl = document.getElementById('mem-stat-retained');
+  const driverEl = document.getElementById('mem-stat-driver');
+  const allocatorEl = document.getElementById('mem-stat-allocator');
+  const tsEl = document.getElementById('mem-stat-timestamp');
+
+  if (rssEl) rssEl.textContent = formatBytes(stats.resident_bytes);
+  if (activeEl) activeEl.textContent = formatBytes(stats.active_bytes);
+  if (allocEl) allocEl.textContent = formatBytes(stats.allocated_bytes);
+  if (fragEl) {
+    const pct = typeof stats.fragmentation_pct === 'number' ? stats.fragmentation_pct.toFixed(1) : stats.fragmentation_pct;
+    fragEl.textContent = `${pct}%`;
+  }
+  if (mappedEl) mappedEl.textContent = formatBytes(stats.mapped_bytes);
+  if (retainedEl) retainedEl.textContent = formatBytes(stats.retained_bytes);
+  if (driverEl) driverEl.textContent = stats.allocator || 'jemalloc';
+  if (allocatorEl) allocatorEl.textContent = (stats.allocator || 'jemalloc').toUpperCase();
+  if (tsEl && stats.timestamp) {
+    try {
+      tsEl.textContent = new Date(stats.timestamp).toLocaleTimeString();
+    } catch (_) {
+      tsEl.textContent = stats.timestamp;
+    }
+  }
+}
+window.renderMemoryDiagnostics = renderMemoryDiagnostics;
+
+async function purgeMemoryArena() {
+  if (isPurgingArena) return;
+  isPurgingArena = true;
+
+  const btn = document.getElementById('mem-purge-btn');
+  const icon = document.getElementById('mem-purge-icon');
+  const feedback = document.getElementById('mem-action-feedback');
+  const feedbackText = document.getElementById('mem-action-feedback-text');
+
+  if (btn) btn.disabled = true;
+  if (icon) icon.classList.add('animate-spin');
+
+  try {
+    const res = await apiFetch('/api/admin/diagnostics/memory/purge', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+
+    if (res && res.ok && data.success) {
+      const freedStr = formatBytes(data.bytes_freed);
+      const msg = `Memory arena purge completed: ${freedStr} returned to OS`;
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Arena Purged',
+          message: msg,
+          type: 'success',
+        });
+      }
+      if (feedback && feedbackText) {
+        feedback.classList.remove('hidden');
+        feedbackText.textContent = `${msg}. Pre-purge: ${formatBytes(data.pre_purge?.resident_bytes)} RSS → Post-purge: ${formatBytes(data.post_purge?.resident_bytes)} RSS.`;
+      }
+      if (data.post_purge) {
+        renderMemoryDiagnostics(data.post_purge);
+      }
+    } else {
+      const errMsg = data.message || 'Failed to execute memory purge';
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Purge Failed',
+          message: errMsg,
+          type: 'error',
+        });
+      }
+      if (feedback && feedbackText) {
+        feedback.classList.remove('hidden');
+        feedbackText.textContent = `Error: ${errMsg}`;
+      }
+    }
+  } catch (err) {
+    const errMsg = err.message || 'Network error executing purge';
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Purge Error',
+        message: errMsg,
+        type: 'error',
+      });
+    }
+    if (feedback && feedbackText) {
+      feedback.classList.remove('hidden');
+      feedbackText.textContent = `Error: ${errMsg}`;
+    }
+  } finally {
+    isPurgingArena = false;
+    if (btn) btn.disabled = false;
+    if (icon) icon.classList.remove('animate-spin');
+  }
+}
+window.purgeMemoryArena = purgeMemoryArena;
+
+async function generateHeapSnapshot() {
+  if (isDumpingHeap) return;
+  isDumpingHeap = true;
+
+  const btn = document.getElementById('mem-dump-btn');
+  const icon = document.getElementById('mem-dump-icon');
+  const feedback = document.getElementById('mem-action-feedback');
+  const feedbackText = document.getElementById('mem-action-feedback-text');
+
+  if (btn) btn.disabled = true;
+  if (icon) icon.classList.add('animate-spin');
+
+  try {
+    const res = await apiFetch('/api/admin/diagnostics/memory/heap-dump', { method: 'POST' });
+    const data = await res.json().catch(() => ({}));
+
+    if (res && res.ok && data.success) {
+      const msg = `Heap snapshot saved to: ${data.file_path}`;
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Heap Snapshot Generated',
+          message: `Profile captured: ${data.file_name}`,
+          type: 'success',
+        });
+      }
+      if (feedback && feedbackText) {
+        feedback.classList.remove('hidden');
+        feedbackText.textContent = `${msg} (Ready for jeprof analysis)`;
+      }
+    } else {
+      const errMsg = data.message || 'Failed to capture heap profile';
+      if (typeof showToast === 'function') {
+        showToast({
+          title: 'Snapshot Failed',
+          message: errMsg,
+          type: 'error',
+        });
+      }
+      if (feedback && feedbackText) {
+        feedback.classList.remove('hidden');
+        feedbackText.textContent = `Error: ${errMsg}`;
+      }
+    }
+  } catch (err) {
+    const errMsg = err.message || 'Network error triggering heap snapshot';
+    if (typeof showToast === 'function') {
+      showToast({
+        title: 'Snapshot Error',
+        message: errMsg,
+        type: 'error',
+      });
+    }
+    if (feedback && feedbackText) {
+      feedback.classList.remove('hidden');
+      feedbackText.textContent = `Error: ${errMsg}`;
+    }
+  } finally {
+    isDumpingHeap = false;
+    if (btn) btn.disabled = false;
+    if (icon) icon.classList.remove('animate-spin');
+  }
+}
+window.generateHeapSnapshot = generateHeapSnapshot;
+
 // ── Initialization & Auto-Refresh Loop (Every 5 seconds) ─────────────────────
 
 document.addEventListener('DOMContentLoaded', () => {
@@ -3180,15 +3598,45 @@ document.addEventListener('DOMContentLoaded', () => {
         closeChannelModal();
         return;
       }
-    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
-      const searchInput = document.getElementById('search-input');
-      if (searchInput) {
+    } else if (
+      ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') ||
+      (e.key === '/' && !e.metaKey && !e.ctrlKey && !e.altKey && document.activeElement && document.activeElement.tagName !== 'INPUT' && document.activeElement.tagName !== 'TEXTAREA')
+    ) {
+      const searchInput = document.getElementById('search-input') || document.getElementById('status-search-input');
+      if (searchInput && !searchInput.closest('.hidden')) {
         e.preventDefault();
         searchInput.focus();
         searchInput.select();
       }
     }
   });
+
+  // Public status page search delegates (if app.js is present or bundled)
+  if (typeof window.applyStatusSearchFilter !== 'function') {
+    window.applyStatusSearchFilter = function () {
+      if (typeof window.filterMonitors === 'function') {
+        window.filterMonitors();
+      }
+    };
+  }
+  if (typeof window.clearStatusSearch !== 'function') {
+    window.clearStatusSearch = function () {
+      const input = document.getElementById('status-search-input') || document.getElementById('search-input');
+      if (input) {
+        input.value = '';
+        if (typeof window.applyStatusSearchFilter === 'function') window.applyStatusSearchFilter();
+        input.focus();
+      }
+    };
+  }
+
+  if (typeof window.submitMonitorForm !== 'function') {
+    window.submitMonitorForm = function (e) {
+      if (typeof window.handleMonitorSubmit === 'function') {
+        return window.handleMonitorSubmit(e);
+      }
+    };
+  }
 
   const isAuthOrStatusPage =
     window.location.pathname.includes('login') ||
@@ -3205,6 +3653,8 @@ document.addEventListener('DOMContentLoaded', () => {
         loadAssetExpiryData(false);
       } else if (currentAdminView === 'channels') {
         loadNotificationChannels(false);
+      } else if (currentAdminView === 'diagnostics') {
+        loadMemoryDiagnostics(false);
       } else {
         fetchDashboardData(false);
       }

@@ -7,12 +7,14 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Stage 2: Dependency Builder
 FROM lukemathwalker/cargo-chef:latest-rust-alpine AS builder
 WORKDIR /app
-RUN apk add --no-cache build-base musl-dev sqlite-dev pkgconfig
+RUN apk add --no-cache build-base musl-dev sqlite-dev pkgconfig perl make bash linux-headers
+ENV JEMALLOC_SYS_WITH_LG_PAGE=16
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 # Stage 3: Application Compiler
 COPY . .
+ENV JEMALLOC_SYS_WITH_LG_PAGE=16
 RUN cargo build --release --bin keepup
 
 # Final minimal & secure runtime image
@@ -22,7 +24,7 @@ FROM alpine:3.21 AS runtime
 RUN apk upgrade --no-cache && \
     apk add --no-cache ca-certificates tzdata && \
     addgroup -S keepup && adduser -S keepup -G keepup && \
-    mkdir -p /data /app && \
+    mkdir -p /data/profiles /data /app && \
     chown -R keepup:keepup /data /app
 
 WORKDIR /app
@@ -34,6 +36,7 @@ USER keepup
 
 ENV PORT=8080
 ENV KEEPUP_DB_PATH=/data/keepup.db
+ENV MALLOC_CONF="prof:true,prof_active:true"
 EXPOSE 8080
 
 ENTRYPOINT ["/app/keepup"]

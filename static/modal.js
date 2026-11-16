@@ -86,10 +86,47 @@ function toggleSslWarningInput() {
 }
 window.toggleSslWarningInput = toggleSslWarningInput;
 
+function sanitizeDomainTarget(target) {
+  let s = (target || '').trim();
+  if (s.includes('://')) {
+    s = s.split('://')[1];
+  } else if (s.startsWith('//')) {
+    s = s.slice(2);
+  }
+  s = s.split('/')[0];
+  s = s.split('?')[0];
+  s = s.split('#')[0];
+  if (s.includes('@')) {
+    s = s.split('@').pop();
+  }
+  if (s.includes(':')) {
+    s = s.split(':')[0];
+  }
+  return s.trim().replace(/\.+$/, '').toLowerCase();
+}
+window.sanitizeDomainTarget = sanitizeDomainTarget;
+
 function validateUrlInput(input) {
   const indicator = document.getElementById('url-validation-indicator');
   if (!indicator) return;
   const val = (input?.value || '').trim();
+  const type = (document.getElementById('m-type')?.value || 'http').toLowerCase();
+
+  if (type === 'expiry') {
+    if (!val) {
+      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-white/30"></span><span class="text-white/40">DOMAIN / HOST</span>`;
+      return;
+    }
+    const clean = sanitizeDomainTarget(val);
+    const domainRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
+    if (clean && (clean === 'localhost' || (clean.includes('.') && domainRegex.test(clean)))) {
+      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#30d158]"></span><span class="text-[#30d158] font-semibold">VALID DOMAIN</span>`;
+    } else {
+      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span><span class="text-amber-400">ENTER FQDN / HOST</span>`;
+    }
+    return;
+  }
+
   if (!val) {
     indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-white/30"></span><span class="text-white/40">HTTP / HTTPS</span>`;
     return;
@@ -119,42 +156,126 @@ function handleMonitorTypeChange(type) {
   const urlDesc = document.getElementById('m-url-desc');
   const tcpFields = document.getElementById('m-tcp-fields');
   const dnsFields = document.getElementById('m-dns-fields');
+  const expiryFields = document.getElementById('m-expiry-fields');
+  const timingFields = document.getElementById('m-timing-fields');
   const httpSecurityOptions = document.getElementById('m-http-security-options');
 
-  if (t === 'tcp') {
-    if (urlLabel) urlLabel.textContent = 'Host / IP Address';
-    if (urlInput) urlInput.placeholder = 'e.g. db.example.com or 192.168.1.100';
-    if (urlIndicator) urlIndicator.classList.add('hidden');
-    if (urlDesc) urlDesc.textContent = 'Target hostname or IP address without protocol';
-    if (tcpFields) tcpFields.classList.remove('hidden');
-    if (dnsFields) dnsFields.classList.add('hidden');
-    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
-  } else if (t === 'dns') {
-    if (urlLabel) urlLabel.textContent = 'Domain / Hostname';
-    if (urlInput) urlInput.placeholder = 'e.g. example.com or one.one.one.one';
-    if (urlIndicator) urlIndicator.classList.add('hidden');
-    if (urlDesc) urlDesc.textContent = 'Target domain name to resolve via DNS queries';
-    if (tcpFields) tcpFields.classList.add('hidden');
-    if (dnsFields) dnsFields.classList.remove('hidden');
-    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
-  } else if (t === 'ping') {
-    if (urlLabel) urlLabel.textContent = 'Target Host / IP Address';
-    if (urlInput) urlInput.placeholder = 'e.g. 8.8.8.8 or router.local';
-    if (urlIndicator) urlIndicator.classList.add('hidden');
-    if (urlDesc) urlDesc.textContent = 'Target host or IPv4/IPv6 address to probe via ICMP ping';
+  const domainExpiryEl = document.getElementById('m-domain-expiry');
+  const domainLabel = document.getElementById('m-domain-expiry-label') || domainExpiryEl?.closest('label');
+  const domainLockBadge = document.getElementById('m-domain-lock-badge');
+  const domainWarningContainer = document.getElementById('m-domain-warning-container');
+
+  const sslEl = document.getElementById('m-ssl');
+  const sslLabel = document.getElementById('m-ssl-label') || sslEl?.closest('label');
+  const sslLockBadge = document.getElementById('m-ssl-lock-badge');
+  const sslWarningContainer = document.getElementById('m-ssl-warning-container');
+
+  if (t === 'expiry') {
+    if (urlLabel) urlLabel.textContent = 'Target Domain / Host';
+    if (urlInput) urlInput.placeholder = 'e.g. example.com or api.example.com';
+    if (urlIndicator) {
+      urlIndicator.classList.remove('hidden');
+      validateUrlInput(urlInput);
+    }
+    if (urlDesc) urlDesc.textContent = 'Accepts bare domain names or HTTPS endpoints';
     if (tcpFields) tcpFields.classList.add('hidden');
     if (dnsFields) dnsFields.classList.add('hidden');
-    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
-  } else {
-    // http
-    if (urlLabel) urlLabel.textContent = 'Target URL';
-    if (urlInput) urlInput.placeholder = 'https://api.example.com/health';
-    if (urlIndicator) urlIndicator.classList.remove('hidden');
-    if (urlDesc) urlDesc.textContent = 'Accepts standard HTTPS or HTTP endpoints with custom ports';
-    if (tcpFields) tcpFields.classList.add('hidden');
-    if (dnsFields) dnsFields.classList.add('hidden');
+    if (expiryFields) expiryFields.classList.remove('hidden');
+    if (timingFields) timingFields.classList.add('hidden');
     if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
-    if (urlInput) validateUrlInput(urlInput);
+
+    // Auto-activate & disable lock state for expiry toggles
+    if (domainExpiryEl) {
+      domainExpiryEl.checked = true;
+      domainExpiryEl.disabled = true;
+    }
+    if (domainLabel) {
+      domainLabel.classList.remove('cursor-pointer');
+      domainLabel.classList.add('cursor-not-allowed', 'opacity-70');
+      domainLabel.title = 'Required for SSL & Domain Expiry monitor type';
+    }
+    if (domainLockBadge) domainLockBadge.classList.remove('hidden');
+    if (domainWarningContainer) domainWarningContainer.classList.add('hidden');
+
+    if (sslEl) {
+      sslEl.checked = true;
+      sslEl.disabled = true;
+    }
+    if (sslLabel) {
+      sslLabel.classList.remove('cursor-pointer');
+      sslLabel.classList.add('cursor-not-allowed', 'opacity-70');
+      sslLabel.title = 'Required for SSL & Domain Expiry monitor type';
+    }
+    if (sslLockBadge) sslLockBadge.classList.remove('hidden');
+    if (sslWarningContainer) sslWarningContainer.classList.add('hidden');
+
+  } else {
+    // Unlock toggles for all other monitor types
+    if (domainExpiryEl) {
+      domainExpiryEl.disabled = false;
+    }
+    if (domainLabel) {
+      domainLabel.classList.remove('cursor-not-allowed', 'opacity-70');
+      domainLabel.classList.add('cursor-pointer');
+      domainLabel.removeAttribute('title');
+    }
+    if (domainLockBadge) domainLockBadge.classList.add('hidden');
+    toggleDomainWarningInput();
+
+    if (sslEl) {
+      sslEl.disabled = false;
+    }
+    if (sslLabel) {
+      sslLabel.classList.remove('cursor-not-allowed', 'opacity-70');
+      sslLabel.classList.add('cursor-pointer');
+      sslLabel.removeAttribute('title');
+    }
+    if (sslLockBadge) sslLockBadge.classList.add('hidden');
+    toggleSslWarningInput();
+
+    if (t === 'tcp') {
+      if (urlLabel) urlLabel.textContent = 'Host / IP Address';
+      if (urlInput) urlInput.placeholder = 'e.g. db.example.com or 192.168.1.100';
+      if (urlIndicator) urlIndicator.classList.add('hidden');
+      if (urlDesc) urlDesc.textContent = 'Target hostname or IP address without protocol';
+      if (tcpFields) tcpFields.classList.remove('hidden');
+      if (dnsFields) dnsFields.classList.add('hidden');
+      if (expiryFields) expiryFields.classList.add('hidden');
+      if (timingFields) timingFields.classList.remove('hidden');
+      if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+    } else if (t === 'dns') {
+      if (urlLabel) urlLabel.textContent = 'Domain / Hostname';
+      if (urlInput) urlInput.placeholder = 'e.g. example.com or one.one.one.one';
+      if (urlIndicator) urlIndicator.classList.add('hidden');
+      if (urlDesc) urlDesc.textContent = 'Target domain name to resolve via DNS queries';
+      if (tcpFields) tcpFields.classList.add('hidden');
+      if (dnsFields) dnsFields.classList.remove('hidden');
+      if (expiryFields) expiryFields.classList.add('hidden');
+      if (timingFields) timingFields.classList.remove('hidden');
+      if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+    } else if (t === 'ping') {
+      if (urlLabel) urlLabel.textContent = 'Target Host / IP Address';
+      if (urlInput) urlInput.placeholder = 'e.g. 8.8.8.8 or router.local';
+      if (urlIndicator) urlIndicator.classList.add('hidden');
+      if (urlDesc) urlDesc.textContent = 'Target host or IPv4/IPv6 address to probe via ICMP ping';
+      if (tcpFields) tcpFields.classList.add('hidden');
+      if (dnsFields) dnsFields.classList.add('hidden');
+      if (expiryFields) expiryFields.classList.add('hidden');
+      if (timingFields) timingFields.classList.remove('hidden');
+      if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+    } else {
+      // http
+      if (urlLabel) urlLabel.textContent = 'Target URL';
+      if (urlInput) urlInput.placeholder = 'https://api.example.com/health';
+      if (urlIndicator) urlIndicator.classList.remove('hidden');
+      if (urlDesc) urlDesc.textContent = 'Accepts standard HTTPS or HTTP endpoints with custom ports';
+      if (tcpFields) tcpFields.classList.add('hidden');
+      if (dnsFields) dnsFields.classList.add('hidden');
+      if (expiryFields) expiryFields.classList.add('hidden');
+      if (timingFields) timingFields.classList.remove('hidden');
+      if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
+      if (urlInput) validateUrlInput(urlInput);
+    }
   }
 }
 window.handleMonitorTypeChange = handleMonitorTypeChange;
@@ -195,15 +316,22 @@ function openEditMonitorModal(data) {
 
     document.getElementById('m-interval').value = monitor.check_interval_secs;
     document.getElementById('m-timeout').value = monitor.timeout_secs;
-    document.getElementById('m-retries').value = monitor.max_retries;
+    const retriesEl = document.getElementById('monitor-max-retries') || document.getElementById('m-retries');
+    if (retriesEl) retriesEl.value = (monitor.max_retries !== undefined && monitor.max_retries !== null) ? monitor.max_retries : 3;
     document.getElementById('m-active').checked = monitor.is_active === 1;
     document.getElementById('m-public').checked = monitor.is_public === 1;
 
     const domainExpiryEl = document.getElementById('m-domain-expiry');
     const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
     if (domainExpiryEl) {
-      domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
-      toggleDomainWarningInput();
+      if (checkType === 'expiry') {
+        domainExpiryEl.checked = true;
+        domainExpiryEl.disabled = true;
+      } else {
+        domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
+        domainExpiryEl.disabled = false;
+        toggleDomainWarningInput();
+      }
     }
     if (domainWarningDaysEl) {
       domainWarningDaysEl.value = monitor.domain_warning_days || 30;
@@ -212,11 +340,21 @@ function openEditMonitorModal(data) {
     const sslEl = document.getElementById('m-ssl');
     const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
     if (sslEl) {
-      sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
-      toggleSslWarningInput();
+      if (checkType === 'expiry') {
+        sslEl.checked = true;
+        sslEl.disabled = true;
+      } else {
+        sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
+        sslEl.disabled = false;
+        toggleSslWarningInput();
+      }
     }
     if (sslWarningDaysEl) {
       sslWarningDaysEl.value = monitor.ssl_warning_days || 30;
+    }
+    const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
+    if (expiryThresholdEl) {
+      expiryThresholdEl.value = monitor.expiry_threshold_days || 30;
     }
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
@@ -241,7 +379,8 @@ function openEditMonitorModal(data) {
 
     document.getElementById('m-interval').value = 60;
     document.getElementById('m-timeout').value = 5;
-    document.getElementById('m-retries').value = 3;
+    const createRetriesEl = document.getElementById('monitor-max-retries') || document.getElementById('m-retries');
+    if (createRetriesEl) createRetriesEl.value = 3;
     document.getElementById('m-active').checked = true;
     document.getElementById('m-public').checked = true;
 
@@ -263,6 +402,10 @@ function openEditMonitorModal(data) {
     }
     if (sslWarningDaysEl) {
       sslWarningDaysEl.value = 30;
+    }
+    const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
+    if (expiryThresholdEl) {
+      expiryThresholdEl.value = 30;
     }
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
@@ -313,7 +456,7 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   const timeoutEl = document.getElementById('m-timeout');
   if (timeoutEl) timeoutEl.value = monitor.timeout_secs || 5;
 
-  const retriesEl = document.getElementById('m-retries');
+  const retriesEl = document.getElementById('monitor-max-retries') || document.getElementById('m-retries');
   if (retriesEl) retriesEl.value = monitor.max_retries || 3;
 
   const activeEl = document.getElementById('m-active');
@@ -325,8 +468,14 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   const domainExpiryEl = document.getElementById('m-domain-expiry');
   const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
   if (domainExpiryEl) {
-    domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
-    toggleDomainWarningInput();
+    if (checkType === 'expiry') {
+      domainExpiryEl.checked = true;
+      domainExpiryEl.disabled = true;
+    } else {
+      domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
+      domainExpiryEl.disabled = false;
+      toggleDomainWarningInput();
+    }
   }
   if (domainWarningDaysEl) {
     domainWarningDaysEl.value = monitor.domain_warning_days || 30;
@@ -335,11 +484,22 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   const sslEl = document.getElementById('m-ssl');
   const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
   if (sslEl) {
-    sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
-    toggleSslWarningInput();
+    if (checkType === 'expiry') {
+      sslEl.checked = true;
+      sslEl.disabled = true;
+    } else {
+      sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
+      sslEl.disabled = false;
+      toggleSslWarningInput();
+    }
   }
   if (sslWarningDaysEl) {
     sslWarningDaysEl.value = monitor.ssl_warning_days || 30;
+  }
+
+  const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
+  if (expiryThresholdEl) {
+    expiryThresholdEl.value = monitor.expiry_threshold_days || 30;
   }
 
   if (urlEl) validateUrlInput(urlEl);
@@ -538,6 +698,7 @@ async function handleMonitorSubmit(e) {
   const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
   const sslEl = document.getElementById('m-ssl');
   const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
+  const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
 
   const channelCheckboxes = document.querySelectorAll('input[name="monitor-channel"]:checked');
   const channel_ids = Array.from(channelCheckboxes).map((cb) => cb.value);
@@ -556,18 +717,27 @@ async function handleMonitorSubmit(e) {
     dns_expected_value = expVal ? expVal : null;
   }
 
+  let targetUrl = document.getElementById('m-url')?.value?.trim() || '';
+  if (check_type === 'expiry') {
+    targetUrl = sanitizeDomainTarget(targetUrl);
+    const urlInput = document.getElementById('m-url');
+    if (urlInput) urlInput.value = targetUrl;
+  }
+
+  const isExpiry = check_type === 'expiry';
   const payload = {
     name: document.getElementById('m-name')?.value?.trim() || '',
-    url: document.getElementById('m-url')?.value?.trim() || '',
-    check_interval_secs: parseInt(document.getElementById('m-interval')?.value || '60'),
+    url: targetUrl,
+    check_interval_secs: isExpiry ? 43200 : parseInt(document.getElementById('m-interval')?.value || '60'),
     timeout_secs: parseInt(document.getElementById('m-timeout')?.value || '5'),
-    max_retries: parseInt(document.getElementById('m-retries')?.value || '3'),
+    max_retries: parseInt((document.getElementById('monitor-max-retries') || document.getElementById('m-retries'))?.value || '3', 10),
     is_active: document.getElementById('m-active') ? document.getElementById('m-active').checked : true,
     is_public: document.getElementById('m-public') ? document.getElementById('m-public').checked : true,
-    check_domain_expiry: check_type === 'http' && domainExpiryEl ? domainExpiryEl.checked : false,
-    domain_warning_days: domainWarningDaysEl ? parseInt(domainWarningDaysEl.value || '30') : 30,
-    check_ssl: check_type === 'http' && sslEl ? sslEl.checked : false,
-    ssl_warning_days: sslWarningDaysEl ? parseInt(sslWarningDaysEl.value || '30') : 30,
+    check_domain_expiry: isExpiry || (check_type === 'http' && domainExpiryEl ? domainExpiryEl.checked : false),
+    domain_warning_days: isExpiry && expiryThresholdEl ? parseInt(expiryThresholdEl.value || '30') : (domainWarningDaysEl ? parseInt(domainWarningDaysEl.value || '30') : 30),
+    check_ssl: isExpiry || (check_type === 'http' && sslEl ? sslEl.checked : false),
+    ssl_warning_days: isExpiry && expiryThresholdEl ? parseInt(expiryThresholdEl.value || '30') : (sslWarningDaysEl ? parseInt(sslWarningDaysEl.value || '30') : 30),
+    expiry_threshold_days: expiryThresholdEl ? parseInt(expiryThresholdEl.value || '30') : 30,
     channel_ids,
     check_type,
     port,
@@ -1810,6 +1980,8 @@ window.toggleAllMaintenanceMonitors = toggleAllMaintenanceMonitors;
 
 window.toggleTemplateMode = toggleTemplateMode;
 window.updateTemplatePreview = updateTemplatePreview;
+window.handleMonitorSubmit = handleMonitorSubmit;
+window.submitMonitorForm = handleMonitorSubmit;
 window.submitWebhookForm = submitWebhookForm;
 window.handleWebhookSubmit = submitWebhookForm;
 window.testWebhook = testWebhook;
