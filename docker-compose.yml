@@ -4,6 +4,9 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
+      platform:
+        - linux/amd64
+        - linux/arm64
     container_name: keepup
     restart: unless-stopped
     ports:
@@ -18,7 +21,11 @@ services:
       - ADMIN_PASSWORD=admin
       - JWT_SECRET=change-this-in-production-keepup-jwt-secret
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/public/status || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/public/status || exit 1",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
