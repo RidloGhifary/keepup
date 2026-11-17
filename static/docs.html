@@ -77,6 +77,7 @@
         <div class="docs-group-title">Configuration</div>
         <ul class="docs-nav-list">
           <li class="docs-nav-item"><a href="#env-vars">Environment Variables</a></li>
+          <li class="docs-nav-item"><a href="#password-recovery">Password Recovery / CLI Reset</a></li>
           <li class="docs-nav-item"><a href="#storage-wal">SQLite &amp; WAL Storage</a></li>
         </ul>
       </div>
@@ -312,6 +313,28 @@ keepup</code></pre>
             </tbody>
           </table>
         </div>
+      </section>
+
+      <section id="password-recovery">
+        <h2>Password Recovery / CLI Reset</h2>
+        <p>Recovery stays local. Resetting a password requires shell access to the host or container; KeepUp does not use email recovery.</p>
+        <p>The command updates the password hash in the SQLite database selected by <code>KEEPUP_DB_PATH</code>, then exits without starting the web server.</p>
+
+        <h3>Docker</h3>
+        <p>Run this from the Docker host. The container must be running and attached to the same database volume used by KeepUp.</p>
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>docker exec -it keepup /usr/local/bin/keepup --reset-password</code></pre>
+        </div>
+
+        <h3>Standalone binary</h3>
+        <p>Run the command from the same working directory and environment used by the KeepUp service so it opens the same database.</p>
+        <div class="code-wrapper">
+          <button class="copy-btn" onclick="copyCode(this)">Copy</button>
+          <pre><code>./keepup --reset-password</code></pre>
+        </div>
+
+        <p>The CLI prompts for the new password twice, masks terminal input, and requires at least 8 characters. After it reports success, sign in to the dashboard with <code>ADMIN_USER</code> and the new password. Automation can pass the new value with <code>--password</code>; command-line arguments may be visible to other processes.</p>
       </section>
 
       <section id="storage-wal">

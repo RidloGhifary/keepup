@@ -69,6 +69,40 @@ struct Monitor {
     pub caa_details: Option<String>,
     #[sqlx(default)]
     pub current_consecutive_fails: i32,
+    #[sqlx(default)]
+    pub http_method: String,
+    #[sqlx(default)]
+    pub http_headers_json: Option<String>,
+    #[sqlx(default)]
+    pub http_body: Option<String>,
+    #[sqlx(default)]
+    pub expected_status_codes: String,
+    #[sqlx(default)]
+    pub response_keyword: Option<String>,
+    #[sqlx(default)]
+    pub keyword_match_mode: String,
+    #[sqlx(default)]
+    pub follow_redirects: i32,
+    #[sqlx(default)]
+    pub ignore_tls_errors: i32,
+    #[sqlx(default)]
+    pub degraded_threshold_ms: Option<i32>,
+}
+
+impl Monitor {
+    fn http_options(&self) -> crate::checker::HttpOptions {
+        crate::checker::HttpOptions {
+            method: if self.http_method.is_empty() { "GET" } else { &self.http_method }.to_string(),
+            headers_json: self.http_headers_json.clone(),
+            body: self.http_body.clone(),
+            expected_status_codes: if self.expected_status_codes.is_empty() { "200-299" } else { &self.expected_status_codes }.to_string(),
+            response_keyword: self.response_keyword.clone(),
+            keyword_match_mode: if self.keyword_match_mode.is_empty() { "contains" } else { &self.keyword_match_mode }.to_string(),
+            follow_redirects: self.follow_redirects != 0,
+            ignore_tls_errors: self.ignore_tls_errors != 0,
+            degraded_threshold_ms: self.degraded_threshold_ms,
+        }
+    }
 }
 
 // ── In-memory per-monitor state ──────────────────────────────────────────────
@@ -545,6 +579,7 @@ async fn run_check_and_evaluate(
     };
 
     if in_maintenance {
+        let http_options = monitor.http_options();
         let result = crate::checker::execute_probe(
             client,
             check_type_str,
@@ -553,6 +588,7 @@ async fn run_check_and_evaluate(
             monitor.dns_record_type.as_deref(),
             monitor.dns_expected_value.as_deref(),
             monitor.timeout_secs as u64,
+            Some(&http_options),
         )
         .await;
 
@@ -640,6 +676,7 @@ async fn run_check_and_evaluate(
             },
         }
     } else {
+        let http_options = monitor.http_options();
         let mut r = crate::checker::execute_probe(
             client,
             check_type_str,
@@ -648,6 +685,7 @@ async fn run_check_and_evaluate(
             monitor.dns_record_type.as_deref(),
             monitor.dns_expected_value.as_deref(),
             monitor.timeout_secs as u64,
+            Some(&http_options),
         )
         .await;
 
@@ -692,7 +730,12 @@ async fn run_check_and_evaluate(
         && min_days
             .map(|d| d <= monitor.expiry_threshold_days)
             .unwrap_or(false))
-        || caa_status.as_deref() == Some("MISMATCH");
+        || caa_status.as_deref() == Some("MISMATCH")
+        || (result.is_up
+            && check_type_str.eq_ignore_ascii_case("http")
+            && monitor
+                .degraded_threshold_ms
+                .is_some_and(|threshold| result.latency_ms > i64::from(threshold)));
 
     if result.is_up {
         // Success → reset failure counter in memory and DB.
@@ -915,7 +958,10 @@ async fn fetch_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Option<Monit
                m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at,
                m.check_type, m.port, m.dns_record_type, m.dns_expected_value, m.expiry_threshold_days,
                m.ssl_issuer, m.ssl_serial_number, m.ssl_signature_algorithm, m.ssl_sans, m.ssl_issued_at,
-               m.caa_status, m.caa_details, m.current_consecutive_fails
+               m.caa_status, m.caa_details, m.current_consecutive_fails,
+               m.http_method, m.http_headers_json, m.http_body, m.expected_status_codes,
+               m.response_keyword, m.keyword_match_mode, m.follow_redirects, m.ignore_tls_errors,
+               m.degraded_threshold_ms
         FROM   monitors m
         WHERE  m.id = ? AND m.is_active = 1
         "#,
@@ -938,7 +984,10 @@ async fn fetch_due_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, sqlx::Err
                m.check_ssl, m.ssl_warning_days, m.ssl_expires_at, m.ssl_days_remaining, m.ssl_last_checked_at,
                m.check_type, m.port, m.dns_record_type, m.dns_expected_value, m.expiry_threshold_days,
                m.ssl_issuer, m.ssl_serial_number, m.ssl_signature_algorithm, m.ssl_sans, m.ssl_issued_at,
-               m.caa_status, m.caa_details, m.current_consecutive_fails
+               m.caa_status, m.caa_details, m.current_consecutive_fails,
+               m.http_method, m.http_headers_json, m.http_body, m.expected_status_codes,
+               m.response_keyword, m.keyword_match_mode, m.follow_redirects, m.ignore_tls_errors,
+               m.degraded_threshold_ms
         FROM   monitors m
         WHERE  m.is_active = 1
           AND  NOT EXISTS (
@@ -1097,6 +1146,15 @@ mod tests {
             caa_status: None,
             caa_details: None,
             current_consecutive_fails: 0,
+            http_method: "GET".to_string(),
+            http_headers_json: None,
+            http_body: None,
+            expected_status_codes: "200-299".to_string(),
+            response_keyword: None,
+            keyword_match_mode: "contains".to_string(),
+            follow_redirects: 1,
+            ignore_tls_errors: 0,
+            degraded_threshold_ms: None,
         };
 
         let prev = MonitorState {

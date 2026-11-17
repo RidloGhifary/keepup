@@ -21,6 +21,7 @@ pub static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true\0";
 use std::sync::Arc;
 
 use axum::http::{header, Method};
+use clap::Parser;
 use reqwest::Client;
 use sqlx::SqlitePool;
 use tokio::net::TcpListener;
@@ -29,6 +30,18 @@ use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
+
+#[derive(Debug, Parser)]
+#[command(name = "keepup", version, about = "Self-hosted uptime monitoring")]
+struct Cli {
+    /// Reset the local administrator password and exit.
+    #[arg(long)]
+    reset_password: bool,
+
+    /// Set a password without prompting. Requires --reset-password.
+    #[arg(long, value_name = "NEW_PASSWORD", requires = "reset_password")]
+    password: Option<String>,
+}
 
 /// Shared application state threaded through Axum handlers.
 #[derive(Clone)]
@@ -49,6 +62,15 @@ async fn main() -> anyhow::Result<()> {
     // Load .env file (optional – not an error if missing).
     dotenvy::dotenv().ok();
 
+    let cli = Cli::parse();
+
+    // Load configuration before handling local maintenance commands.
+    let config = Config::from_env();
+    if cli.reset_password {
+        reset_admin_password(&config, cli.password).await?;
+        return Ok(());
+    }
+
     // Initialise structured logging.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -57,8 +79,6 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
-    // Load configuration from environment variables.
-    let config = Config::from_env();
     banner::print_banner(env!("CARGO_PKG_VERSION"), config.port, &config.database_url);
     info!(port = config.port, db = %config.database_url, "Starting KeepUp");
 
@@ -143,5 +163,32 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
+    Ok(())
+}
+
+async fn reset_admin_password(config: &Config, provided_password: Option<String>) -> anyhow::Result<()> {
+    let password = match provided_password {
+        Some(password) => password,
+        None => {
+            let password = rpassword::prompt_password("New password: ")?;
+            let confirmation = rpassword::prompt_password("Confirm new password: ")?;
+            anyhow::ensure!(password == confirmation, "Passwords do not match.");
+            password
+        }
+    };
+
+    anyhow::ensure!(
+        crate::api::auth::meets_password_minimum(&password),
+        "Password must be at least {} characters long.",
+        crate::api::auth::MIN_PASSWORD_LENGTH
+    );
+
+    let (read_pool, write_pool) = crate::db::init_pools(&config.database_url).await?;
+    crate::db::run_migrations(&write_pool).await?;
+    crate::api::auth::store_admin_password(&write_pool, &password).await?;
+    read_pool.close().await;
+    write_pool.close().await;
+
+    println!("Administrator password updated successfully.");
     Ok(())
 }

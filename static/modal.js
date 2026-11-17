@@ -2,6 +2,146 @@
 
 let cachedWebhooks = [];
 
+function setAdvancedHttpOptionsExpanded(expanded) {
+  const toggle = document.getElementById('m-advanced-http-toggle');
+  const content = document.getElementById('m-advanced-http-content');
+  const chevron = document.getElementById('m-advanced-http-chevron');
+  if (!toggle || !content) return;
+  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
+  content.classList.toggle('hidden', !expanded);
+  if (chevron) chevron.classList.toggle('rotate-180', expanded);
+}
+
+function toggleAdvancedHttpOptions() {
+  const toggle = document.getElementById('m-advanced-http-toggle');
+  setAdvancedHttpOptionsExpanded(toggle?.getAttribute('aria-expanded') !== 'true');
+}
+
+function handleHttpMethodChange() {
+  const method = document.getElementById('m-http-method')?.value?.toUpperCase() || 'GET';
+  const bodyContainer = document.getElementById('m-http-body-container');
+  const bodyField = document.getElementById('m-http-body');
+  const supportsBody = ['POST', 'PUT', 'PATCH'].includes(method);
+  if (bodyContainer) bodyContainer.classList.toggle('hidden', !supportsBody);
+  if (!supportsBody && bodyField) bodyField.value = '';
+}
+
+function clearHttpHeaderRows() {
+  const container = document.getElementById('m-http-headers');
+  if (container) container.replaceChildren();
+}
+
+function addHttpHeaderRow(name = '', value = '') {
+  const container = document.getElementById('m-http-headers');
+  if (!container) return;
+  const row = document.createElement('div');
+  row.className = 'grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2';
+
+  const nameInput = document.createElement('input');
+  nameInput.type = 'text';
+  nameInput.autocomplete = 'off';
+  nameInput.placeholder = 'Header name';
+  nameInput.value = name;
+  nameInput.dataset.httpHeaderName = 'true';
+  nameInput.className = 'min-w-0 rounded-lg px-2.5 py-2 bg-black/40 border border-white/10 text-white font-mono text-[11px] focus:outline-none focus:ring-2 focus:ring-[#30d158]/40';
+
+  const valueInput = document.createElement('input');
+  valueInput.type = 'text';
+  valueInput.autocomplete = 'off';
+  valueInput.placeholder = 'Value';
+  valueInput.value = value;
+  valueInput.dataset.httpHeaderValue = 'true';
+  valueInput.className = nameInput.className;
+
+  const removeButton = document.createElement('button');
+  removeButton.type = 'button';
+  removeButton.title = 'Remove header';
+  removeButton.setAttribute('aria-label', 'Remove header');
+  removeButton.className = 'inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/50 hover:text-white hover:bg-white/[0.08] transition';
+  removeButton.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12"/></svg>';
+  removeButton.addEventListener('click', () => row.remove());
+
+  row.append(nameInput, valueInput, removeButton);
+  container.appendChild(row);
+}
+
+function readHttpHeaderRows() {
+  const headers = {};
+  const seen = new Set();
+  const rows = document.querySelectorAll('#m-http-headers > div');
+  for (const row of rows) {
+    const name = row.querySelector('[data-http-header-name]')?.value?.trim() || '';
+    const value = row.querySelector('[data-http-header-value]')?.value ?? '';
+    if (!name && !value.trim()) continue;
+    if (!name || !value.trim()) return { error: 'Enter both a header name and value, or remove the empty row.' };
+    const key = name.toLowerCase();
+    if (seen.has(key)) return { error: `Header "${name}" is listed more than once.` };
+    seen.add(key);
+    headers[name] = value;
+  }
+  return { headers };
+}
+
+function hydrateHttpOptions(monitor) {
+  const method = document.getElementById('m-http-method');
+  const expected = document.getElementById('m-expected-status-codes');
+  const body = document.getElementById('m-http-body');
+  const keyword = document.getElementById('m-response-keyword');
+  const matchMode = document.getElementById('m-keyword-match-mode');
+  const followRedirects = document.getElementById('m-follow-redirects');
+  const ignoreTls = document.getElementById('m-ignore-tls-errors');
+  const degraded = document.getElementById('m-degraded-threshold-ms');
+
+  if (method) method.value = (monitor.http_method || 'GET').toUpperCase();
+  if (expected) expected.value = monitor.expected_status_codes || '200-299';
+  if (body) body.value = monitor.http_body || '';
+  if (keyword) keyword.value = monitor.response_keyword || '';
+  if (matchMode) matchMode.value = monitor.keyword_match_mode || 'contains';
+  if (followRedirects) followRedirects.checked = monitor.follow_redirects !== 0 && monitor.follow_redirects !== false;
+  if (ignoreTls) ignoreTls.checked = monitor.ignore_tls_errors === 1 || monitor.ignore_tls_errors === true;
+  if (degraded) degraded.value = monitor.degraded_threshold_ms ?? '';
+
+  clearHttpHeaderRows();
+  try {
+    const headers = typeof monitor.http_headers_json === 'string'
+      ? JSON.parse(monitor.http_headers_json || '{}')
+      : (monitor.http_headers_json || {});
+    if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
+      Object.entries(headers).forEach(([name, value]) => addHttpHeaderRow(name, String(value ?? '')));
+    }
+  } catch (_) {
+    // Keep malformed legacy values visible through the advanced section without blocking the form.
+  }
+  handleHttpMethodChange();
+}
+
+function hasAdvancedHttpOptions(monitor) {
+  let hasHeaders = false;
+  try {
+    const headers = typeof monitor.http_headers_json === 'string'
+      ? JSON.parse(monitor.http_headers_json || '{}')
+      : (monitor.http_headers_json || {});
+    hasHeaders = headers && typeof headers === 'object' && Object.keys(headers).length > 0;
+  } catch (_) {
+    hasHeaders = Boolean(monitor.http_headers_json);
+  }
+  return (monitor.http_method || 'GET').toUpperCase() !== 'GET'
+    || hasHeaders
+    || Boolean(monitor.http_body)
+    || (monitor.expected_status_codes || '200-299') !== '200-299'
+    || Boolean(monitor.response_keyword)
+    || (monitor.keyword_match_mode || 'contains') !== 'contains'
+    || monitor.follow_redirects === 0
+    || monitor.follow_redirects === false
+    || monitor.ignore_tls_errors === 1
+    || monitor.ignore_tls_errors === true
+    || monitor.degraded_threshold_ms !== null && monitor.degraded_threshold_ms !== undefined;
+}
+
+window.toggleAdvancedHttpOptions = toggleAdvancedHttpOptions;
+window.addHttpHeaderRow = addHttpHeaderRow;
+window.handleHttpMethodChange = handleHttpMethodChange;
+
 // Helper to resolve modal DOM elements
 function getModalElements() {
   const backdrop = document.getElementById('modal-backdrop');
@@ -158,6 +298,7 @@ function handleMonitorTypeChange(type) {
   const dnsFields = document.getElementById('m-dns-fields');
   const expiryFields = document.getElementById('m-expiry-fields');
   const timingFields = document.getElementById('m-timing-fields');
+  const advancedHttpOptions = document.getElementById('m-advanced-http-options');
   const httpSecurityOptions = document.getElementById('m-http-security-options');
 
   const domainExpiryEl = document.getElementById('m-domain-expiry');
@@ -183,6 +324,7 @@ function handleMonitorTypeChange(type) {
     if (expiryFields) expiryFields.classList.remove('hidden');
     if (timingFields) timingFields.classList.add('hidden');
     if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
+    if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
 
     // Auto-activate & disable lock state for expiry toggles
     if (domainExpiryEl) {
@@ -243,6 +385,7 @@ function handleMonitorTypeChange(type) {
       if (expiryFields) expiryFields.classList.add('hidden');
       if (timingFields) timingFields.classList.remove('hidden');
       if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+      if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
     } else if (t === 'dns') {
       if (urlLabel) urlLabel.textContent = 'Domain / Hostname';
       if (urlInput) urlInput.placeholder = 'e.g. example.com or one.one.one.one';
@@ -253,6 +396,7 @@ function handleMonitorTypeChange(type) {
       if (expiryFields) expiryFields.classList.add('hidden');
       if (timingFields) timingFields.classList.remove('hidden');
       if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+      if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
     } else if (t === 'ping') {
       if (urlLabel) urlLabel.textContent = 'Target Host / IP Address';
       if (urlInput) urlInput.placeholder = 'e.g. 8.8.8.8 or router.local';
@@ -263,6 +407,7 @@ function handleMonitorTypeChange(type) {
       if (expiryFields) expiryFields.classList.add('hidden');
       if (timingFields) timingFields.classList.remove('hidden');
       if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+      if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
     } else {
       // http
       if (urlLabel) urlLabel.textContent = 'Target URL';
@@ -274,6 +419,7 @@ function handleMonitorTypeChange(type) {
       if (expiryFields) expiryFields.classList.add('hidden');
       if (timingFields) timingFields.classList.remove('hidden');
       if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
+      if (advancedHttpOptions) advancedHttpOptions.classList.remove('hidden');
       if (urlInput) validateUrlInput(urlInput);
     }
   }
@@ -356,6 +502,8 @@ function openEditMonitorModal(data) {
     if (expiryThresholdEl) {
       expiryThresholdEl.value = monitor.expiry_threshold_days || 30;
     }
+    hydrateHttpOptions(monitor);
+    setAdvancedHttpOptionsExpanded(checkType === 'http' && hasAdvancedHttpOptions(monitor));
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
     loadMonitorChannelsChecklist(monitor.id);
@@ -367,6 +515,8 @@ function openEditMonitorModal(data) {
     document.getElementById('edit-monitor-id').value = '';
     const form = document.getElementById('monitor-form');
     if (form) form.reset();
+    clearHttpHeaderRows();
+    setAdvancedHttpOptionsExpanded(false);
     const typeSelect = document.getElementById('m-type');
     if (typeSelect) typeSelect.value = 'http';
     handleMonitorTypeChange('http');
@@ -407,6 +557,7 @@ function openEditMonitorModal(data) {
     if (expiryThresholdEl) {
       expiryThresholdEl.value = 30;
     }
+    handleHttpMethodChange();
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
     loadMonitorChannelsChecklist(null);
@@ -429,6 +580,10 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   // Crucial: Clear edit ID so submitting creates a brand new monitor
   const idEl = document.getElementById('edit-monitor-id');
   if (idEl) idEl.value = '';
+  const form = document.getElementById('monitor-form');
+  if (form) form.reset();
+  clearHttpHeaderRows();
+  setAdvancedHttpOptionsExpanded(false);
 
   const nameEl = document.getElementById('m-name');
   if (nameEl) nameEl.value = monitor.name ? `${monitor.name} (Copy)` : 'New Monitor (Copy)';
@@ -501,6 +656,9 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   if (expiryThresholdEl) {
     expiryThresholdEl.value = monitor.expiry_threshold_days || 30;
   }
+
+  hydrateHttpOptions(monitor);
+  setAdvancedHttpOptionsExpanded(checkType === 'http' && hasAdvancedHttpOptions(monitor));
 
   if (urlEl) validateUrlInput(urlEl);
 
@@ -724,6 +882,21 @@ async function handleMonitorSubmit(e) {
     if (urlInput) urlInput.value = targetUrl;
   }
 
+  const headerRows = readHttpHeaderRows();
+  if (headerRows.error) {
+    showToast({ title: 'Invalid HTTP Header', message: headerRows.error, type: 'error' });
+    if (submitBtn) {
+      submitBtn.disabled = false;
+      submitBtn.innerText = originalText;
+    }
+    return;
+  }
+  const httpMethod = document.getElementById('m-http-method')?.value || 'GET';
+  const requestBody = ['POST', 'PUT', 'PATCH'].includes(httpMethod.toUpperCase())
+    ? (document.getElementById('m-http-body')?.value || '')
+    : '';
+  const degradedValue = document.getElementById('m-degraded-threshold-ms')?.value?.trim() || '';
+
   const isExpiry = check_type === 'expiry';
   const payload = {
     name: document.getElementById('m-name')?.value?.trim() || '',
@@ -743,6 +916,15 @@ async function handleMonitorSubmit(e) {
     port,
     dns_record_type,
     dns_expected_value,
+    http_method: httpMethod,
+    http_headers_json: Object.keys(headerRows.headers).length ? JSON.stringify(headerRows.headers) : null,
+    http_body: requestBody || null,
+    expected_status_codes: document.getElementById('m-expected-status-codes')?.value?.trim() || '200-299',
+    response_keyword: document.getElementById('m-response-keyword')?.value?.trim() || null,
+    keyword_match_mode: document.getElementById('m-keyword-match-mode')?.value || 'contains',
+    follow_redirects: document.getElementById('m-follow-redirects')?.checked ?? true,
+    ignore_tls_errors: document.getElementById('m-ignore-tls-errors')?.checked ?? false,
+    degraded_threshold_ms: degradedValue ? parseInt(degradedValue, 10) : null,
   };
 
   try {

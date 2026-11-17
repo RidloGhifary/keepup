@@ -7,6 +7,7 @@ use jsonwebtoken::{decode, encode, DecodingKey, EncodingKey, Header, Validation}
 use serde::{Deserialize, Serialize};
 use serde_json::{json, Value};
 use sha2::{Digest, Sha256};
+use sqlx::SqlitePool;
 use subtle::ConstantTimeEq;
 use time::Duration;
 
@@ -14,6 +15,25 @@ use crate::error::AppError;
 use crate::AppState;
 
 pub const SESSION_COOKIE_NAME: &str = "keepup_session";
+pub const MIN_PASSWORD_LENGTH: usize = 8;
+
+pub fn meets_password_minimum(password: &str) -> bool {
+    password.chars().count() >= MIN_PASSWORD_LENGTH
+}
+
+/// Store the same salted password hash used by the dashboard password change flow.
+pub async fn store_admin_password(pool: &SqlitePool, password: &str) -> Result<(), sqlx::Error> {
+    let hashed = hash_password(password);
+    sqlx::query(
+        "INSERT INTO app_config (key, value) VALUES ('admin_password', $1) \
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+    )
+    .bind(hashed)
+    .execute(pool)
+    .await?;
+
+    Ok(())
+}
 
 /// JWT claims embedded in the authentication cookie.
 #[derive(Debug, Serialize, Deserialize, Clone)]
