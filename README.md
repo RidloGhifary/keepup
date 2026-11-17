@@ -188,6 +188,26 @@ KeepUp is configured via environment variables or a local `.env` file:
 
 ---
 
+## Password Recovery / CLI Reset
+
+Password recovery stays local and requires shell access to the host or container. KeepUp does not send recovery email. The CLI updates the password hash in the SQLite database selected by `KEEPUP_DB_PATH` and exits without starting the web server.
+
+For a running Docker container, run this on the Docker host. The container must use the same database volume as the KeepUp service:
+
+```bash
+docker exec -it keepup /usr/local/bin/keepup --reset-password
+```
+
+For a standalone binary, run it from the same working directory and environment as the service:
+
+```bash
+./keepup --reset-password
+```
+
+The CLI masks terminal input, asks for the password twice, and requires at least 8 characters. After it reports success, sign in with `ADMIN_USER` and the new password. For automation, pass the new value with `--password`; command-line arguments may be visible to other processes.
+
+---
+
 ## Architecture
 
 KeepUp executes as a single compiled binary without external runtime or database processes:

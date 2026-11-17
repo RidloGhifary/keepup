@@ -30,7 +30,7 @@ RUN apk upgrade --no-cache && \
 WORKDIR /app
 
 # Copy single Rust release binary
-COPY --from=builder --chown=keepup:keepup /app/target/release/keepup /app/keepup
+COPY --from=builder --chown=keepup:keepup /app/target/release/keepup /usr/local/bin/keepup
 
 USER keepup
 
@@ -39,4 +39,4 @@ ENV KEEPUP_DB_PATH=/data/keepup.db
 ENV MALLOC_CONF="prof:true,prof_active:true"
 EXPOSE 8080
 
-ENTRYPOINT ["/app/keepup"]
+ENTRYPOINT ["/usr/local/bin/keepup"]

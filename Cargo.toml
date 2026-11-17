@@ -8,6 +8,10 @@ repository = "https://github.com/RidloGhifary/keepup"
 homepage = "https://github.com/RidloGhifary/keepup"
 
 [dependencies]
+# CLI
+clap = { version = "4", features = ["derive"] }
+rpassword = "7"
+
 # Async Runtime & Web Framework
 tokio = { version = "1.38", features = ["full"] }
 axum = { version = "0.7", features = ["ws", "macros"] }

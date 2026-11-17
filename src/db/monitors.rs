@@ -70,6 +70,54 @@ pub struct Monitor {
     pub caa_details: Option<String>,
     #[sqlx(default)]
     pub current_consecutive_fails: i32,
+    #[serde(default = "default_http_method")]
+    #[sqlx(default)]
+    pub http_method: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub http_headers_json: Option<String>,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub http_body: Option<String>,
+    #[serde(default = "default_expected_status_codes")]
+    #[sqlx(default)]
+    pub expected_status_codes: String,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub response_keyword: Option<String>,
+    #[serde(default = "default_keyword_match_mode")]
+    #[sqlx(default)]
+    pub keyword_match_mode: String,
+    #[serde(default = "default_follow_redirects")]
+    #[sqlx(default)]
+    pub follow_redirects: i32,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub ignore_tls_errors: i32,
+    #[serde(default)]
+    #[sqlx(default)]
+    pub degraded_threshold_ms: Option<i32>,
+}
+
+fn default_http_method() -> String { "GET".to_string() }
+fn default_expected_status_codes() -> String { "200-299".to_string() }
+fn default_keyword_match_mode() -> String { "contains".to_string() }
+fn default_follow_redirects() -> i32 { 1 }
+
+impl Monitor {
+    pub fn http_options(&self) -> crate::checker::HttpOptions {
+        crate::checker::HttpOptions {
+            method: self.http_method.clone(),
+            headers_json: self.http_headers_json.clone(),
+            body: self.http_body.clone(),
+            expected_status_codes: self.expected_status_codes.clone(),
+            response_keyword: self.response_keyword.clone(),
+            keyword_match_mode: self.keyword_match_mode.clone(),
+            follow_redirects: self.follow_redirects != 0,
+            ignore_tls_errors: self.ignore_tls_errors != 0,
+            degraded_threshold_ms: self.degraded_threshold_ms,
+        }
+    }
 }
 
 /// Fetch a single monitor by its primary ID.
@@ -82,7 +130,8 @@ pub async fn get_monitor_by_id(pool: &SqlitePool, id: &str) -> Result<Monitor, A
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
                 check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
                 ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
-                current_consecutive_fails \
+                current_consecutive_fails, http_method, http_headers_json, http_body, expected_status_codes, \
+                response_keyword, keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms \
          FROM monitors WHERE id = ?",
     )
     .bind(id)
@@ -151,6 +200,39 @@ pub async fn update_monitor(
     let expiry_threshold_days = payload
         .expiry_threshold_days
         .unwrap_or(existing.expiry_threshold_days);
+    let http_method = payload.http_method.unwrap_or(existing.http_method);
+    let http_headers_json = payload.http_headers_json
+        .unwrap_or(existing.http_headers_json)
+        .filter(|value| !value.trim().is_empty());
+    let http_body = payload.http_body
+        .unwrap_or(existing.http_body)
+        .filter(|value| !value.is_empty());
+    let expected_status_codes = payload.expected_status_codes.unwrap_or(existing.expected_status_codes);
+    let response_keyword = payload.response_keyword
+        .unwrap_or(existing.response_keyword)
+        .filter(|value| !value.trim().is_empty());
+    let keyword_match_mode = payload.keyword_match_mode.unwrap_or(existing.keyword_match_mode);
+    let follow_redirects = payload.follow_redirects
+        .map(|value| if value { 1 } else { 0 })
+        .unwrap_or(existing.follow_redirects);
+    let ignore_tls_errors = payload.ignore_tls_errors
+        .map(|value| if value { 1 } else { 0 })
+        .unwrap_or(existing.ignore_tls_errors);
+    let degraded_threshold_ms = payload
+        .degraded_threshold_ms
+        .unwrap_or(existing.degraded_threshold_ms);
+    let options = crate::checker::HttpOptions {
+        method: http_method.clone(),
+        headers_json: http_headers_json.clone(),
+        body: http_body.clone(),
+        expected_status_codes: expected_status_codes.clone(),
+        response_keyword: response_keyword.clone(),
+        keyword_match_mode: keyword_match_mode.clone(),
+        follow_redirects: follow_redirects != 0,
+        ignore_tls_errors: ignore_tls_errors != 0,
+        degraded_threshold_ms,
+    };
+    crate::checker::http::validate_options(&options).map_err(AppError::BadRequest)?;
 
     sqlx::query(
         "UPDATE monitors \
@@ -158,7 +240,9 @@ pub async fn update_monitor(
              max_retries = ?, is_active = ?, is_public = ?, \
              check_domain_expiry = ?, domain_warning_days = ?, \
              check_ssl = ?, ssl_warning_days = ?, \
-             check_type = ?, port = ?, dns_record_type = ?, dns_expected_value = ?, expiry_threshold_days = ? \
+             check_type = ?, port = ?, dns_record_type = ?, dns_expected_value = ?, expiry_threshold_days = ?, \
+             http_method = ?, http_headers_json = ?, http_body = ?, expected_status_codes = ?, response_keyword = ?, \
+             keyword_match_mode = ?, follow_redirects = ?, ignore_tls_errors = ?, degraded_threshold_ms = ? \
          WHERE id = ?",
     )
     .bind(&name)
@@ -177,6 +261,15 @@ pub async fn update_monitor(
     .bind(&dns_record_type)
     .bind(&dns_expected_value)
     .bind(expiry_threshold_days)
+    .bind(http_method.trim().to_ascii_uppercase())
+    .bind(&http_headers_json)
+    .bind(&http_body)
+    .bind(expected_status_codes.trim())
+    .bind(&response_keyword)
+    .bind(keyword_match_mode.trim().to_ascii_lowercase())
+    .bind(follow_redirects)
+    .bind(ignore_tls_errors)
+    .bind(degraded_threshold_ms)
     .bind(id)
     .execute(pool)
     .await?;
@@ -274,7 +367,8 @@ pub async fn get_asset_expiry_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
                 check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
                 ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
-                current_consecutive_fails \
+                current_consecutive_fails, http_method, http_headers_json, http_body, expected_status_codes, \
+                response_keyword, keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms \
          FROM monitors \
          WHERE is_active = 1 AND (check_ssl = 1 OR check_domain_expiry = 1 OR check_type = 'expiry')",
     )
@@ -559,7 +653,8 @@ pub async fn get_all_monitors(pool: &SqlitePool) -> Result<Vec<Monitor>, AppErro
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
                 check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
                 ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
-                current_consecutive_fails \
+                current_consecutive_fails, http_method, http_headers_json, http_body, expected_status_codes, \
+                response_keyword, keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms \
          FROM monitors ORDER BY created_at DESC",
     )
     .fetch_all(pool)
@@ -694,7 +789,8 @@ pub async fn get_monitors_by_ids(
                 check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
                 check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
                 ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
-                current_consecutive_fails \
+                current_consecutive_fails, http_method, http_headers_json, http_body, expected_status_codes, \
+                response_keyword, keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms \
          FROM monitors WHERE id IN ({placeholders})"
     );
     let mut q = sqlx::query_as::<_, Monitor>(&sql);

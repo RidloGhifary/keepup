@@ -46,6 +46,24 @@ pub struct CreateMonitor {
     pub dns_expected_value: Option<String>,
     #[serde(default = "default_warning_days")]
     pub expiry_threshold_days: i32,
+    #[serde(default = "default_http_method")]
+    pub http_method: String,
+    #[serde(default)]
+    pub http_headers_json: Option<String>,
+    #[serde(default)]
+    pub http_body: Option<String>,
+    #[serde(default = "default_expected_status_codes")]
+    pub expected_status_codes: String,
+    #[serde(default)]
+    pub response_keyword: Option<String>,
+    #[serde(default = "default_keyword_match_mode")]
+    pub keyword_match_mode: String,
+    #[serde(default = "default_true")]
+    pub follow_redirects: bool,
+    #[serde(default)]
+    pub ignore_tls_errors: bool,
+    #[serde(default)]
+    pub degraded_threshold_ms: Option<i32>,
 }
 
 fn default_check_type() -> String {
@@ -66,6 +84,15 @@ fn default_true() -> bool {
 fn default_warning_days() -> i32 {
     30
 }
+fn default_http_method() -> String {
+    "GET".to_string()
+}
+fn default_expected_status_codes() -> String {
+    "200-299".to_string()
+}
+fn default_keyword_match_mode() -> String {
+    "contains".to_string()
+}
 
 // ── Handlers ─────────────────────────────────────────────────────────────────
 
@@ -79,7 +106,8 @@ pub async fn list(State(state): State<Arc<AppState>>) -> Result<Json<Vec<Monitor
                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
                check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
-               current_consecutive_fails \
+               current_consecutive_fails, http_method, http_headers_json, http_body, expected_status_codes, \
+               response_keyword, keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms \
          FROM monitors ORDER BY created_at DESC",
     )
     .fetch_all(&state.db)
@@ -101,7 +129,8 @@ pub async fn get_one(
                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
                check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
-               current_consecutive_fails \
+               current_consecutive_fails, http_method, http_headers_json, http_body, expected_status_codes, \
+               response_keyword, keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms \
          FROM monitors WHERE id = ?",
     )
     .bind(&id)
@@ -169,6 +198,18 @@ pub async fn create(
             )));
         }
     }
+    let http_options = crate::checker::HttpOptions {
+        method: body.http_method.clone(),
+        headers_json: body.http_headers_json.clone(),
+        body: body.http_body.clone(),
+        expected_status_codes: body.expected_status_codes.clone(),
+        response_keyword: body.response_keyword.clone(),
+        keyword_match_mode: body.keyword_match_mode.clone(),
+        follow_redirects: body.follow_redirects,
+        ignore_tls_errors: body.ignore_tls_errors,
+        degraded_threshold_ms: body.degraded_threshold_ms,
+    };
+    crate::checker::http::validate_options(&http_options).map_err(AppError::BadRequest)?;
 
     let id = uuid::Uuid::new_v4().to_string();
     let check_domain_expiry = if check_type == "expiry" {
@@ -186,8 +227,10 @@ pub async fn create(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
                                check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
-                               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+                               http_method, http_headers_json, http_body, expected_status_codes, response_keyword, \
+                               keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&id)
     .bind(&body.name)
@@ -206,6 +249,15 @@ pub async fn create(
     .bind(&body.dns_record_type)
     .bind(&body.dns_expected_value)
     .bind(body.expiry_threshold_days)
+    .bind(body.http_method.trim().to_ascii_uppercase())
+    .bind(body.http_headers_json.as_deref().filter(|value| !value.trim().is_empty()))
+    .bind(body.http_body.as_deref().filter(|value| !value.is_empty()))
+    .bind(body.expected_status_codes.trim())
+    .bind(body.response_keyword.as_deref().filter(|value| !value.trim().is_empty()))
+    .bind(body.keyword_match_mode.trim().to_ascii_lowercase())
+    .bind(body.follow_redirects as i32)
+    .bind(body.ignore_tls_errors as i32)
+    .bind(body.degraded_threshold_ms)
     .execute(&state.db)
     .await?;
 
@@ -234,7 +286,8 @@ pub async fn create(
                check_ssl, ssl_warning_days, ssl_expires_at, ssl_days_remaining, ssl_last_checked_at, \
                check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
                ssl_issuer, ssl_serial_number, ssl_signature_algorithm, ssl_sans, ssl_issued_at, caa_status, caa_details, \
-               current_consecutive_fails \
+               current_consecutive_fails, http_method, http_headers_json, http_body, expected_status_codes, \
+               response_keyword, keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms \
          FROM monitors WHERE id = ?",
     )
     .bind(&id)

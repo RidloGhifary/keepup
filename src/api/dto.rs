@@ -6,6 +6,14 @@ fn default_true() -> bool {
     true
 }
 
+fn deserialize_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+{
+    Option::<T>::deserialize(deserializer).map(Some)
+}
+
 // ── Monitor DTOs ─────────────────────────────────────────────────────────────
 
 /// Payload for updating an existing health check monitor.
@@ -28,6 +36,19 @@ pub struct UpdateMonitorDto {
     pub dns_record_type: Option<String>,
     pub dns_expected_value: Option<String>,
     pub expiry_threshold_days: Option<i32>,
+    pub http_method: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    pub http_headers_json: Option<Option<String>>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    pub http_body: Option<Option<String>>,
+    pub expected_status_codes: Option<String>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    pub response_keyword: Option<Option<String>>,
+    pub keyword_match_mode: Option<String>,
+    pub follow_redirects: Option<bool>,
+    pub ignore_tls_errors: Option<bool>,
+    #[serde(default, deserialize_with = "deserialize_nullable")]
+    pub degraded_threshold_ms: Option<Option<i32>>,
 }
 
 impl UpdateMonitorDto {
@@ -137,6 +158,18 @@ impl UpdateMonitorDto {
                 ));
             }
         }
+        let http_options = crate::checker::HttpOptions {
+            method: self.http_method.clone().unwrap_or_else(|| "GET".to_string()),
+            headers_json: self.http_headers_json.clone().flatten(),
+            body: self.http_body.clone().flatten(),
+            expected_status_codes: self.expected_status_codes.clone().unwrap_or_else(|| "200-299".to_string()),
+            response_keyword: self.response_keyword.clone().flatten(),
+            keyword_match_mode: self.keyword_match_mode.clone().unwrap_or_else(|| "contains".to_string()),
+            follow_redirects: self.follow_redirects.unwrap_or(true),
+            ignore_tls_errors: self.ignore_tls_errors.unwrap_or(false),
+            degraded_threshold_ms: self.degraded_threshold_ms.flatten(),
+        };
+        crate::checker::http::validate_options(&http_options).map_err(AppError::BadRequest)?;
         Ok(())
     }
 }

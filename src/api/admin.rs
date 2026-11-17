@@ -67,8 +67,10 @@ pub async fn clone_monitor(
         "INSERT INTO monitors (id, name, url, check_interval_secs, timeout_secs, \
                                max_retries, is_active, is_public, last_status, down_since, \
                                check_domain_expiry, domain_warning_days, check_ssl, ssl_warning_days, \
-                               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days) \
-         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                               check_type, port, dns_record_type, dns_expected_value, expiry_threshold_days, \
+                               http_method, http_headers_json, http_body, expected_status_codes, response_keyword, \
+                               keyword_match_mode, follow_redirects, ignore_tls_errors, degraded_threshold_ms) \
+         VALUES (?, ?, ?, ?, ?, ?, ?, ?, 'UP', NULL, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
     )
     .bind(&new_id)
     .bind(&new_name)
@@ -87,6 +89,15 @@ pub async fn clone_monitor(
     .bind(&source.dns_record_type)
     .bind(&source.dns_expected_value)
     .bind(source.expiry_threshold_days)
+    .bind(&source.http_method)
+    .bind(&source.http_headers_json)
+    .bind(&source.http_body)
+    .bind(&source.expected_status_codes)
+    .bind(&source.response_keyword)
+    .bind(&source.keyword_match_mode)
+    .bind(source.follow_redirects)
+    .bind(source.ignore_tls_errors)
+    .bind(source.degraded_threshold_ms)
     .execute(&state.db)
     .await?;
 
@@ -230,7 +241,7 @@ pub async fn get_monitor_details(
         id: monitor.id.clone(),
         name: monitor.name.clone(),
         url: monitor.url.clone(),
-        method: "GET".to_string(),
+        method: monitor.http_method.clone(),
         status: monitor.last_status.clone(),
         is_active: monitor.is_active == 1,
         is_public: monitor.is_public == 1,
@@ -286,6 +297,7 @@ pub async fn ping_monitor(
 ) -> Result<Json<PingResponse>, AppError> {
     let monitor = monitors::get_monitor_by_id(&state.db, &id).await?;
 
+    let http_options = monitor.http_options();
     let result = crate::checker::execute_probe(
         &state.http_client,
         &monitor.check_type,
@@ -294,6 +306,7 @@ pub async fn ping_monitor(
         monitor.dns_record_type.as_deref(),
         monitor.dns_expected_value.as_deref(),
         monitor.timeout_secs as u64,
+        Some(&http_options),
     )
     .await;
 
@@ -400,11 +413,15 @@ pub async fn ping_monitor(
     .execute(&state.db)
     .await?;
 
-    let status_str = if result.is_up { "UP" } else { "DOWN" };
-    let down_since = if result.is_up {
-        None
-    } else {
+    let is_latency_degraded = is_http
+        && monitor
+            .degraded_threshold_ms
+            .is_some_and(|threshold| result.latency_ms > i64::from(threshold));
+    let status_str = if !result.is_up { "DOWN" } else if is_latency_degraded { "DEGRADED" } else { "UP" };
+    let down_since = if status_str == "DOWN" {
         Some(chrono::Utc::now().to_rfc3339())
+    } else {
+        None
     };
 
     let _ =
@@ -483,6 +500,7 @@ pub async fn resume_all_monitors(
         let pool = state.db.clone();
         let client = state.http_client.clone();
         tokio::spawn(async move {
+            let http_options = monitor.http_options();
             let res = crate::checker::execute_probe(
                 &client,
                 &monitor.check_type,
@@ -491,15 +509,19 @@ pub async fn resume_all_monitors(
                 monitor.dns_record_type.as_deref(),
                 monitor.dns_expected_value.as_deref(),
                 monitor.timeout_secs as u64,
+                Some(&http_options),
             )
             .await;
             let is_up = res.is_up;
-            let status_str = if is_up { "UP" } else { "DOWN" };
+            let is_degraded = is_up
+                && monitor.check_type.eq_ignore_ascii_case("http")
+                && monitor.degraded_threshold_ms.is_some_and(|threshold| res.latency_ms > i64::from(threshold));
+            let status_str = if !is_up { "DOWN" } else if is_degraded { "DEGRADED" } else { "UP" };
             let now_rfc3339 = chrono::Utc::now().to_rfc3339();
-            let down_since = if is_up {
-                None
-            } else {
+            let down_since = if status_str == "DOWN" {
                 Some(now_rfc3339.as_str())
+            } else {
+                None
             };
 
             let _ = sqlx::query(
@@ -611,6 +633,7 @@ pub async fn bulk_resume_monitors(
         let pool = state.db.clone();
         let client = state.http_client.clone();
         tokio::spawn(async move {
+            let http_options = monitor.http_options();
             let res = crate::checker::execute_probe(
                 &client,
                 &monitor.check_type,
@@ -619,15 +642,19 @@ pub async fn bulk_resume_monitors(
                 monitor.dns_record_type.as_deref(),
                 monitor.dns_expected_value.as_deref(),
                 monitor.timeout_secs as u64,
+                Some(&http_options),
             )
             .await;
             let is_up = res.is_up;
-            let status_str = if is_up { "UP" } else { "DOWN" };
+            let is_degraded = is_up
+                && monitor.check_type.eq_ignore_ascii_case("http")
+                && monitor.degraded_threshold_ms.is_some_and(|threshold| res.latency_ms > i64::from(threshold));
+            let status_str = if !is_up { "DOWN" } else if is_degraded { "DEGRADED" } else { "UP" };
             let now_rfc3339 = chrono::Utc::now().to_rfc3339();
-            let down_since = if is_up {
-                None
-            } else {
+            let down_since = if status_str == "DOWN" {
                 Some(now_rfc3339.as_str())
+            } else {
+                None
             };
 
             let _ = sqlx::query(
@@ -900,22 +927,19 @@ pub async fn change_password(
     }
 
     // 2. Enforce minimum length on new_password (>= 8 characters).
-    if payload.new_password.chars().count() < 8 {
+    if !crate::api::auth::meets_password_minimum(&payload.new_password) {
         return Err(AppError::BadRequest(
-            "New password must be at least 8 characters long".to_string(),
+            format!(
+                "New password must be at least {} characters long",
+                crate::api::auth::MIN_PASSWORD_LENGTH
+            ),
         ));
     }
 
-    // 3. Persist new password hash into SQLite app_config table.
-    let hashed = crate::api::auth::hash_password(&payload.new_password);
-    sqlx::query(
-        "INSERT INTO app_config (key, value) VALUES ('admin_password', $1) \
-         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
-    )
-    .bind(&hashed)
-    .execute(&state.db)
-    .await
-    .map_err(AppError::Database)?;
+    // 3. Persist the new password hash into SQLite app_config.
+    crate::api::auth::store_admin_password(&state.write_db, &payload.new_password)
+        .await
+        .map_err(AppError::Database)?;
 
     info!("Administrator password updated successfully");
     Ok(Json(json!({
