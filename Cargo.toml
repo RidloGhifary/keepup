@@ -1,6 +1,6 @@
 [package]
 name = "keepup"
-version = "1.1.0"
+version = "1.2.0"
 edition = "2021"
 description = "Ultra-lightweight, single-binary uptime monitoring & public status page engine powered by Rust"
 license = "MIT"
