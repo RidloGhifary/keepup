@@ -27,6 +27,7 @@ docker run -d \
 ```
 
 Access endpoints:
+
 - **Admin Dashboard:** `http://localhost:8080/`
 - **Public Status Page (Default):** `http://localhost:8080/status`
 - **Custom Status Page by Slug:** `http://localhost:8080/status/<slug>`
@@ -35,15 +36,16 @@ Access endpoints:
 
 > [!IMPORTANT]
 > **Initial Dashboard Login:**
+>
 > - **Username:** `admin`
 > - **Password:** `admin`
-> 
-> ⚠️ *Change these default credentials immediately in production by setting environment variables `ADMIN_USER` and `ADMIN_PASSWORD`.*
+>
+> ⚠️ _Change these default credentials immediately in production by setting environment variables `ADMIN_USER` and `ADMIN_PASSWORD`._
 
 ### Docker Compose (`docker-compose.yml`)
 
 ```yaml
-version: '3.8'
+version: "3.8"
 
 services:
   keepup:
@@ -61,7 +63,11 @@ services:
       - KEEPUP_DB_PATH=/data/keepup.db
       - STATUS_PAGE_THEME=auto
     healthcheck:
-      test: ["CMD-SHELL", "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/public/status || exit 1"]
+      test:
+        [
+          "CMD-SHELL",
+          "wget --no-verbose --tries=1 --spider http://127.0.0.1:8080/api/public/status || exit 1",
+        ]
       interval: 30s
       timeout: 5s
       retries: 3
@@ -113,6 +119,7 @@ keepup
 ## Core Feature Matrix
 
 ### Synthetic Monitoring
+
 - High-frequency HTTP and HTTPS synthetic probes with configurable verification intervals (10s to 3600s).
 - Configurable response status code matchers and validation rules.
 - Per-target request timeout limits (1s to 60s) preventing thread exhaustion.
@@ -120,29 +127,34 @@ keepup
 - Live response time tracking recorded to local SQLite time-series check logs.
 
 ### Multi-Status Pages &amp; Slug Routing
+
 - Multi-tenant isolated public status pages served on custom URL slugs (`/status/:slug`, e.g. `/status/api`, `/status/core`).
 - Default status page fallback at `/status` (aggregates active components when unassigned).
 - Custom title and description headers per status page.
 - Categorized monitor groupings (e.g. "REST Endpoints", "Web Applications", "Background Workers") with explicit display ordering.
 
 ### Planned Maintenance Windows
+
 - Schedule upcoming maintenance periods with start/end timestamps and custom descriptions.
 - High-visibility active maintenance announcement banners displayed on public status pages.
 - Automatic webhook alert suppression during active maintenance windows to prevent pager fatigue and false incident reports.
 - Dedicated `MAINTENANCE` status pills with purple accent styling (`#A855F7`).
 
 ### Latency Percentiles &amp; Analytics
+
 - Dynamic in-memory percentile calculation computing P50 (median), P95, and P99 tail latency from rolling SQLite telemetry logs.
 - Rolling 24-hour hourly latency averages and proportional historical bar distributions.
 - Zero external time-series database or time-series daemon overhead.
 
 ### Stateful Alerting &amp; Webhooks
+
 - State-change alerting dispatched only when a monitor transitions between `UP` and `DOWN` states.
 - Native integration formats for Discord Rich Embeds (with status colors `#30D158`, `#FF453A`, `#A855F7`), Slack Block Kit messages, and Generic HTTP webhooks.
 - Automatic downtime calculation and resolution notifications (`[RESOLVED]`) displaying exact duration metrics.
 - Support for custom Handlebars-style mustache templates with dynamic payload interpolation.
 
 ### Public Status Pages &amp; Badges
+
 - Standalone presentation view at `/status` and `/status/:slug` (navigation headers and management controls omitted).
 - Interactive 7-day uptime timeline history breakdown per public component.
 - Chronological 24-hour hourly latency histogram with proportional metric bars.
@@ -150,6 +162,7 @@ keepup
 - Built-in theme switcher: System Dark (`#0b0b0c`), OLED Pitch Black (`#000000`), Midnight Navy (`#050B14`), and Clean Light (`#f5f5f7`), with automatic OS `prefers-color-scheme` synchronization.
 
 ### Security &amp; Footprint
+
 - Standalone single-binary distribution with zero external database dependencies; static web assets embedded via `rust-embed`.
 - Sub-15MB idle RAM consumption and cold-boot times under 20ms.
 - Single-admin session authentication using signed `HttpOnly`, `SameSite=Lax` 7-day JWT cookies.
@@ -162,16 +175,16 @@ keepup
 
 KeepUp is configured via environment variables or a local `.env` file:
 
-| Variable | Description | Default | Required |
-| --- | --- | --- | --- |
-| `PORT` | HTTP server binding port | `8080` | No |
-| `ADMIN_USER` | Admin login username | `admin` | No |
-| `ADMIN_PASSWORD` | Admin login password | `admin` | No |
-| `KEEPUP_DB_PATH` | Path to SQLite database file | `./data/keepup.db` | No |
-| `JWT_SECRET` | Secret key for signing JWT cookies | Auto-generated random UUID | No |
-| `STATUS_PAGE_THEME` | Default status page theme (`auto`, `dark`, `light`, `oled`, `midnight`) | `auto` | No |
-| `CUSTOM_LOGO_URL` | Optional custom logo URL for status page header | None | No |
-| `RUST_LOG` | Log verbosity filter (`trace`, `debug`, `info`, `warn`, `error`) | `keepup=info` | No |
+| Variable            | Description                                                             | Default                    | Required |
+| ------------------- | ----------------------------------------------------------------------- | -------------------------- | -------- |
+| `PORT`              | HTTP server binding port                                                | `8080`                     | No       |
+| `ADMIN_USER`        | Admin login username                                                    | `admin`                    | No       |
+| `ADMIN_PASSWORD`    | Admin login password                                                    | `admin`                    | No       |
+| `KEEPUP_DB_PATH`    | Path to SQLite database file                                            | `./data/keepup.db`         | No       |
+| `JWT_SECRET`        | Secret key for signing JWT cookies                                      | Auto-generated random UUID | No       |
+| `STATUS_PAGE_THEME` | Default status page theme (`auto`, `dark`, `light`, `oled`, `midnight`) | `auto`                     | No       |
+| `CUSTOM_LOGO_URL`   | Optional custom logo URL for status page header                         | None                       | No       |
+| `RUST_LOG`          | Log verbosity filter (`trace`, `debug`, `info`, `warn`, `error`)        | `keepup=info`              | No       |
 
 ---
 
@@ -210,6 +223,7 @@ KeepUp executes as a single compiled binary without external runtime or database
 ```
 
 Data pipeline execution:
+
 1. **Scheduler:** The background Tokio loop fires asynchronous HTTP/TCP probes on defined intervals (`Tokio Async Engine`).
 2. **API & Delivery:** Inbound API traffic and status requests (`/status/:slug`) are routed via `Axum HTTP API`.
 3. **Persistence:** Latency, status code, and availability results are committed directly to `SQLite (WAL Mode)` with `PRAGMA journal_mode=WAL;` and `PRAGMA synchronous=NORMAL;`.

@@ -733,10 +733,11 @@
         </div>
 
         <!-- Dynamic Monitors Container (Grid / List) -->
-        <div id="monitors-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4">
+        <div id="monitors-container" class="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4" aria-live="polite">
           <!-- Rendered dynamically by app.js -->
-          <div class="col-span-full glass-card rounded-2xl p-12 text-center text-white/50 text-xs">
-            Loading health monitors...
+          <div class="col-span-full w-full rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-xl py-16 px-6 flex flex-col items-center justify-center text-center text-xs text-neutral-400 shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]">
+            <span class="h-2 w-2 rounded-full bg-[#30d158] shadow-[0_0_12px_rgba(48,209,88,0.4)] animate-pulse mb-3" aria-hidden="true"></span>
+            <span role="status">Loading monitors…</span>
           </div>
         </div>
 
