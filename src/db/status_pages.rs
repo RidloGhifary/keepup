@@ -148,6 +148,17 @@ pub async fn get_public_status_page(
     Ok(Some((page, monitors)))
 }
 
+/// Query all status pages.
+pub async fn get_all_status_pages(pool: &SqlitePool) -> Result<Vec<StatusPage>, AppError> {
+    let pages = sqlx::query_as::<_, StatusPage>(
+        "SELECT slug, title, description, is_public, created_at FROM status_pages ORDER BY created_at ASC"
+    )
+    .fetch_all(pool)
+    .await?;
+
+    Ok(pages)
+}
+
 /// List all status pages with their assigned monitor counts.
 pub async fn list_status_pages(pool: &SqlitePool) -> Result<Vec<StatusPageWithCount>, AppError> {
     let pages = sqlx::query_as::<_, StatusPageWithCount>(
@@ -309,7 +320,6 @@ pub async fn create_status_page(
     tx.commit().await?;
 
     tracing::info!(slug = %slug, count = inserted_count, "Persisted status page monitor assignments");
-    println!("[status_pages] Created status page '{}' with {} monitor assignments", slug, inserted_count);
 
     let page = get_status_page(pool, slug.trim())
         .await?
@@ -395,7 +405,6 @@ pub async fn update_status_page(
     tx.commit().await?;
 
     tracing::info!(slug = %slug, count = inserted_count, "Updated status page and persisted monitor assignments");
-    println!("[status_pages] Updated status page '{}' with {} monitor assignments", slug, inserted_count);
 
     let updated_page = get_status_page(pool, slug)
         .await?
