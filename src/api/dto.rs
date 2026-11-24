@@ -6,14 +6,6 @@ fn default_true() -> bool {
     true
 }
 
-fn deserialize_nullable<'de, D, T>(deserializer: D) -> Result<Option<Option<T>>, D::Error>
-where
-    D: serde::Deserializer<'de>,
-    T: Deserialize<'de>,
-{
-    Option::<T>::deserialize(deserializer).map(Some)
-}
-
 // ── Monitor DTOs ─────────────────────────────────────────────────────────────
 
 /// Payload for updating an existing health check monitor.
@@ -35,20 +27,16 @@ pub struct UpdateMonitorDto {
     pub port: Option<i32>,
     pub dns_record_type: Option<String>,
     pub dns_expected_value: Option<String>,
-    pub expiry_threshold_days: Option<i32>,
     pub http_method: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_nullable")]
-    pub http_headers_json: Option<Option<String>>,
-    #[serde(default, deserialize_with = "deserialize_nullable")]
-    pub http_body: Option<Option<String>>,
-    pub expected_status_codes: Option<String>,
-    #[serde(default, deserialize_with = "deserialize_nullable")]
-    pub response_keyword: Option<Option<String>>,
-    pub keyword_match_mode: Option<String>,
-    pub follow_redirects: Option<bool>,
-    pub ignore_tls_errors: Option<bool>,
-    #[serde(default, deserialize_with = "deserialize_nullable")]
-    pub degraded_threshold_ms: Option<Option<i32>>,
+    pub expected_status: Option<String>,
+    pub request_headers: Option<String>,
+    pub body_keyword: Option<String>,
+    pub json_pointer: Option<String>,
+    pub json_expected: Option<String>,
+    pub degraded_latency_ms: Option<i64>,
+    pub dns_expected: Option<String>,
+    pub resend_interval_mins: Option<i32>,
+    pub grace_secs: Option<i32>,
 }
 
 impl UpdateMonitorDto {
@@ -62,43 +50,28 @@ impl UpdateMonitorDto {
         }
         if let Some(ref ctype) = self.check_type {
             let t = ctype.trim().to_lowercase();
-            if t != "http" && t != "tcp" && t != "dns" && t != "ping" && t != "expiry" {
+            if t != "http" && t != "tcp" && t != "dns" && t != "ping" {
                 return Err(AppError::BadRequest(format!(
-                    "Invalid check_type '{ctype}'. Allowed values: http, tcp, dns, ping, expiry"
+                    "Invalid check_type '{ctype}'. Allowed values: http, tcp, dns, ping"
                 )));
             }
         }
         if let Some(ref url) = self.url {
-            let is_expiry = self
+            let u = url.trim();
+            if u.is_empty() {
+                return Err(AppError::BadRequest(
+                    "Target URL/host cannot be empty".to_string(),
+                ));
+            }
+            let is_http = self
                 .check_type
                 .as_deref()
-                .map(|t| t.eq_ignore_ascii_case("expiry"))
-                .unwrap_or(false);
-
-            if is_expiry {
-                let clean = crate::checker::expiry::sanitize_domain_target(url);
-                if clean.is_empty() {
-                    return Err(AppError::BadRequest(
-                        "Target domain cannot be empty".to_string(),
-                    ));
-                }
-            } else {
-                let u = url.trim();
-                if u.is_empty() {
-                    return Err(AppError::BadRequest(
-                        "Target URL/host cannot be empty".to_string(),
-                    ));
-                }
-                let is_http = self
-                    .check_type
-                    .as_deref()
-                    .map(|t| t.eq_ignore_ascii_case("http"))
-                    .unwrap_or(u.starts_with("http://") || u.starts_with("https://"));
-                if is_http && !u.starts_with("http://") && !u.starts_with("https://") {
-                    return Err(AppError::BadRequest(
-                        "HTTP Monitor URL must start with http:// or https://".to_string(),
-                    ));
-                }
+                .map(|t| t.eq_ignore_ascii_case("http"))
+                .unwrap_or(u.starts_with("http://") || u.starts_with("https://"));
+            if is_http && !u.starts_with("http://") && !u.starts_with("https://") {
+                return Err(AppError::BadRequest(
+                    "HTTP Monitor URL must start with http:// or https://".to_string(),
+                ));
             }
         }
         if let Some(port) = self.port {
@@ -117,23 +90,37 @@ impl UpdateMonitorDto {
             }
         }
         if let Some(interval) = self.check_interval_secs {
-            if interval < 1 {
+            if !(5..=86400).contains(&interval) {
                 return Err(AppError::BadRequest(
-                    "check_interval_secs must be at least 1 second".to_string(),
+                    "check_interval_secs must be between 5 and 86400".to_string(),
                 ));
             }
         }
         if let Some(timeout) = self.timeout_secs {
-            if timeout < 1 {
+            if !(1..=60).contains(&timeout) {
                 return Err(AppError::BadRequest(
-                    "timeout_secs must be at least 1 second".to_string(),
+                    "timeout_secs must be between 1 and 60".to_string(),
                 ));
             }
         }
         if let Some(retries) = self.max_retries {
-            if retries < 1 {
+            if !(1..=10).contains(&retries) {
                 return Err(AppError::BadRequest(
-                    "max_retries must be at least 1".to_string(),
+                    "max_retries must be between 1 and 10".to_string(),
+                ));
+            }
+        }
+        if let Some(domain_days) = self.domain_warning_days {
+            if !(1..=365).contains(&domain_days) {
+                return Err(AppError::BadRequest(
+                    "domain_warning_days must be between 1 and 365".to_string(),
+                ));
+            }
+        }
+        if let Some(ssl_days) = self.ssl_warning_days {
+            if !(1..=365).contains(&ssl_days) {
+                return Err(AppError::BadRequest(
+                    "ssl_warning_days must be between 1 and 365".to_string(),
                 ));
             }
         }
@@ -151,157 +138,6 @@ impl UpdateMonitorDto {
                 ));
             }
         }
-        if let Some(days) = self.expiry_threshold_days {
-            if days < 1 {
-                return Err(AppError::BadRequest(
-                    "expiry_threshold_days must be at least 1 day".to_string(),
-                ));
-            }
-        }
-        let http_options = crate::checker::HttpOptions {
-            method: self.http_method.clone().unwrap_or_else(|| "GET".to_string()),
-            headers_json: self.http_headers_json.clone().flatten(),
-            body: self.http_body.clone().flatten(),
-            expected_status_codes: self.expected_status_codes.clone().unwrap_or_else(|| "200-299".to_string()),
-            response_keyword: self.response_keyword.clone().flatten(),
-            keyword_match_mode: self.keyword_match_mode.clone().unwrap_or_else(|| "contains".to_string()),
-            follow_redirects: self.follow_redirects.unwrap_or(true),
-            ignore_tls_errors: self.ignore_tls_errors.unwrap_or(false),
-            degraded_threshold_ms: self.degraded_threshold_ms.flatten(),
-        };
-        crate::checker::http::validate_options(&http_options).map_err(AppError::BadRequest)?;
-        Ok(())
-    }
-}
-
-// ── Webhook DTOs ─────────────────────────────────────────────────────────────
-
-/// Payload for registering a new alert webhook.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct CreateWebhookRequest {
-    pub name: String,
-    pub provider: String,
-    pub url: String,
-    #[serde(default = "default_true")]
-    pub is_enabled: bool,
-    #[serde(default = "default_true")]
-    pub use_default_template: bool,
-    #[serde(default = "default_true")]
-    pub notify_on_resolve: bool,
-    pub message_template: Option<String>,
-}
-
-pub type CreateWebhookDto = CreateWebhookRequest;
-
-impl CreateWebhookRequest {
-    pub fn validate(&self) -> Result<(), AppError> {
-        if self.name.trim().is_empty() {
-            return Err(AppError::BadRequest(
-                "Webhook name cannot be empty".to_string(),
-            ));
-        }
-
-        let provider = self.provider.to_lowercase();
-        if provider != "discord"
-            && provider != "slack"
-            && provider != "generic"
-            && provider != "generic_webhook"
-        {
-            return Err(AppError::BadRequest(format!(
-                "Invalid provider '{}'. Allowed values are: discord, slack, generic",
-                self.provider
-            )));
-        }
-
-        let u = self.url.trim();
-        if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
-            return Err(AppError::BadRequest(
-                "Webhook URL must be a valid http or https URL".to_string(),
-            ));
-        }
-
-        Ok(())
-    }
-}
-
-/// Payload for updating an existing alert webhook.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct UpdateWebhookRequest {
-    pub name: Option<String>,
-    pub provider: Option<String>,
-    pub url: Option<String>,
-    pub is_enabled: Option<bool>,
-    pub use_default_template: Option<bool>,
-    pub notify_on_resolve: Option<bool>,
-    pub message_template: Option<String>,
-}
-
-pub type UpdateWebhookDto = UpdateWebhookRequest;
-
-impl UpdateWebhookRequest {
-    pub fn validate(&self) -> Result<(), AppError> {
-        if let Some(ref name) = self.name {
-            if name.trim().is_empty() {
-                return Err(AppError::BadRequest(
-                    "Webhook name cannot be empty".to_string(),
-                ));
-            }
-        }
-
-        if let Some(ref provider) = self.provider {
-            let p = provider.to_lowercase();
-            if p != "discord" && p != "slack" && p != "generic" && p != "generic_webhook" {
-                return Err(AppError::BadRequest(format!(
-                    "Invalid provider '{}'. Allowed values are: discord, slack, generic",
-                    provider
-                )));
-            }
-        }
-
-        if let Some(ref url) = self.url {
-            let u = url.trim();
-            if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
-                return Err(AppError::BadRequest(
-                    "Webhook URL must be a valid http or https URL".to_string(),
-                ));
-            }
-        }
-
-        Ok(())
-    }
-}
-
-/// Payload for testing an alert webhook endpoint on-the-fly.
-#[derive(Debug, Clone, Deserialize, Serialize)]
-pub struct TestWebhookRequest {
-    pub url: String,
-    pub provider: String,
-    #[serde(default = "default_true")]
-    pub use_default_template: bool,
-    pub message_template: Option<String>,
-}
-
-impl TestWebhookRequest {
-    pub fn validate(&self) -> Result<(), AppError> {
-        let provider = self.provider.to_lowercase();
-        if provider != "discord"
-            && provider != "slack"
-            && provider != "generic"
-            && provider != "generic_webhook"
-        {
-            return Err(AppError::BadRequest(format!(
-                "Invalid provider '{}'. Allowed values are: discord, slack, generic",
-                self.provider
-            )));
-        }
-
-        let u = self.url.trim();
-        if u.is_empty() || (!u.starts_with("http://") && !u.starts_with("https://")) {
-            return Err(AppError::BadRequest(
-                "Webhook URL must be a valid http or https URL".to_string(),
-            ));
-        }
-
         Ok(())
     }
 }

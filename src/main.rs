@@ -4,44 +4,26 @@ mod banner;
 mod checker;
 mod config;
 mod db;
-mod diagnostics;
 mod error;
 mod middleware;
-mod notifier;
+mod net_guard;
 mod ui;
 
-#[cfg(target_os = "linux")]
-#[global_allocator]
-static ALLOC: tikv_jemallocator::Jemalloc = tikv_jemallocator::Jemalloc;
-
-#[cfg(target_os = "linux")]
-#[export_name = "malloc_conf"]
-pub static MALLOC_CONF: &[u8] = b"prof:true,prof_active:true\0";
-
+use std::sync::atomic::{AtomicU64, Ordering};
 use std::sync::Arc;
 
-use axum::http::{header, Method};
-use clap::Parser;
+use axum::extract::DefaultBodyLimit;
+use axum::http::{header, HeaderName, HeaderValue, Method};
 use reqwest::Client;
 use sqlx::SqlitePool;
 use tokio::net::TcpListener;
+use tower_http::compression::CompressionLayer;
 use tower_http::cors::{AllowOrigin, CorsLayer};
+use tower_http::set_header::SetResponseHeaderLayer;
 use tracing::info;
 use tracing_subscriber::EnvFilter;
 
 use crate::config::Config;
-
-#[derive(Debug, Parser)]
-#[command(name = "keepup", version, about = "Self-hosted uptime monitoring")]
-struct Cli {
-    /// Reset the local administrator password and exit.
-    #[arg(long)]
-    reset_password: bool,
-
-    /// Set a password without prompting. Requires --reset-password.
-    #[arg(long, value_name = "NEW_PASSWORD", requires = "reset_password")]
-    password: Option<String>,
-}
 
 /// Shared application state threaded through Axum handlers.
 #[derive(Clone)]
@@ -51,7 +33,113 @@ pub struct AppState {
     pub config: Config,
     pub http_client: Client,
     pub reload_tx: tokio::sync::broadcast::Sender<String>,
+    pub session_version: Arc<AtomicU64>,
     pub status_cache: crate::api::public::PublicStatusCache,
+    pub monitor_states: Arc<
+        tokio::sync::Mutex<
+            std::collections::HashMap<String, crate::checker::scheduler::MonitorState>,
+        >,
+    >,
+    pub events_tx: tokio::sync::broadcast::Sender<String>,
+}
+
+impl AppState {
+    pub fn current_session_version(&self) -> u64 {
+        self.session_version.load(Ordering::SeqCst)
+    }
+
+    pub async fn invalidate_status_cache(&self) {
+        self.status_cache.invalidate(None).await;
+    }
+
+    #[cfg(test)]
+    pub fn new_for_test(db: SqlitePool, config: Config) -> Arc<Self> {
+        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
+        let http_client = net_guard::build_http_client(
+            config.allow_private_targets,
+            std::time::Duration::from_secs(5),
+        )
+        .expect("valid test http client");
+        let (events_tx, _) = tokio::sync::broadcast::channel(100);
+        Arc::new(Self {
+            write_db: db.clone(),
+            db,
+            config,
+            http_client,
+            reload_tx,
+            session_version: Arc::new(AtomicU64::new(1)),
+            status_cache: crate::api::public::PublicStatusCache::default(),
+            monitor_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+            events_tx,
+        })
+    }
+}
+
+/// Assemble the complete Axum HTTP application router with body size limits,
+/// explicit-only CORS, gzip compression, and defensive HTTP security headers.
+pub fn build_http_app(state: Arc<AppState>) -> axum::Router {
+    let cors = if !state.config.cors_allowed_origins.is_empty() {
+        let parsed_origins: Vec<HeaderValue> = state
+            .config
+            .cors_allowed_origins
+            .iter()
+            .filter_map(|o| HeaderValue::from_str(o).ok())
+            .collect();
+        if !parsed_origins.is_empty() {
+            CorsLayer::new()
+                .allow_methods([
+                    Method::GET,
+                    Method::POST,
+                    Method::PUT,
+                    Method::DELETE,
+                    Method::PATCH,
+                    Method::OPTIONS,
+                ])
+                .allow_headers([
+                    header::CONTENT_TYPE,
+                    header::AUTHORIZATION,
+                    header::ACCEPT,
+                    header::COOKIE,
+                ])
+                .allow_origin(parsed_origins)
+                .allow_credentials(true)
+        } else {
+            CorsLayer::new()
+        }
+    } else {
+        CorsLayer::new()
+    };
+
+    axum::Router::new()
+        .route("/robots.txt", axum::routing::get(api::public::robots_txt))
+        .route("/metrics", axum::routing::get(api::observability::metrics_handler))
+        .route("/status", axum::routing::get(ui::status_page_handler))
+        .route("/status/*path", axum::routing::get(ui::status_page_handler))
+        .route("/badge/:id", axum::routing::get(api::public::badge))
+        .merge(api::router(state.clone()))
+        .fallback(ui::static_handler)
+        .layer(DefaultBodyLimit::max(64 * 1024))
+        .layer(CompressionLayer::new())
+        .layer(cors)
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_CONTENT_TYPE_OPTIONS,
+            HeaderValue::from_static("nosniff"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::X_FRAME_OPTIONS,
+            HeaderValue::from_static("DENY"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            HeaderName::from_static("referrer-policy"),
+            HeaderValue::from_static("same-origin"),
+        ))
+        .layer(SetResponseHeaderLayer::if_not_present(
+            header::CONTENT_SECURITY_POLICY,
+            HeaderValue::from_static(
+                "default-src 'self'; img-src 'self' https: data:; style-src 'self' 'unsafe-inline'; script-src 'self' 'unsafe-inline'; connect-src 'self'",
+            ),
+        ))
+        .with_state(state)
 }
 
 #[tokio::main]
@@ -62,15 +150,6 @@ async fn main() -> anyhow::Result<()> {
     // Load .env file (optional – not an error if missing).
     dotenvy::dotenv().ok();
 
-    let cli = Cli::parse();
-
-    // Load configuration before handling local maintenance commands.
-    let config = Config::from_env();
-    if cli.reset_password {
-        reset_admin_password(&config, cli.password).await?;
-        return Ok(());
-    }
-
     // Initialise structured logging.
     tracing_subscriber::fmt()
         .with_env_filter(
@@ -79,6 +158,8 @@ async fn main() -> anyhow::Result<()> {
         )
         .init();
 
+    // Load configuration from environment variables.
+    let mut config = Config::from_env();
     banner::print_banner(env!("CARGO_PKG_VERSION"), config.port, &config.database_url);
     info!(port = config.port, db = %config.database_url, "Starting KeepUp");
 
@@ -86,13 +167,18 @@ async fn main() -> anyhow::Result<()> {
     let (read_pool, write_pool) = db::init_pools(&config.database_url).await?;
     db::run_migrations(&write_pool).await?;
 
-    // Create broadcast channel for monitor reload notifications.
-    let (reload_tx, reload_rx) = tokio::sync::broadcast::channel::<String>(100);
+    // Bootstrap persistent JWT secret, initial Argon2id admin password, and session_version.
+    let initial_session_ver = api::auth::bootstrap_security_state(&write_pool, &mut config).await?;
 
-    // Build shared HTTP client for health checks.
-    let http_client = Client::builder()
-        .user_agent("KeepUp-Monitor/1.0")
-        .build()?;
+    // Create broadcast channels for monitor reload and live SSE events.
+    let (reload_tx, reload_rx) = tokio::sync::broadcast::channel::<String>(100);
+    let (events_tx, _) = tokio::sync::broadcast::channel::<String>(100);
+
+    // Build shared HTTP client with outbound SSRF guard for health checks & webhooks.
+    let http_client = net_guard::build_http_client(
+        config.allow_private_targets,
+        std::time::Duration::from_secs(10),
+    )?;
 
     let status_cache = crate::api::public::PublicStatusCache::default();
 
@@ -103,55 +189,19 @@ async fn main() -> anyhow::Result<()> {
         config: config.clone(),
         http_client: http_client.clone(),
         reload_tx,
+        session_version: Arc::new(AtomicU64::new(initial_session_ver)),
         status_cache: status_cache.clone(),
+        monitor_states: Arc::new(tokio::sync::Mutex::new(std::collections::HashMap::new())),
+        events_tx,
     });
 
     // Spawn the background health-check scheduler with reload receiver.
     tokio::spawn(checker::scheduler::run_scheduler(
-        read_pool,
-        write_pool,
-        http_client,
+        state.clone(),
         reload_rx,
-        config.data_retention_days,
-        status_cache,
     ));
 
-    // Configure CORS with credentials support for localhost and local origins.
-    let cors = CorsLayer::new()
-        .allow_methods([
-            Method::GET,
-            Method::POST,
-            Method::PUT,
-            Method::DELETE,
-            Method::PATCH,
-            Method::OPTIONS,
-        ])
-        .allow_headers([
-            header::CONTENT_TYPE,
-            header::AUTHORIZATION,
-            header::ACCEPT,
-            header::COOKIE,
-        ])
-        .allow_origin(AllowOrigin::predicate(|origin, _| {
-            let origin_bytes = origin.as_bytes();
-            origin_bytes.starts_with(b"http://localhost")
-                || origin_bytes.starts_with(b"http://127.0.0.1")
-                || origin_bytes.starts_with(b"https://localhost")
-                || origin_bytes.starts_with(b"https://127.0.0.1")
-        }))
-        .allow_credentials(true);
-
-    // Build Axum router with explicit status routes, API routes and embedded UI fallback.
-    let app = axum::Router::new()
-        .route("/robots.txt", axum::routing::get(api::public::robots_txt))
-        .route("/status", axum::routing::get(ui::status_page_handler))
-        .route("/status/*path", axum::routing::get(ui::status_page_handler))
-        .route("/badge/:id", axum::routing::get(api::public::badge))
-        .merge(api::router(state.clone()))
-        .fallback(ui::static_handler)
-        .layer(tower_http::compression::CompressionLayer::new())
-        .layer(cors)
-        .with_state(state);
+    let app = build_http_app(state);
 
     // Bind and serve with connection info for client IP rate limiting.
     let addr = format!("0.0.0.0:{}", config.port);
@@ -163,32 +213,5 @@ async fn main() -> anyhow::Result<()> {
     )
     .await?;
 
-    Ok(())
-}
-
-async fn reset_admin_password(config: &Config, provided_password: Option<String>) -> anyhow::Result<()> {
-    let password = match provided_password {
-        Some(password) => password,
-        None => {
-            let password = rpassword::prompt_password("New password: ")?;
-            let confirmation = rpassword::prompt_password("Confirm new password: ")?;
-            anyhow::ensure!(password == confirmation, "Passwords do not match.");
-            password
-        }
-    };
-
-    anyhow::ensure!(
-        crate::api::auth::meets_password_minimum(&password),
-        "Password must be at least {} characters long.",
-        crate::api::auth::MIN_PASSWORD_LENGTH
-    );
-
-    let (read_pool, write_pool) = crate::db::init_pools(&config.database_url).await?;
-    crate::db::run_migrations(&write_pool).await?;
-    crate::api::auth::store_admin_password(&write_pool, &password).await?;
-    read_pool.close().await;
-    write_pool.close().await;
-
-    println!("Administrator password updated successfully.");
     Ok(())
 }

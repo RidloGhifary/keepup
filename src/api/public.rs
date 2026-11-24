@@ -9,9 +9,7 @@ use axum::Json;
 use serde::{Deserialize, Serialize};
 use tokio::sync::RwLock;
 
-use crate::db::monitors::{
-    get_24h_latency_history, get_7day_uptime_history, DailyUptime, HourlyLatency,
-};
+use crate::db::monitors::{DailyUptime, HourlyLatency};
 use crate::error::AppError;
 use crate::AppState;
 
@@ -76,6 +74,30 @@ pub struct MonitorGroup {
     pub monitors: Vec<PublicMonitor>,
 }
 
+/// Public representation of an incident in public status pages.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicIncident {
+    pub id: String,
+    pub title: String,
+    pub status: String,
+    pub severity: String,
+    pub monitor_id: Option<String>,
+    pub started_at: String,
+    pub resolved_at: Option<String>,
+    #[serde(default)]
+    pub updates: Vec<PublicIncidentUpdate>,
+}
+
+/// Public timeline entry for an ongoing or past incident.
+#[derive(Debug, Clone, Serialize, Deserialize)]
+pub struct PublicIncidentUpdate {
+    pub id: String,
+    pub incident_id: String,
+    pub status: String,
+    pub message: String,
+    pub created_at: String,
+}
+
 /// Top-level public status response.
 #[derive(Debug, Clone, Serialize, Deserialize)]
 pub struct PublicStatus {
@@ -89,8 +111,14 @@ pub struct PublicStatus {
     /// Optional status page theme configuration ("default", "oled", "midnight", "light").
     #[serde(skip_serializing_if = "Option::is_none")]
     pub status_page_theme: Option<String>,
+    /// Optional custom brand logo URL.
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub custom_logo_url: Option<String>,
     /// Active and scheduled maintenance windows.
     pub maintenance_windows: Vec<crate::db::maintenance::PublicMaintenanceWindow>,
+    /// Public incident timeline.
+    #[serde(default)]
+    pub incidents: Vec<PublicIncident>,
     /// Monitored components grouped by category.
     pub groups: Vec<MonitorGroup>,
     /// Per-monitor summaries (flat list for backward compatibility).
@@ -132,12 +160,6 @@ pub struct PublicMonitor {
     pub latency: crate::db::checks::LatencyPercentiles,
     #[serde(default = "default_check_type")]
     pub check_type: String,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub domain_days_remaining: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub ssl_days_remaining: Option<i32>,
-    #[serde(skip_serializing_if = "Option::is_none")]
-    pub expiry_threshold_days: Option<i32>,
 }
 
 fn default_check_type() -> String {
@@ -153,14 +175,6 @@ struct MonitorIdName {
     url: String,
     #[sqlx(default)]
     check_type: String,
-    #[sqlx(default)]
-    domain_days_remaining: Option<i32>,
-    #[sqlx(default)]
-    ssl_days_remaining: Option<i32>,
-    #[sqlx(default)]
-    expiry_threshold_days: Option<i32>,
-    #[sqlx(default)]
-    last_status: Option<String>,
 }
 
 #[derive(sqlx::FromRow)]
@@ -185,14 +199,6 @@ struct AssignedMonitorRow {
     display_order: i64,
     #[sqlx(default)]
     check_type: String,
-    #[sqlx(default)]
-    domain_days_remaining: Option<i32>,
-    #[sqlx(default)]
-    ssl_days_remaining: Option<i32>,
-    #[sqlx(default)]
-    expiry_threshold_days: Option<i32>,
-    #[sqlx(default)]
-    last_status: Option<String>,
 }
 
 // ── Handler ──────────────────────────────────────────────────────────────────
@@ -206,69 +212,53 @@ pub async fn get_public_status_impl(
         return Ok(cached);
     }
 
-    let (
-        title,
-        description,
-        allow_indexing,
-        meta_title,
-        meta_description,
-        og_image_url,
-        canonical_url,
-    ) = if slug == "default" {
-        if let Some(page) = crate::db::status_pages::get_status_page(&state.db, "default").await? {
-            (
-                page.title,
-                page.description,
-                page.allow_indexing,
-                page.meta_title,
-                page.meta_description,
-                page.og_image_url,
-                page.canonical_url,
-            )
-        } else {
-            (
-                "System Status".to_string(),
-                Some("Current status and real-time performance of public services".to_string()),
-                true,
-                None,
-                None,
-                None,
-                None,
-            )
+    let is_default = slug.eq_ignore_ascii_case("default");
+    let page = crate::db::status_pages::get_status_page(&state.db, slug).await?;
+
+    let (title, description, allow_indexing, meta_title, meta_description, og_image_url, canonical_url) = match (is_default, page) {
+        (_, Some(p)) if p.is_public == 0 => {
+            return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
         }
-    } else {
-        let page = crate::db::status_pages::get_status_page(&state.db, slug)
-            .await?
-            .ok_or_else(|| AppError::NotFound(format!("Status page '{slug}' not found")))?;
-        if page.is_public == 0 {
-            return Err(AppError::NotFound(format!(
-                "Status page '{slug}' not found"
-            )));
+        (_, Some(p)) => (
+            p.title,
+            p.description,
+            p.allow_indexing,
+            p.meta_title,
+            p.meta_description,
+            p.og_image_url,
+            p.canonical_url,
+        ),
+        (true, None) => (
+            "System Status".to_string(),
+            Some("Current status and real-time performance of public services".to_string()),
+            true,
+            None,
+            None,
+            None,
+            None,
+        ),
+        (false, None) => {
+            return Err(AppError::NotFound(format!("Status page '{slug}' not found")));
         }
-        (
-            page.title,
-            page.description,
-            page.allow_indexing,
-            page.meta_title,
-            page.meta_description,
-            page.og_image_url,
-            page.canonical_url,
-        )
     };
+
+    let total_assigned_count: i64 = sqlx::query_scalar(
+        "SELECT COUNT(*) FROM status_page_monitors WHERE LOWER(status_page_slug) = LOWER(?)",
+    )
+    .bind(slug)
+    .fetch_one(&state.db)
+    .await?;
 
     let mut assigned = sqlx::query_as::<_, AssignedMonitorRow>(
         r#"
         SELECT 
             m.id, m.name, m.url, 
             spm.group_name, spm.display_order,
-            m.check_type,
-            m.domain_days_remaining,
-            m.ssl_days_remaining,
-            m.expiry_threshold_days,
-            m.last_status
+            m.check_type
         FROM status_page_monitors spm
         INNER JOIN monitors m ON m.id = spm.monitor_id
         WHERE LOWER(spm.status_page_slug) = LOWER(?)
+          AND m.is_public = 1 AND m.is_active = 1
         ORDER BY spm.display_order ASC, m.name ASC
         "#,
     )
@@ -276,10 +266,9 @@ pub async fn get_public_status_impl(
     .fetch_all(&state.db)
     .await?;
 
-    if assigned.is_empty() && slug == "default" {
+    if total_assigned_count == 0 && is_default {
         let all_monitors = sqlx::query_as::<_, MonitorIdName>(
-            "SELECT id, name, url, check_type, domain_days_remaining, ssl_days_remaining, expiry_threshold_days, last_status \
-             FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
+            "SELECT id, name, url, check_type FROM monitors WHERE is_public = 1 AND is_active = 1 ORDER BY name",
         )
         .fetch_all(&state.db)
         .await?;
@@ -294,16 +283,22 @@ pub async fn get_public_status_impl(
                 group_name: "Services".to_string(),
                 display_order: i as i64,
                 check_type: m.check_type,
-                domain_days_remaining: m.domain_days_remaining,
-                ssl_days_remaining: m.ssl_days_remaining,
-                expiry_threshold_days: m.expiry_threshold_days,
-                last_status: m.last_status,
             })
             .collect();
     }
 
-    let maintenance_windows =
+    let monitor_ids: Vec<String> = assigned.iter().map(|m| m.id.clone()).collect();
+    let batch_metrics =
+        crate::db::checks::get_batch_public_metrics(&state.db, &monitor_ids).await?;
+
+    let visible_id_set: std::collections::HashSet<&str> =
+        assigned.iter().map(|m| m.id.as_str()).collect();
+    let mut maintenance_windows =
         crate::db::maintenance::get_public_maintenance_windows(&state.db).await?;
+    for mw in &mut maintenance_windows {
+        mw.monitor_ids
+            .retain(|mid| mid == "*" || visible_id_set.contains(mid.as_str()));
+    }
 
     let mut public_monitors: Vec<PublicMonitor> = Vec::with_capacity(assigned.len());
     let mut groups_map: Vec<(String, Vec<PublicMonitor>)> = Vec::new();
@@ -311,77 +306,41 @@ pub async fn get_public_status_impl(
     let mut any_degraded = false;
 
     for m in assigned {
-        // Latest check result.
-        let latest = sqlx::query_as::<_, LatestCheck>(
-            "SELECT is_up, latency_ms FROM check_logs \
-             WHERE monitor_id = ? ORDER BY checked_at DESC, id DESC LIMIT 1",
-        )
-        .bind(&m.id)
-        .fetch_optional(&state.db)
-        .await?;
-
+        let metrics = batch_metrics.get(&m.id);
         let in_maintenance = crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id)
             .await
             .unwrap_or(false);
 
         let (current_status, last_latency_ms) = if in_maintenance {
-            ("MAINTENANCE".to_string(), latest.and_then(|c| c.latency_ms))
+            ("MAINTENANCE".to_string(), metrics.and_then(|b| b.last_latency_ms))
         } else {
-            match &latest {
-                Some(c) if c.is_up == 0 => {
+            match metrics.and_then(|b| b.latest_is_up) {
+                Some(true) => ("UP".to_string(), metrics.and_then(|b| b.last_latency_ms)),
+                Some(false) => {
                     any_down = true;
-                    ("DOWN".to_string(), c.latency_ms)
+                    ("DOWN".to_string(), metrics.and_then(|b| b.last_latency_ms))
                 }
-                Some(c) if m.last_status.as_deref() == Some("DEGRADED") => {
-                    any_degraded = true;
-                    ("DEGRADED".to_string(), c.latency_ms)
-                }
-                Some(c) => ("UP".to_string(), c.latency_ms),
-                None => {
-                    if m.last_status.as_deref() == Some("DEGRADED") {
-                        any_degraded = true;
-                        ("DEGRADED".to_string(), None)
-                    } else if m.last_status.as_deref() == Some("DOWN") {
-                        any_down = true;
-                        ("DOWN".to_string(), None)
-                    } else if m.last_status.as_deref() == Some("UP") {
-                        ("UP".to_string(), None)
-                    } else {
-                        ("UNKNOWN".to_string(), None)
-                    }
-                }
+                None => ("UNKNOWN".to_string(), None),
             }
         };
 
-        // 24-hour uptime percentage.
-        let agg = sqlx::query_as::<_, UptimeAgg>(
-            "SELECT COUNT(*) AS total, \
-                    COALESCE(SUM(CASE WHEN is_up = 1 THEN 1 ELSE 0 END), 0) AS up_count \
-             FROM check_logs \
-             WHERE monitor_id = ? AND checked_at > datetime('now', '-24 hours')",
-        )
-        .bind(&m.id)
-        .fetch_one(&state.db)
-        .await?;
-
-        let uptime_24h = if agg.total > 0 {
-            (agg.up_count as f64 / agg.total as f64) * 100.0
-        } else {
-            100.0
-        };
-
-        if uptime_24h < 100.0 && uptime_24h >= 90.0 {
-            any_degraded = true;
+        let uptime_24h = metrics.map(|b| b.uptime_24h).unwrap_or(100.0);
+        if !in_maintenance {
+            if current_status == "DEGRADED" || uptime_24h < 99.0 {
+                any_degraded = true;
+            }
         }
 
-        // Fetch 7-day daily uptime history.
-        let uptime_history = get_7day_uptime_history(&state.db, &m.id).await?;
-
-        // Fetch 24-hour hourly latency breakdown.
-        let latency_24h = get_24h_latency_history(&state.db, &m.id).await?;
-
-        // Fetch 24-hour response time percentiles (P50, P95, P99) and average.
-        let latency = crate::db::checks::get_latency_percentiles(&state.db, &m.id, 24).await?;
+        let uptime_history = metrics.map(|b| b.uptime_history.clone()).unwrap_or_default();
+        let latency_24h = metrics.map(|b| b.latency_24h.clone()).unwrap_or_default();
+        let latency = metrics
+            .map(|b| b.latency.clone())
+            .unwrap_or(crate::db::checks::LatencyPercentiles {
+                p50: 0,
+                p95: 0,
+                p99: 0,
+                avg: 0,
+            });
 
         let pub_m = PublicMonitor {
             id: m.id.clone(),
@@ -394,9 +353,6 @@ pub async fn get_public_status_impl(
             latency_24h,
             latency,
             check_type: m.check_type.clone(),
-            domain_days_remaining: m.domain_days_remaining,
-            ssl_days_remaining: m.ssl_days_remaining,
-            expiry_threshold_days: m.expiry_threshold_days,
         };
 
         public_monitors.push(pub_m.clone());
@@ -432,12 +388,23 @@ pub async fn get_public_status_impl(
         .or_else(|_| std::env::var("KEEPUP_THEME"))
         .ok();
 
+    let monitor_ids: Vec<String> = public_monitors.iter().map(|m| m.id.clone()).collect();
+    let incidents = crate::db::incidents::get_public_incidents_for_page(
+        &state.db,
+        Some(slug),
+        &monitor_ids,
+    )
+    .await
+    .unwrap_or_default();
+
     let public_status = PublicStatus {
         title,
         description,
         status,
         status_page_theme,
+        custom_logo_url: state.config.custom_logo_url.clone(),
         maintenance_windows,
+        incidents,
         groups,
         monitors: public_monitors,
         allow_indexing,
@@ -452,7 +419,7 @@ pub async fn get_public_status_impl(
     Ok(public_status)
 }
 
-/// `GET /api/public/status` — aggregated health for the default status page.
+/// `GET /api/public/status` — aggregated health for the default status page with 5s cache.
 pub async fn public_status(
     State(state): State<Arc<AppState>>,
 ) -> Result<impl IntoResponse, AppError> {
@@ -469,8 +436,7 @@ pub async fn public_status(
         axum::http::HeaderValue::from_static(robots_val),
     );
     if let Some(ref canon) = status.canonical_url {
-        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\""))
-        {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\"")) {
             headers.insert(axum::http::header::LINK, val);
         }
     }
@@ -478,7 +444,7 @@ pub async fn public_status(
     Ok((headers, Json(status)))
 }
 
-/// `GET /api/public/status/:slug` — aggregated health for a custom status page.
+/// `GET /api/public/status/:slug` — aggregated health for a custom status page with 5s cache.
 pub async fn public_status_by_slug(
     State(state): State<Arc<AppState>>,
     Path(slug): Path<String>,
@@ -496,8 +462,7 @@ pub async fn public_status_by_slug(
         axum::http::HeaderValue::from_static(robots_val),
     );
     if let Some(ref canon) = status.canonical_url {
-        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\""))
-        {
+        if let Ok(val) = axum::http::HeaderValue::from_str(&format!("<{canon}>; rel=\"canonical\"")) {
             headers.insert(axum::http::header::LINK, val);
         }
     }
@@ -540,9 +505,9 @@ pub async fn robots_txt(State(state): State<Arc<AppState>>) -> impl IntoResponse
 }
 
 pub use public_status as get_default_status;
+pub use public_status_by_slug as get_status_by_slug;
 #[allow(unused_imports)]
 pub use public_status as get_public_status_handler;
-pub use public_status_by_slug as get_status_by_slug;
 #[allow(unused_imports)]
 pub use public_status_by_slug as get_public_status_by_slug_handler;
 
@@ -777,17 +742,8 @@ pub async fn badge(
                 };
                 let right = status_enum.default_label().to_string();
                 let title = format!("{left}: {right}");
-                (
-                    left,
-                    right,
-                    status_enum.bg_color(),
-                    status_enum.text_color(),
-                    title,
-                )
-            } else if crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id)
-                .await
-                .unwrap_or(false)
-            {
+                (left, right, status_enum.bg_color(), status_enum.text_color(), title)
+            } else if crate::db::maintenance::is_monitor_in_maintenance(&state.db, &m.id).await.unwrap_or(false) {
                 let right = "maintenance".to_string();
                 let title = format!("{left}: maintenance");
                 (
@@ -828,7 +784,9 @@ pub async fn badge(
 
                 // Determine operational state
                 let (status_enum, right) = match &latest {
-                    Some(c) if c.is_up == 0 => (MonitorBadgeStatus::Down, "downtime".to_string()),
+                    Some(c) if c.is_up == 0 => {
+                        (MonitorBadgeStatus::Down, "downtime".to_string())
+                    }
                     Some(_) if uptime_24h < 99.0 => {
                         (MonitorBadgeStatus::Degraded, "degraded".to_string())
                     }
@@ -871,16 +829,12 @@ pub async fn badge(
                     (MonitorBadgeStatus::Maintenance, _) => {
                         format!("{left}: maintenance")
                     }
-                    (MonitorBadgeStatus::NotFound, _) => "KeepUp: not found".to_string(),
+                    (MonitorBadgeStatus::NotFound, _) => {
+                        "KeepUp: not found".to_string()
+                    }
                 };
 
-                (
-                    left,
-                    right,
-                    status_enum.bg_color(),
-                    status_enum.text_color(),
-                    title,
-                )
+                (left, right, status_enum.bg_color(), status_enum.text_color(), title)
             }
         }
         _ => {
@@ -893,13 +847,7 @@ pub async fn badge(
                 .unwrap_or_else(|| "KeepUp".to_string());
             let right = status_enum.default_label().to_string();
             let title = format!("{left}: not found");
-            (
-                left,
-                right,
-                status_enum.bg_color(),
-                status_enum.text_color(),
-                title,
-            )
+            (left, right, status_enum.bg_color(), status_enum.text_color(), title)
         }
     };
 
@@ -936,13 +884,7 @@ mod tests {
     #[test]
     fn test_render_badge_svg_colors_and_text() {
         // UP / Operational: #30D158
-        let svg_up = render_badge_svg(
-            "KeepUp | API Gateway",
-            "operational",
-            "#30D158",
-            "#09090b",
-            "API Gateway: operational",
-        );
+        let svg_up = render_badge_svg("KeepUp | API Gateway", "operational", "#30D158", "#09090b", "API Gateway: operational");
         assert!(svg_up.contains("#30D158"));
         assert!(svg_up.contains("KeepUp | API Gateway"));
         assert!(svg_up.contains("operational"));
@@ -950,48 +892,24 @@ mod tests {
         assert!(svg_up.contains("</svg>"));
 
         // DOWN / Downtime: #FF453A
-        let svg_down = render_badge_svg(
-            "KeepUp | Database",
-            "downtime",
-            "#FF453A",
-            "#ffffff",
-            "Database: downtime",
-        );
+        let svg_down = render_badge_svg("KeepUp | Database", "downtime", "#FF453A", "#ffffff", "Database: downtime");
         assert!(svg_down.contains("#FF453A"));
         assert!(svg_down.contains("downtime"));
 
         // DEGRADED: #FFD60A
-        let svg_deg = render_badge_svg(
-            "KeepUp | Payment",
-            "degraded",
-            "#FFD60A",
-            "#09090b",
-            "Payment: degraded",
-        );
+        let svg_deg = render_badge_svg("KeepUp | Payment", "degraded", "#FFD60A", "#09090b", "Payment: degraded");
         assert!(svg_deg.contains("#FFD60A"));
         assert!(svg_deg.contains("degraded"));
 
         // NOT_FOUND: #71717A
-        let svg_nf = render_badge_svg(
-            "KeepUp",
-            "not found",
-            "#71717A",
-            "#ffffff",
-            "KeepUp: monitor not found",
-        );
+        let svg_nf = render_badge_svg("KeepUp", "not found", "#71717A", "#ffffff", "KeepUp: monitor not found");
         assert!(svg_nf.contains("#71717A"));
         assert!(svg_nf.contains("not found"));
     }
 
     #[test]
     fn test_render_badge_svg_xml_escaping() {
-        let svg = render_badge_svg(
-            "Auth & <Billing> \"v1\"",
-            "status",
-            "#30D158",
-            "#09090b",
-            "Title & 'Quotes'",
-        );
+        let svg = render_badge_svg("Auth & <Billing> \"v1\"", "status", "#30D158", "#09090b", "Title & 'Quotes'");
         assert!(svg.contains("Auth &amp; &lt;Billing&gt; &quot;v1&quot;"));
         assert!(svg.contains("Title &amp; &apos;Quotes&apos;"));
     }
@@ -1055,21 +973,13 @@ mod tests {
                 error_msg TEXT,
                 checked_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP,
                 created_at DATETIME NOT NULL DEFAULT CURRENT_TIMESTAMP
-            );",
+            );"
         )
         .execute(&pool)
         .await
         .unwrap();
 
-        let (reload_tx, _) = tokio::sync::broadcast::channel::<String>(10);
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config: crate::config::Config::from_env(),
-            http_client: reqwest::Client::new(),
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), crate::config::Config::from_env());
 
         // 1. Insert active public monitor
         sqlx::query(
@@ -1081,7 +991,7 @@ mod tests {
 
         // Check log: UP, 18ms
         sqlx::query(
-            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('api-srv', 1, 18)",
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('api-srv', 1, 18)"
         )
         .execute(&pool)
         .await
@@ -1107,9 +1017,7 @@ mod tests {
             "no-cache, max-age=30"
         );
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
         let body_str = String::from_utf8(body_bytes.to_vec()).unwrap();
         assert!(body_str.contains("#30D158"));
         assert!(body_str.contains("KeepUp | API Gateway"));
@@ -1126,9 +1034,7 @@ mod tests {
         .into_response();
 
         assert_eq!(res_nf.status(), StatusCode::OK);
-        let nf_bytes = axum::body::to_bytes(res_nf.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let nf_bytes = axum::body::to_bytes(res_nf.into_body(), 1024 * 64).await.unwrap();
         let nf_str = String::from_utf8(nf_bytes.to_vec()).unwrap();
         assert!(nf_str.contains("#71717A"));
         assert!(nf_str.contains("not found"));
@@ -1150,9 +1056,7 @@ mod tests {
         .unwrap()
         .into_response();
 
-        let down_bytes = axum::body::to_bytes(res_down.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let down_bytes = axum::body::to_bytes(res_down.into_body(), 1024 * 64).await.unwrap();
         let down_str = String::from_utf8(down_bytes.to_vec()).unwrap();
         assert!(down_str.contains("#FF453A"));
         assert!(down_str.contains("downtime"));
@@ -1174,9 +1078,7 @@ mod tests {
         .unwrap()
         .into_response();
 
-        let deg_bytes = axum::body::to_bytes(res_deg.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let deg_bytes = axum::body::to_bytes(res_deg.into_body(), 1024 * 64).await.unwrap();
         let deg_str = String::from_utf8(deg_bytes.to_vec()).unwrap();
         assert!(deg_str.contains("#FFD60A"));
         assert!(deg_str.contains("degraded"));
@@ -1199,19 +1101,13 @@ mod tests {
         let res_lat = badge(
             State(state.clone()),
             Path("lat-srv.svg".to_string()),
-            Query(BadgeQuery {
-                status: None,
-                latency: Some(true),
-                ..Default::default()
-            }),
+            Query(BadgeQuery { status: None, latency: Some(true), ..Default::default() }),
         )
         .await
         .unwrap()
         .into_response();
 
-        let lat_bytes = axum::body::to_bytes(res_lat.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let lat_bytes = axum::body::to_bytes(res_lat.into_body(), 1024 * 64).await.unwrap();
         let lat_str = String::from_utf8(lat_bytes.to_vec()).unwrap();
         assert!(lat_str.contains("operational | 24ms"));
         assert!(lat_str.contains("#30D158"));
@@ -1234,9 +1130,7 @@ mod tests {
         .into_response();
 
         assert_eq!(res_priv.status(), StatusCode::OK);
-        let priv_bytes = axum::body::to_bytes(res_priv.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let priv_bytes = axum::body::to_bytes(res_priv.into_body(), 1024 * 64).await.unwrap();
         let priv_str = String::from_utf8(priv_bytes.to_vec()).unwrap();
         assert!(priv_str.contains("#71717A"));
         assert!(priv_str.contains("not found"));
@@ -1245,19 +1139,13 @@ mod tests {
         let res_override = badge(
             State(state.clone()),
             Path("api-srv.svg".to_string()),
-            Query(BadgeQuery {
-                status: Some("degraded".to_string()),
-                latency: None,
-                ..Default::default()
-            }),
+            Query(BadgeQuery { status: Some("degraded".to_string()), latency: None, ..Default::default() }),
         )
         .await
         .unwrap()
         .into_response();
 
-        let override_bytes = axum::body::to_bytes(res_override.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let override_bytes = axum::body::to_bytes(res_override.into_body(), 1024 * 64).await.unwrap();
         let override_str = String::from_utf8(override_bytes.to_vec()).unwrap();
         assert!(override_str.contains("#FFD60A"));
         assert!(override_str.contains("degraded"));
@@ -1281,9 +1169,7 @@ mod tests {
             router_res.headers().get("cache-control").unwrap(),
             "no-cache, max-age=30"
         );
-        let router_bytes = axum::body::to_bytes(router_res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let router_bytes = axum::body::to_bytes(router_res.into_body(), 1024 * 64).await.unwrap();
         let router_str = String::from_utf8(router_bytes.to_vec()).unwrap();
         assert!(router_str.contains("KeepUp | API Gateway"));
         assert!(router_str.contains("<svg"));
@@ -1299,13 +1185,8 @@ mod tests {
 
         let res2 = app2.oneshot(req2).await.unwrap();
         assert_eq!(res2.status(), StatusCode::OK);
-        assert_eq!(
-            res2.headers().get("content-type").unwrap(),
-            "image/svg+xml; charset=utf-8"
-        );
-        let bytes2 = axum::body::to_bytes(res2.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        assert_eq!(res2.headers().get("content-type").unwrap(), "image/svg+xml; charset=utf-8");
+        let bytes2 = axum::body::to_bytes(res2.into_body(), 1024 * 64).await.unwrap();
         let str2 = String::from_utf8(bytes2.to_vec()).unwrap();
         assert!(str2.contains("LANDINGPAGE"));
         assert!(str2.contains("DEGRADED"));
@@ -1321,13 +1202,8 @@ mod tests {
 
         let res3 = app3.oneshot(req3).await.unwrap();
         assert_eq!(res3.status(), StatusCode::OK);
-        assert_eq!(
-            res3.headers().get("content-type").unwrap(),
-            "image/svg+xml; charset=utf-8"
-        );
-        let bytes3 = axum::body::to_bytes(res3.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        assert_eq!(res3.headers().get("content-type").unwrap(), "image/svg+xml; charset=utf-8");
+        let bytes3 = axum::body::to_bytes(res3.into_body(), 1024 * 64).await.unwrap();
         let str3 = String::from_utf8(bytes3.to_vec()).unwrap();
         assert!(str3.contains("LANDINGPAGE"));
         assert!(str3.contains("NOT FOUND"));
@@ -1352,17 +1228,7 @@ mod tests {
     async fn test_public_status_multi_page_and_groups() {
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // Seed 3 monitors: m1 (public), m2 (public), m3 (private)
         sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m1', 'Public API', 'https://api.test', 1, 1)")
@@ -1374,13 +1240,9 @@ mod tests {
 
         // Check logs for m1 (UP) and m2 (UP)
         sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('m1', 1, 20)")
-            .execute(&pool)
-            .await
-            .unwrap();
+            .execute(&pool).await.unwrap();
         sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('m2', 1, 35)")
-            .execute(&pool)
-            .await
-            .unwrap();
+            .execute(&pool).await.unwrap();
 
         // 1. Default page without explicit assignments should return all active public monitors under "Services"
         let default_status = get_public_status_impl(&state, "default").await.unwrap();
@@ -1403,9 +1265,7 @@ mod tests {
             None,
             None,
             None,
-        )
-        .await
-        .unwrap();
+        ).await.unwrap();
 
         crate::db::status_pages::update_status_page(
             &pool,
@@ -1413,19 +1273,19 @@ mod tests {
             "Customer Dashboards",
             Some("Dashboard telemetry"),
             true,
-            Some(vec![crate::db::status_pages::StatusPageMonitorAssignment {
-                monitor_id: "m1".to_string(),
-                group_name: "Gateways".to_string(),
-                display_order: 1,
-            }]),
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m1".to_string(),
+                    group_name: "Gateways".to_string(),
+                    display_order: 1,
+                }
+            ]),
             true,
             None,
             None,
             None,
             None,
-        )
-        .await
-        .unwrap();
+        ).await.unwrap();
 
         let custom_status = get_public_status_impl(&state, "dashboards").await.unwrap();
         assert_eq!(custom_status.title, "Customer Dashboards");
@@ -1444,17 +1304,7 @@ mod tests {
         use tower::ServiceExt;
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed monitors
         sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-dash-1', 'Main Dashboard', 'https://dash1.test', 1, 1)")
@@ -1477,9 +1327,7 @@ mod tests {
             None,
             None,
             None,
-        )
-        .await
-        .unwrap();
+        ).await.unwrap();
 
         // 3. Assign 2 monitors with group label "Internal Dashboards"
         crate::db::status_pages::update_status_page(
@@ -1505,9 +1353,7 @@ mod tests {
             None,
             None,
             None,
-        )
-        .await
-        .unwrap();
+        ).await.unwrap();
 
         // 4. Test API via Router GET /api/public/status/dashboard
         let app = crate::api::router(state.clone()).with_state(state.clone());
@@ -1519,9 +1365,7 @@ mod tests {
 
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
-        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
         let payload: PublicStatus = serde_json::from_slice(&bytes).unwrap();
 
         assert_eq!(payload.title, "Internal Dashboards Status");
@@ -1552,17 +1396,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed monitors
         sqlx::query("INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-maint-1', 'Payments API', 'https://payments.test', 1, 1)")
@@ -1591,27 +1425,18 @@ mod tests {
                 end_time: end.to_rfc3339(),
                 monitor_ids: vec!["m-maint-1".to_string()],
             },
-        )
-        .await
-        .unwrap();
+        ).await.unwrap();
 
         // 3. Query public status
         let public_status = get_public_status_impl(&state, "default").await.unwrap();
 
         // Maintenance window must be included and active
         assert_eq!(public_status.maintenance_windows.len(), 1);
-        assert_eq!(
-            public_status.maintenance_windows[0].title,
-            "Planned Payments Gateway Upgrade"
-        );
+        assert_eq!(public_status.maintenance_windows[0].title, "Planned Payments Gateway Upgrade");
         assert!(public_status.maintenance_windows[0].is_active);
 
         // m-maint-1 must report "MAINTENANCE" instead of "DOWN"
-        let maint_mon = public_status
-            .monitors
-            .iter()
-            .find(|m| m.id == "m-maint-1")
-            .unwrap();
+        let maint_mon = public_status.monitors.iter().find(|m| m.id == "m-maint-1").unwrap();
         assert_eq!(maint_mon.current_status, "MAINTENANCE");
 
         // Overall status should not be marked as Major Outage since failure was in maintenance
@@ -1635,17 +1460,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed active public monitor
         sqlx::query(
@@ -1679,9 +1494,7 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
         let status_json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
         let monitor = &status_json["monitors"][0];
@@ -1700,22 +1513,12 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let http_client = reqwest::Client::new();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config,
-            http_client,
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Seed 2 monitors
         sqlx::query(
             "INSERT INTO monitors (id, name, url, is_active, is_public, last_status) \
-             VALUES ('mon-api-1', 'Users Service', 'https://api.test/users', 1, 1, 'UP')",
+             VALUES ('mon-api-1', 'Users Service', 'https://api.test/users', 1, 1, 'UP')"
         )
         .execute(&pool)
         .await
@@ -1723,25 +1526,21 @@ mod tests {
 
         sqlx::query(
             "INSERT INTO monitors (id, name, url, is_active, is_public, last_status) \
-             VALUES ('mon-api-2', 'Auth Service', 'https://api.test/auth', 1, 1, 'UP')",
+             VALUES ('mon-api-2', 'Auth Service', 'https://api.test/auth', 1, 1, 'UP')"
         )
         .execute(&pool)
         .await
         .unwrap();
 
         // Check logs for monitors
-        sqlx::query(
-            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-1', 1, 15)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
-        sqlx::query(
-            "INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-2', 1, 28)",
-        )
-        .execute(&pool)
-        .await
-        .unwrap();
+        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-1', 1, 15)")
+            .execute(&pool)
+            .await
+            .unwrap();
+        sqlx::query("INSERT INTO check_logs (monitor_id, is_up, latency_ms) VALUES ('mon-api-2', 1, 28)")
+            .execute(&pool)
+            .await
+            .unwrap();
 
         // 2. Create custom status page `slug: "api"`, `title: "API Services"` with monitors assigned under group `"Core Services"`
         crate::db::status_pages::create_status_page(
@@ -1772,11 +1571,10 @@ mod tests {
         .unwrap();
 
         // 3. Test get_public_status_page in DB
-        let (page_meta, page_monitors) =
-            crate::db::status_pages::get_public_status_page(&pool, "api")
-                .await
-                .unwrap()
-                .expect("Status page 'api' must exist");
+        let (page_meta, page_monitors) = crate::db::status_pages::get_public_status_page(&pool, "api")
+            .await
+            .unwrap()
+            .expect("Status page 'api' must exist");
 
         assert_eq!(page_meta.slug, "api");
         assert_eq!(page_meta.title, "API Services");
@@ -1795,9 +1593,7 @@ mod tests {
         let res = app.oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
         assert_eq!(json["title"], "API Services");
@@ -1820,15 +1616,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config,
-            http_client: reqwest::Client::new(),
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Insert DRI and Rekadigi monitors
         sqlx::query(
@@ -1888,9 +1676,7 @@ mod tests {
         let res = app.clone().oneshot(req).await.unwrap();
         assert_eq!(res.status(), StatusCode::OK);
 
-        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let body_bytes = axum::body::to_bytes(res.into_body(), 1024 * 64).await.unwrap();
         let json: serde_json::Value = serde_json::from_slice(&body_bytes).unwrap();
 
         assert_eq!(json["title"], "DRI");
@@ -1911,19 +1697,13 @@ mod tests {
 
         // 6. Test UI status_page_handler for /status/dri serves HTML
         let uri_page = axum::http::Uri::from_static("/status/dri");
-        let html_res =
-            crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_page).await;
+        let html_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_page).await;
         assert_eq!(html_res.status(), StatusCode::OK);
         assert_eq!(
-            html_res
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap(),
+            html_res.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
             "text/html; charset=utf-8"
         );
-        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64).await.unwrap();
         let html_str = String::from_utf8_lossy(&html_bytes);
         assert!(html_str.contains("id=\"page-title\""));
         assert!(html_str.contains("id=\"monitors-container\""));
@@ -1932,21 +1712,262 @@ mod tests {
 
         // 7. Test UI status_page_handler for /status/status.js serves JS (NOT HTML!)
         let uri_js = axum::http::Uri::from_static("/status/status.js");
-        let js_res =
-            crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_js).await;
+        let js_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_js).await;
         assert_eq!(js_res.status(), StatusCode::OK);
-        assert!(js_res
-            .headers()
-            .get(axum::http::header::CONTENT_TYPE)
-            .unwrap()
-            .to_str()
-            .unwrap()
-            .starts_with("application/javascript"));
-        let js_bytes = axum::body::to_bytes(js_res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        assert!(
+            js_res
+                .headers()
+                .get(axum::http::header::CONTENT_TYPE)
+                .unwrap()
+                .to_str()
+                .unwrap()
+                .starts_with("application/javascript")
+        );
+        let js_bytes = axum::body::to_bytes(js_res.into_body(), 1024 * 64).await.unwrap();
         let js_str = String::from_utf8_lossy(&js_bytes);
         assert!(js_str.contains("loadStatusData"));
+    }
+
+    #[tokio::test]
+    async fn test_default_status_page_respects_is_public_and_case_insensitivity() {
+        use tower::ServiceExt;
+
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let state = AppState::new_for_test(pool.clone(), config);
+
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "default",
+            "Private Default Page",
+            Some("Internal only"),
+            false,
+            None,
+            true,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let app = crate::api::router(state.clone()).with_state(state.clone());
+
+        for uri in ["/api/public/status", "/api/public/status/default", "/api/public/status/DEFAULT"] {
+            let req = axum::http::Request::builder()
+                .method("GET")
+                .uri(uri)
+                .body(axum::body::Body::empty())
+                .unwrap();
+            let res = app.clone().oneshot(req).await.unwrap();
+            assert_eq!(
+                res.status(),
+                StatusCode::NOT_FOUND,
+                "expected 404 when default status page is_public=0 on {uri}"
+            );
+        }
+    }
+
+    #[tokio::test]
+    async fn test_default_status_page_hides_assigned_private_and_paused_without_fallback_leak() {
+        let pool = setup_test_pool().await;
+        let config = crate::config::Config::from_env();
+        let state = AppState::new_for_test(pool.clone(), config);
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES              ('m-pub-unassigned', 'Public Unassigned', 'https://pub.example.com', 1, 1),              ('m-priv-assigned', 'Private Assigned', 'https://priv.example.com', 0, 1),              ('m-paused-assigned', 'Paused Assigned', 'https://paused.example.com', 1, 0)",
+        )
+        .execute(&pool)
+        .await
+        .unwrap();
+
+        // Assign ONLY private and paused monitors to "default"
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "default",
+            "System Status",
+            None,
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-priv-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 1,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-paused-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 2,
+                },
+            ]),
+            true,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let status_empty = get_public_status_impl(&state, "default").await.unwrap();
+        assert!(
+            status_empty.monitors.is_empty(),
+            "when all explicitly assigned monitors on default are private/paused, must return [] instead of leaking them or falling back to unassigned monitors: got {:?}",
+            status_empty.monitors.iter().map(|m| &m.id).collect::<Vec<_>>()
+        );
+
+        // Now assign m-pub-unassigned alongside private & paused -> only m-pub-unassigned should be visible
+        state.invalidate_status_cache().await;
+        crate::db::status_pages::update_status_page(
+            &pool,
+            "default",
+            "System Status",
+            None,
+            true,
+            Some(vec![
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-pub-unassigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 1,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-priv-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 2,
+                },
+                crate::db::status_pages::StatusPageMonitorAssignment {
+                    monitor_id: "m-paused-assigned".to_string(),
+                    group_name: "Core".to_string(),
+                    display_order: 3,
+                },
+            ]),
+            true,
+            None,
+            None,
+            None,
+            None,
+        )
+        .await
+        .unwrap();
+
+        let status_filtered = get_public_status_impl(&state, "default").await.unwrap();
+        assert_eq!(status_filtered.monitors.len(), 1);
+        assert_eq!(status_filtered.monitors[0].id, "m-pub-unassigned");
+    }
+
+    #[tokio::test]
+    async fn test_public_status_banner_thresholds_and_scoped_maintenance() {
+        use chrono::Duration;
+
+        // Case A: Currently UP with 99.95% 24h uptime (1999 UP + 1 old DOWN) -> "All Systems Operational"
+        let pool_a = setup_test_pool().await;
+        let mut cfg_a = crate::config::Config::from_env();
+        cfg_a.custom_logo_url = Some("https://cdn.example.com/logo.svg".to_string());
+        let state_a = AppState::new_for_test(pool_a.clone(), cfg_a);
+
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES              ('m-pub', 'Core API', 'https://api.example.com', 1, 1),              ('m-priv', 'Secret DB', 'https://db.internal', 0, 1)",
+        )
+        .execute(&pool_a)
+        .await
+        .unwrap();
+
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-pub', 0, 100, datetime('now', '-2 hours'))",
+        )
+        .execute(&pool_a)
+        .await
+        .unwrap();
+        for _ in 0..1999 {
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-pub', 1, 15, datetime('now', '-1 minute'))",
+            )
+            .execute(&pool_a)
+            .await
+            .unwrap();
+        }
+        // Latest check is UP
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-pub', 1, 12, datetime('now'))",
+        )
+        .execute(&pool_a)
+        .await
+        .unwrap();
+
+        // Schedule 1 upcoming window (+2 days, targeting m-pub + m-priv) and 1 far-future window (+20 days)
+        let now = chrono::Utc::now();
+        crate::db::maintenance::create_maintenance_window(
+            &pool_a,
+            crate::db::maintenance::CreateMaintenanceDto {
+                title: "Near Window".to_string(),
+                description: None,
+                start_time: (now + Duration::days(2)).to_rfc3339(),
+                end_time: (now + Duration::days(2) + Duration::hours(1)).to_rfc3339(),
+                monitor_ids: vec!["m-pub".to_string(), "m-priv".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+        crate::db::maintenance::create_maintenance_window(
+            &pool_a,
+            crate::db::maintenance::CreateMaintenanceDto {
+                title: "Far Future Window".to_string(),
+                description: None,
+                start_time: (now + Duration::days(20)).to_rfc3339(),
+                end_time: (now + Duration::days(20) + Duration::hours(2)).to_rfc3339(),
+                monitor_ids: vec!["m-pub".to_string()],
+            },
+        )
+        .await
+        .unwrap();
+
+        let status_a = get_public_status_impl(&state_a, "default").await.unwrap();
+        assert_eq!(
+            status_a.status, "All Systems Operational",
+            "99.95% 24h uptime while currently UP must be All Systems Operational"
+        );
+        assert_eq!(
+            status_a.maintenance_windows.len(),
+            1,
+            "windows starting >7 days in the future must be excluded"
+        );
+        assert_eq!(
+            status_a.maintenance_windows[0].monitor_ids,
+            vec!["m-pub".to_string()],
+            "private monitor IDs must be filtered out of public maintenance_windows"
+        );
+
+        // Case B: Currently UP with 83.33% 24h uptime (5 UP + 1 old DOWN) -> Degraded / Partial Outage
+        let pool_b = setup_test_pool().await;
+        let state_b = AppState::new_for_test(pool_b.clone(), crate::config::Config::from_env());
+        sqlx::query(
+            "INSERT INTO monitors (id, name, url, is_public, is_active) VALUES ('m-deg', 'Flaky API', 'https://flaky.example.com', 1, 1)",
+        )
+        .execute(&pool_b)
+        .await
+        .unwrap();
+        sqlx::query(
+            "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-deg', 0, 500, datetime('now', '-1 hour'))",
+        )
+        .execute(&pool_b)
+        .await
+        .unwrap();
+        for _ in 0..5 {
+            sqlx::query(
+                "INSERT INTO check_logs (monitor_id, is_up, latency_ms, checked_at) VALUES ('m-deg', 1, 40, datetime('now'))",
+            )
+            .execute(&pool_b)
+            .await
+            .unwrap();
+        }
+
+        let status_b = get_public_status_impl(&state_b, "default").await.unwrap();
+        assert!(
+            status_b.status == "Degraded Performance" || status_b.status == "Partial System Outage",
+            "83.33% 24h uptime must render Degraded Performance or Partial System Outage, got {}",
+            status_b.status
+        );
     }
 
     #[tokio::test]
@@ -1955,15 +1976,7 @@ mod tests {
 
         let pool = setup_test_pool().await;
         let config = crate::config::Config::from_env();
-        let (reload_tx, _) = tokio::sync::broadcast::channel(16);
-        let state = Arc::new(AppState {
-            db: pool.clone(),
-            write_db: pool.clone(),
-            config,
-            http_client: reqwest::Client::new(),
-            reload_tx,
-            status_cache: PublicStatusCache::default(),
-        });
+        let state = AppState::new_for_test(pool.clone(), config);
 
         // 1. Create a status page with allow_indexing = true and custom SEO tags
         crate::db::status_pages::create_status_page(
@@ -2014,15 +2027,10 @@ mod tests {
         let res_robots = app.clone().oneshot(req_robots).await.unwrap();
         assert_eq!(res_robots.status(), StatusCode::OK);
         assert_eq!(
-            res_robots
-                .headers()
-                .get(axum::http::header::CONTENT_TYPE)
-                .unwrap(),
+            res_robots.headers().get(axum::http::header::CONTENT_TYPE).unwrap(),
             "text/plain; charset=utf-8"
         );
-        let robots_bytes = axum::body::to_bytes(res_robots.into_body(), 1024 * 16)
-            .await
-            .unwrap();
+        let robots_bytes = axum::body::to_bytes(res_robots.into_body(), 1024 * 16).await.unwrap();
         let robots_txt = String::from_utf8_lossy(&robots_bytes);
         assert!(robots_txt.contains("User-agent: *"));
         assert!(robots_txt.contains("Disallow: /admin/"));
@@ -2045,7 +2053,7 @@ mod tests {
         );
         assert_eq!(
             res_indexed.headers().get(axum::http::header::LINK).unwrap(),
-            "<https://status.example.com/status/seo-public>; rel=\"canonical\""
+            r#"<https://status.example.com/status/seo-public>; rel="canonical""#
         );
 
         // 5. Test public status API headers for non-indexed page
@@ -2075,8 +2083,7 @@ mod tests {
 
         // 7. Test UI status_page_handler HTML tag injection
         let uri_seo = axum::http::Uri::from_static("/status/seo-public");
-        let html_res =
-            crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_seo).await;
+        let html_res = crate::ui::status_page_handler(axum::extract::State(state.clone()), uri_seo).await;
         assert_eq!(html_res.status(), StatusCode::OK);
         assert_eq!(
             html_res.headers().get("x-robots-tag").unwrap(),
@@ -2084,27 +2091,17 @@ mod tests {
         );
         assert_eq!(
             html_res.headers().get(axum::http::header::LINK).unwrap(),
-            "<https://status.example.com/status/seo-public>; rel=\"canonical\""
+            r#"<https://status.example.com/status/seo-public>; rel="canonical""#
         );
-        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64)
-            .await
-            .unwrap();
+        let html_bytes = axum::body::to_bytes(html_res.into_body(), 1024 * 64).await.unwrap();
         let html = String::from_utf8_lossy(&html_bytes);
         assert!(html.contains("<title>Custom SEO Title | Acme Inc</title>"));
-        assert!(html
-            .contains(r#"<meta name="description" content="Acme Inc system health and uptime.">"#));
+        assert!(html.contains(r#"<meta name="description" content="Acme Inc system health and uptime.">"#));
         assert!(html.contains(r#"<meta name="robots" content="index, follow">"#));
-        assert!(
-            html.contains(r#"<meta property="og:title" content="Custom SEO Title | Acme Inc">"#)
-        );
-        assert!(html
-            .contains(r#"<meta property="og:image" content="https://example.com/og-banner.png">"#));
-        assert!(html.contains(
-            r#"<meta name="twitter:image" content="https://example.com/og-banner.png">"#
-        ));
-        assert!(html.contains(
-            r#"<link rel="canonical" href="https://status.example.com/status/seo-public">"#
-        ));
+        assert!(html.contains(r#"<meta property="og:title" content="Custom SEO Title | Acme Inc">"#));
+        assert!(html.contains(r#"<meta property="og:image" content="https://example.com/og-banner.png">"#));
+        assert!(html.contains(r#"<meta name="twitter:image" content="https://example.com/og-banner.png">"#));
+        assert!(html.contains(r#"<link rel="canonical" href="https://status.example.com/status/seo-public">"#));
     }
 
     #[tokio::test]
@@ -2115,7 +2112,9 @@ mod tests {
             description: None,
             status: "All Systems Operational".to_string(),
             status_page_theme: None,
+            custom_logo_url: None,
             maintenance_windows: vec![],
+            incidents: vec![],
             groups: vec![],
             monitors: vec![],
             allow_indexing: true,
