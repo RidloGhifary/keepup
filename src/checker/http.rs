@@ -1,280 +1,320 @@
 use std::time::{Duration, Instant};
 
-use reqwest::header::{HeaderMap, HeaderName, HeaderValue, USER_AGENT};
-use reqwest::{Client, Method};
-use serde_json::Value;
+use reqwest::Client;
 
-#[derive(Clone, Debug)]
-pub struct HttpOptions {
-    pub method: String,
-    pub headers_json: Option<String>,
-    pub body: Option<String>,
-    pub expected_status_codes: String,
-    pub response_keyword: Option<String>,
-    pub keyword_match_mode: String,
-    pub follow_redirects: bool,
-    pub ignore_tls_errors: bool,
-    pub degraded_threshold_ms: Option<i32>,
-}
-
-impl Default for HttpOptions {
-    fn default() -> Self {
-        Self {
-            method: "GET".to_string(),
-            headers_json: None,
-            body: None,
-            expected_status_codes: "200-299".to_string(),
-            response_keyword: None,
-            keyword_match_mode: "contains".to_string(),
-            follow_redirects: true,
-            ignore_tls_errors: false,
-            degraded_threshold_ms: None,
-        }
-    }
-}
-
-/// Validate HTTP settings shared by monitor creation and updates.
-pub fn validate_options(options: &HttpOptions) -> Result<(), String> {
-    parse_method(&options.method)?;
-    parse_expected_status_codes(&options.expected_status_codes)?;
-
-    if !matches!(
-        options.keyword_match_mode.to_ascii_lowercase().as_str(),
-        "contains" | "not_contains"
-    ) {
-        return Err("keyword_match_mode must be 'contains' or 'not_contains'".to_string());
-    }
-    if options
-        .response_keyword
-        .as_deref()
-        .is_some_and(|keyword| keyword.trim().is_empty())
-    {
-        return Err("response_keyword cannot be empty when set".to_string());
-    }
-    if options.body.as_deref().is_some_and(|body| !body.is_empty())
-        && !matches!(
-            options.method.to_ascii_uppercase().as_str(),
-            "POST" | "PUT" | "PATCH"
-        )
-    {
-        return Err("Request body is supported for POST, PUT, and PATCH monitors".to_string());
-    }
-    if options
-        .degraded_threshold_ms
-        .is_some_and(|threshold| threshold < 1)
-    {
-        return Err("degraded_threshold_ms must be at least 1 millisecond".to_string());
-    }
-
-    parse_headers(options.headers_json.as_deref())?;
-    Ok(())
-}
-
-fn parse_method(method: &str) -> Result<Method, String> {
-    let normalized = method.trim().to_ascii_uppercase();
-    if !matches!(
-        normalized.as_str(),
-        "GET" | "HEAD" | "POST" | "PUT" | "PATCH" | "DELETE" | "OPTIONS"
-    ) {
-        return Err(
-            "http_method must be GET, HEAD, POST, PUT, PATCH, DELETE, or OPTIONS".to_string(),
-        );
-    }
-    Method::from_bytes(normalized.as_bytes()).map_err(|_| "Invalid HTTP method".to_string())
-}
-
-fn parse_expected_status_codes(input: &str) -> Result<Vec<(u16, u16)>, String> {
-    let mut ranges = Vec::new();
-    for part in input
-        .split(',')
-        .map(str::trim)
-        .filter(|part| !part.is_empty())
-    {
-        let (start, end) = if let Some((start, end)) = part.split_once('-') {
-            let start = start
-                .trim()
-                .parse::<u16>()
-                .map_err(|_| "Invalid expected status code range".to_string())?;
-            let end = end
-                .trim()
-                .parse::<u16>()
-                .map_err(|_| "Invalid expected status code range".to_string())?;
-            (start, end)
-        } else {
-            let status = part
-                .parse::<u16>()
-                .map_err(|_| "Invalid expected status code".to_string())?;
-            (status, status)
-        };
-        if !(100..=599).contains(&start) || !(100..=599).contains(&end) || start > end {
-            return Err("Expected status codes must be between 100 and 599".to_string());
-        }
-        ranges.push((start, end));
-    }
-    if ranges.is_empty() {
-        return Err("expected_status_codes cannot be empty".to_string());
-    }
-    Ok(ranges)
-}
-
-fn parse_headers(headers_json: Option<&str>) -> Result<HeaderMap, String> {
-    let Some(headers_json) = headers_json.filter(|value| !value.trim().is_empty()) else {
-        return Ok(HeaderMap::new());
-    };
-    let value: Value = serde_json::from_str(headers_json)
-        .map_err(|_| "http_headers_json must be a JSON object of string values".to_string())?;
-    let object = value
-        .as_object()
-        .ok_or_else(|| "http_headers_json must be a JSON object of string values".to_string())?;
-    let mut headers = HeaderMap::new();
-    for (name, value) in object {
-        let name = HeaderName::from_bytes(name.as_bytes())
-            .map_err(|_| format!("Invalid HTTP header name '{name}'"))?;
-        let value = value
-            .as_str()
-            .ok_or_else(|| "HTTP header values must be strings".to_string())?;
-        let value = HeaderValue::from_str(value)
-            .map_err(|_| format!("Invalid value for HTTP header '{name}'"))?;
-        headers.insert(name, value);
-    }
-    Ok(headers)
-}
-
-/// Outcome of a single HTTP health-check ping.
+/// Outcome of a single health-check ping.
+#[derive(Debug, Clone)]
 pub struct CheckResult {
-    /// HTTP status code returned by the target (if a response was received).
+    /// HTTP status code or port number (if applicable).
     pub status_code: Option<i32>,
     /// Round-trip latency in milliseconds.
     pub latency_ms: i64,
     /// Whether the target is considered healthy.
     pub is_up: bool,
+    /// Whether the target is degraded (e.g. latency exceeds degraded_latency_ms).
+    pub is_degraded: bool,
     /// Human-readable error description (populated on failure).
     pub error_msg: Option<String>,
 }
 
-/// Execute a configured HTTP request and measure response validation latency.
-pub async fn ping_http(
-    client: &Client,
-    url: &str,
-    timeout_secs: u64,
-    options: &HttpOptions,
-) -> CheckResult {
-    let start = Instant::now();
-    let fail = |status_code, error_msg| CheckResult {
-        status_code,
-        latency_ms: start.elapsed().as_millis() as i64,
-        is_up: false,
-        error_msg: Some(error_msg),
-    };
+/// Advanced configuration for an HTTP probe.
+#[derive(Debug, Clone)]
+pub struct HttpProbeConfig<'a> {
+    pub url: &'a str,
+    pub method: &'a str,
+    pub expected_status: &'a str,
+    pub headers_json: Option<&'a str>,
+    pub body_keyword: Option<&'a str>,
+    pub json_pointer: Option<&'a str>,
+    pub json_expected: Option<&'a str>,
+    pub degraded_latency_ms: Option<i64>,
+    pub timeout_secs: u64,
+}
 
-    let method = match parse_method(&options.method) {
-        Ok(method) => method,
-        Err(error) => return fail(None, error),
-    };
-    let expected_codes = match parse_expected_status_codes(&options.expected_status_codes) {
-        Ok(ranges) => ranges,
-        Err(error) => return fail(None, error),
-    };
-    let mut headers = match parse_headers(options.headers_json.as_deref()) {
-        Ok(headers) => headers,
-        Err(error) => return fail(None, error),
-    };
-    if !headers.contains_key(USER_AGENT) {
-        headers.insert(USER_AGENT, HeaderValue::from_static("KeepUp-Monitor/1.0"));
+/// Verify if `status` matches the `expected` specification (e.g. "200-299", "200,202,204").
+pub fn matches_expected_status(status: u16, expected: &str) -> bool {
+    let exp = expected.trim();
+    if exp.is_empty() || exp == "2xx" || exp == "200-299" {
+        return (200..=299).contains(&status);
     }
 
-    let request_client = if options.follow_redirects && !options.ignore_tls_errors {
-        None
-    } else {
-        let mut builder = Client::builder()
-            .user_agent("KeepUp-Monitor/1.0")
-            .danger_accept_invalid_certs(options.ignore_tls_errors);
-        if !options.follow_redirects {
-            builder = builder.redirect(reqwest::redirect::Policy::none());
+    for part in exp.split(',') {
+        let p = part.trim();
+        if p.is_empty() {
+            continue;
         }
-        match builder.build() {
-            Ok(client) => Some(client),
-            Err(error) => return fail(None, format!("Failed to configure HTTP client: {error}")),
-        }
-    };
-    let request_client = request_client.as_ref().unwrap_or(client);
-
-    let mut request = request_client
-        .request(method.clone(), url)
-        .headers(headers)
-        .timeout(Duration::from_secs(timeout_secs));
-    if let Some(body) = options.body.as_deref().filter(|body| !body.is_empty()) {
-        if matches!(method, Method::POST | Method::PUT | Method::PATCH) {
-            request = request.body(body.to_string());
-        }
-    }
-
-    let response = match request.send().await {
-        Ok(response) => response,
-        Err(error) => return fail(None, error.to_string()),
-    };
-    let status = response.status().as_u16();
-    let status_ok = expected_codes
-        .iter()
-        .any(|(start, end)| (*start..=*end).contains(&status));
-    if !status_ok {
-        return CheckResult {
-            status_code: Some(status as i32),
-            latency_ms: start.elapsed().as_millis() as i64,
-            is_up: false,
-            error_msg: Some(format!(
-                "HTTP {status} did not match expected status codes {}",
-                options.expected_status_codes
-            )),
-        };
-    }
-
-    if let Some(keyword) = options
-        .response_keyword
-        .as_deref()
-        .filter(|keyword| !keyword.is_empty())
-    {
-        let body = match response.text().await {
-            Ok(body) => body,
-            Err(error) => {
-                return fail(
-                    Some(status as i32),
-                    format!("Failed to read response body: {error}"),
-                )
+        if let Some((start_s, end_s)) = p.split_once('-') {
+            if let (Ok(start), Ok(end)) = (start_s.trim().parse::<u16>(), end_s.trim().parse::<u16>()) {
+                if status >= start && status <= end {
+                    return true;
+                }
             }
-        };
-        let contains = body.contains(keyword);
-        let keyword_ok = match options.keyword_match_mode.to_ascii_lowercase().as_str() {
-            "contains" => contains,
-            "not_contains" => !contains,
-            _ => false,
-        };
-        if !keyword_ok {
-            let error = if contains {
-                format!("Response body contains forbidden keyword '{keyword}'")
-            } else {
-                format!("Response body does not contain expected keyword '{keyword}'")
-            };
-            return CheckResult {
-                status_code: Some(status as i32),
-                latency_ms: start.elapsed().as_millis() as i64,
-                is_up: false,
-                error_msg: Some(error),
-            };
+        } else if let Ok(code) = p.parse::<u16>() {
+            if status == code {
+                return true;
+            }
+        }
+    }
+    false
+}
+
+/// Execute an HTTP probe with full configuration support (method, status assertions, headers, body/json assertions).
+pub async fn ping_http_with_config(client: &Client, config: &HttpProbeConfig<'_>) -> CheckResult {
+    let start = Instant::now();
+
+    let method = match config.method.to_uppercase().as_str() {
+        "POST" => reqwest::Method::POST,
+        "PUT" => reqwest::Method::PUT,
+        "PATCH" => reqwest::Method::PATCH,
+        "DELETE" => reqwest::Method::DELETE,
+        "HEAD" => reqwest::Method::HEAD,
+        _ => reqwest::Method::GET,
+    };
+
+    let mut req = client
+        .request(method, config.url)
+        .header(reqwest::header::USER_AGENT, "KeepUp-Monitor/1.0")
+        .timeout(Duration::from_secs(config.timeout_secs));
+
+    // Custom headers from JSON if provided
+    if let Some(json_str) = config.headers_json {
+        if let Ok(serde_json::Value::Object(map)) = serde_json::from_str::<serde_json::Value>(json_str) {
+            for (k, v) in map {
+                if let (Ok(hname), Some(v_str)) = (
+                    reqwest::header::HeaderName::from_bytes(k.as_bytes()),
+                    v.as_str(),
+                ) {
+                    if let Ok(hval) = reqwest::header::HeaderValue::from_str(v_str) {
+                        req = req.header(hname, hval);
+                    }
+                }
+            }
         }
     }
 
+    let result = req.send().await;
     let latency_ms = start.elapsed().as_millis() as i64;
-    let error_msg = options
-        .degraded_threshold_ms
-        .filter(|threshold| latency_ms > i64::from(*threshold))
-        .map(|threshold| {
-            format!("Response took {latency_ms} ms (degraded threshold: {threshold} ms)")
+
+    match result {
+        Ok(resp) => {
+            let status = resp.status().as_u16();
+            if !matches_expected_status(status, config.expected_status) {
+                return CheckResult {
+                    status_code: Some(status as i32),
+                    latency_ms,
+                    is_up: false,
+                    is_degraded: false,
+                    error_msg: Some(format!("Expected HTTP status '{}', got {status}", config.expected_status)),
+                };
+            }
+
+            // If body keyword or JSON pointer inspection is configured, stream up to 64KB safely to prevent unbounded memory allocation
+            if config.body_keyword.is_some() || config.json_pointer.is_some() {
+                let max_body_bytes: usize = 64 * 1024;
+                let mut bytes = Vec::with_capacity(4096);
+                let mut stream = resp;
+                while let Ok(Some(chunk)) = stream.chunk().await {
+                    let to_take = chunk.len().min(max_body_bytes.saturating_sub(bytes.len()));
+                    bytes.extend_from_slice(&chunk[..to_take]);
+                    if bytes.len() >= max_body_bytes {
+                        break;
+                    }
+                }
+
+                let body_slice = &bytes[..];
+                let body_str = String::from_utf8_lossy(body_slice);
+
+                if let Some(kw) = config.body_keyword {
+                    if !body_str.contains(kw) {
+                        return CheckResult {
+                            status_code: Some(status as i32),
+                            latency_ms,
+                            is_up: false,
+                            is_degraded: false,
+                            error_msg: Some(format!("Body keyword '{kw}' not found in response")),
+                        };
+                    }
+                }
+
+                if let Some(pointer) = config.json_pointer {
+                    let parsed: serde_json::Value = match serde_json::from_slice(body_slice) {
+                        Ok(v) => v,
+                        Err(e) => {
+                            return CheckResult {
+                                status_code: Some(status as i32),
+                                latency_ms,
+                                is_up: false,
+                                is_degraded: false,
+                                error_msg: Some(format!("Response body is not valid JSON: {e}")),
+                            };
+                        }
+                    };
+
+                    match parsed.pointer(pointer) {
+                        Some(val) => {
+                            if let Some(expected_val) = config.json_expected {
+                                let actual_str = match val {
+                                    serde_json::Value::String(s) => s.clone(),
+                                    other => other.to_string(),
+                                };
+                                if actual_str != expected_val {
+                                    return CheckResult {
+                                        status_code: Some(status as i32),
+                                        latency_ms,
+                                        is_up: false,
+                                        is_degraded: false,
+                                        error_msg: Some(format!(
+                                            "JSON pointer '{pointer}' mismatch: expected '{expected_val}', found '{actual_str}'"
+                                        )),
+                                    };
+                                }
+                            }
+                        }
+                        None => {
+                            return CheckResult {
+                                status_code: Some(status as i32),
+                                latency_ms,
+                                is_up: false,
+                                is_degraded: false,
+                                error_msg: Some(format!("JSON pointer '{pointer}' not found")),
+                            };
+                        }
+                    }
+                }
+            }
+
+            let is_degraded = config
+                .degraded_latency_ms
+                .map(|thresh| latency_ms >= thresh)
+                .unwrap_or(false);
+
+            CheckResult {
+                status_code: Some(status as i32),
+                latency_ms,
+                is_up: true,
+                is_degraded,
+                error_msg: if is_degraded {
+                    Some(format!("Degraded response time: {latency_ms}ms > threshold"))
+                } else {
+                    None
+                },
+            }
+        }
+        Err(err) => CheckResult {
+            status_code: None,
+            latency_ms,
+            is_up: false,
+            is_degraded: false,
+            error_msg: Some(err.to_string()),
+        },
+    }
+}
+
+/// Simple convenience wrapper for standard GET health checks.
+#[allow(dead_code)]
+pub async fn ping_http(client: &Client, url: &str, timeout_secs: u64) -> CheckResult {
+    let config = HttpProbeConfig {
+        url,
+        method: "GET",
+        expected_status: "200-299",
+        headers_json: None,
+        body_keyword: None,
+        json_pointer: None,
+        json_expected: None,
+        degraded_latency_ms: None,
+        timeout_secs,
+    };
+    ping_http_with_config(client, &config).await
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn test_matches_expected_status() {
+        assert!(matches_expected_status(200, "200-299"));
+        assert!(matches_expected_status(204, "200-299"));
+        assert!(!matches_expected_status(301, "200-299"));
+        assert!(matches_expected_status(200, "200,202,204"));
+        assert!(matches_expected_status(202, "200,202,204"));
+        assert!(!matches_expected_status(201, "200,202,204"));
+        assert!(matches_expected_status(302, "200-299, 301-308"));
+    }
+
+    #[tokio::test]
+    async fn test_http_probe_with_custom_headers_and_json_pointer() {
+        use axum::routing::post;
+        use axum::Json;
+        use serde_json::json;
+
+        let app = axum::Router::new().route(
+            "/health",
+            post(|headers: axum::http::HeaderMap| async move {
+                if headers.get("x-health-token").and_then(|v| v.to_str().ok()) == Some("secret-token") {
+                    (axum::http::StatusCode::OK, Json(json!({"db": {"state": "ok"}})))
+                } else {
+                    (axum::http::StatusCode::UNAUTHORIZED, Json(json!({"db": {"state": "unauthorized"}})))
+                }
+            }),
+        );
+
+        let listener = tokio::net::TcpListener::bind("127.0.0.1:0").await.unwrap();
+        let port = listener.local_addr().unwrap().port();
+        tokio::spawn(async move {
+            let _ = axum::serve(listener, app).await;
         });
-    CheckResult {
-        status_code: Some(status as i32),
-        latency_ms,
-        is_up: true,
-        error_msg,
+
+        let client = reqwest::Client::new();
+        let url = format!("http://127.0.0.1:{port}/health");
+
+        // 1. Success matching headers, status 200, and JSON pointer
+        let config_ok = HttpProbeConfig {
+            url: &url,
+            method: "POST",
+            expected_status: "200,202",
+            headers_json: Some(r#"{"X-Health-Token": "secret-token"}"#),
+            body_keyword: Some("state"),
+            json_pointer: Some("/db/state"),
+            json_expected: Some("ok"),
+            degraded_latency_ms: None,
+            timeout_secs: 3,
+        };
+        let res = ping_http_with_config(&client, &config_ok).await;
+        assert!(res.is_up);
+        assert!(!res.is_degraded);
+        assert_eq!(res.status_code, Some(200));
+
+        // 2. Failure due to JSON pointer mismatch
+        let config_mismatch = HttpProbeConfig {
+            url: &url,
+            method: "POST",
+            expected_status: "200",
+            headers_json: Some(r#"{"X-Health-Token": "secret-token"}"#),
+            body_keyword: None,
+            json_pointer: Some("/db/state"),
+            json_expected: Some("down"),
+            degraded_latency_ms: None,
+            timeout_secs: 3,
+        };
+        let res_mismatch = ping_http_with_config(&client, &config_mismatch).await;
+        assert!(!res_mismatch.is_up);
+        assert!(res_mismatch.error_msg.unwrap().contains("mismatch"));
+
+        // 3. Degraded latency threshold
+        let config_degraded = HttpProbeConfig {
+            url: &url,
+            method: "POST",
+            expected_status: "200",
+            headers_json: Some(r#"{"X-Health-Token": "secret-token"}"#),
+            body_keyword: None,
+            json_pointer: Some("/db/state"),
+            json_expected: Some("ok"),
+            degraded_latency_ms: Some(0), // any response time > 0ms is degraded
+            timeout_secs: 3,
+        };
+        let res_deg = ping_http_with_config(&client, &config_degraded).await;
+        assert!(res_deg.is_up);
+        assert!(res_deg.is_degraded);
     }
 }
