@@ -3,17 +3,17 @@
 // Global apiFetch wrapper fallback with 401 redirect loop guard
 if (!window.apiFetch) {
   window.apiFetch = async function apiFetch(url, options = {}) {
-    options.credentials = options.credentials || "include";
+    options.credentials = options.credentials || 'include';
     const res = await fetch(url, options);
     if (res.status === 401) {
-      if (options.skipAuthRedirect || url.includes("/change-password")) {
+      if (options.skipAuthRedirect || url.includes('/change-password')) {
         return res;
       }
       const isLoginPage =
-        window.location.pathname.endsWith("/login.html") ||
-        window.location.pathname === "/login";
+        window.location.pathname.endsWith('/login.html') ||
+        window.location.pathname === '/login';
       if (!isLoginPage) {
-        window.location.href = "/login.html";
+        window.location.href = '/login.html';
       }
       return res;
     }
@@ -24,11 +24,11 @@ if (!window.apiFetch) {
 // ── Dashboard Theme: Defaults to Dark ───────────────────────────────────────
 
 function initDashboardTheme() {
-  document.documentElement.classList.add("dark");
-  document.documentElement.setAttribute("data-theme", "dark");
+  document.documentElement.classList.add('dark');
+  document.documentElement.setAttribute('data-theme', 'dark');
   const themeMeta = document.querySelector('meta[name="theme-color"]');
   if (themeMeta) {
-    themeMeta.setAttribute("content", "#0b0b0c");
+    themeMeta.setAttribute('content', '#0b0b0c');
   }
 }
 
@@ -42,15 +42,15 @@ initDashboardTheme();
 // ── Admin Logout Handler ─────────────────────────────────────────────────────
 async function handleLogout() {
   try {
-    await apiFetch("/api/auth/logout", { method: "POST" });
+    await apiFetch('/api/auth/logout', { method: 'POST' });
   } finally {
-    window.location.replace("/login.html");
+    window.location.replace('/login.html');
   }
 }
 
 window.allMonitors = [];
 window.allWebhooks = [];
-window.currentViewMode = localStorage.getItem("keepup_view_mode") || "grid";
+window.currentViewMode = localStorage.getItem('keepup_view_mode') || 'list';
 window.statusMap = {};
 let statusMap = window.statusMap;
 window.selectedMonitorIds = new Set();
@@ -79,55 +79,84 @@ async function fetchDashboardData(showSpin = false) {
   dashboardFetchController = new AbortController();
   const signal = dashboardFetchController.signal;
 
-  const refreshIcon = document.getElementById("refresh-icon");
-  if (showSpin && refreshIcon) refreshIcon.classList.add("animate-spin");
+  const refreshIcon = document.getElementById('refresh-icon');
+  if (showSpin && refreshIcon) refreshIcon.classList.add('animate-spin');
 
-  if (currentAdminView === "assets") {
+  if (currentAdminView === 'assets') {
     loadAssetExpiryData(showSpin);
   }
 
   try {
-    const [monitorsRes, statusRes] = await Promise.all([
-      apiFetch("/api/monitors", { signal }),
-      apiFetch("/api/v1/public/status", { signal }),
-    ]);
+    const dashRes = await apiFetch('/api/admin/dashboard', { signal });
 
     // If unauthorized, do not render dashboard contents (redirect is underway)
-    if (monitorsRes && monitorsRes.status === 401) {
+    if (dashRes && dashRes.status === 401) {
       const isLoginPage =
-        window.location.pathname.endsWith("/login.html") ||
-        window.location.pathname === "/login";
+        window.location.pathname.endsWith('/login.html') ||
+        window.location.pathname === '/login';
       if (!isLoginPage) {
-        window.location.href = "/login.html";
+        window.location.href = '/login.html';
       }
       return;
     }
 
-    if (monitorsRes && monitorsRes.ok) {
-      window.allMonitors = await monitorsRes.json();
-    }
-
-    if (statusRes && statusRes.ok) {
-      const statusData = await statusRes.json();
+    if (dashRes && dashRes.ok) {
+      const dash = await dashRes.json();
+      const monitors = [];
       statusMap = {};
       window.statusMap = statusMap;
-      (statusData.monitors || []).forEach((m) => {
-        statusMap[m.id] = m;
+
+      (dash.monitors || []).forEach((item) => {
+        const m = { ...item };
+        monitors.push(m);
+        // logs attached directly from single query
+        logsCache[m.id] = (item.logs || []).slice().reverse();
+        statusMap[m.id] = {
+          id: m.id,
+          name: m.name,
+          url: m.url,
+          current_status: m.last_status,
+          last_latency_ms: (item.logs && item.logs.length > 0) ? item.logs[item.logs.length - 1].latency_ms : null,
+          uptime_24h: 100.0,
+        };
       });
-      updateOverviewHero(statusData);
+
+      window.allMonitors = monitors;
+      updateOverviewHero({
+        status: dash.summary.down_count > 0 ? 'Major Outage' : (dash.summary.degraded_count > 0 ? 'Partial Outage' : 'All Systems Operational'),
+        monitors: Object.values(statusMap),
+      });
+
+      renderMonitors();
+      loadWebhooksPreview();
+    } else {
+      const [monitorsRes, statusRes] = await Promise.all([
+        apiFetch('/api/monitors', { signal }),
+        apiFetch('/api/v1/public/status', { signal }),
+      ]);
+      if (monitorsRes && monitorsRes.ok) {
+        window.allMonitors = await monitorsRes.json();
+      }
+      if (statusRes && statusRes.ok) {
+        const statusData = await statusRes.json();
+        statusMap = {};
+        window.statusMap = statusMap;
+        (statusData.monitors || []).forEach((m) => {
+          statusMap[m.id] = m;
+        });
+        updateOverviewHero(statusData);
+      }
+      await fetchRecentLogsForMonitors(window.allMonitors || [], signal);
+      renderMonitors();
+      loadWebhooksPreview();
     }
-
-    // Fetch recent check logs for historical bar charts (top 30 per monitor)
-    await fetchRecentLogsForMonitors(window.allMonitors, signal);
-
-    renderMonitors();
   } catch (err) {
-    if (err.name === "AbortError") return;
-    console.error("Failed to fetch dashboard data:", err);
+    if (err.name === 'AbortError') return;
+    console.error('Failed to fetch dashboard data:', err);
   } finally {
     isFetching = false;
     if (showSpin && refreshIcon) {
-      setTimeout(() => refreshIcon.classList.remove("animate-spin"), 300);
+      setTimeout(() => refreshIcon.classList.remove('animate-spin'), 300);
     }
   }
 }
@@ -137,10 +166,7 @@ async function fetchDashboardData(showSpin = false) {
 async function fetchRecentLogsForMonitors(monitors, signal) {
   const fetchPromises = monitors.map(async (m) => {
     try {
-      const res = await apiFetch(
-        `/api/v1/monitors/${m.id}/logs?limit=30`,
-        signal ? { signal } : {},
-      );
+      const res = await apiFetch(`/api/v1/monitors/${m.id}/logs?limit=30`, signal ? { signal } : {});
       if (res && res.ok) {
         const logs = await res.json();
         // Reverse so chronological order from left to right
@@ -157,36 +183,32 @@ async function fetchRecentLogsForMonitors(monitors, signal) {
 // ── Overview Hero & Statistics ───────────────────────────────────────────────
 
 function updateOverviewHero(statusData) {
-  const overallBadge = document.getElementById("overall-status-badge");
-  const overallText = document.getElementById("overall-status-text");
-  const overallPulse = document.getElementById("overall-status-pulse");
+  const overallBadge = document.getElementById('overall-status-badge');
+  const overallText = document.getElementById('overall-status-text');
+  const overallPulse = document.getElementById('overall-status-pulse');
 
-  const status = statusData.status || "All Systems Operational";
+  const status = statusData.status || 'All Systems Operational';
   if (overallText) overallText.innerText = status;
 
   if (overallBadge && overallPulse) {
-    if (status === "All Systems Operational") {
+    if (status === 'All Systems Operational') {
       overallBadge.className =
-        "inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/10";
-      overallPulse.className =
-        "h-2 w-2 rounded-full bg-[#30d158] animate-pulse";
-    } else if (status.includes("Partial")) {
+        'inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20 shadow-sm shadow-emerald-500/10';
+      overallPulse.className = 'h-2 w-2 rounded-full bg-[#30d158] animate-pulse';
+    } else if (status.includes('Partial')) {
       overallBadge.className =
-        "inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20 shadow-sm shadow-amber-500/10";
-      overallPulse.className =
-        "h-2 w-2 rounded-full bg-[#ffd60a] animate-pulse";
+        'inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium bg-amber-500/15 text-amber-700 dark:text-amber-400 border border-amber-500/20 shadow-sm shadow-amber-500/10';
+      overallPulse.className = 'h-2 w-2 rounded-full bg-[#ffd60a] animate-pulse';
     } else {
       overallBadge.className =
-        "inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20 shadow-sm shadow-rose-500/10";
-      overallPulse.className = "h-2 w-2 rounded-full bg-[#ff453a]";
+        'inline-flex items-center gap-2 px-3.5 py-1.5 rounded-full text-xs font-medium bg-rose-500/15 text-rose-700 dark:text-rose-400 border border-rose-500/20 shadow-sm shadow-rose-500/10';
+      overallPulse.className = 'h-2 w-2 rounded-full bg-[#ff453a]';
     }
   }
 
   // 1. Active Monitors Count
-  const activeCount = window.allMonitors.filter(
-    (m) => m.is_active === 1,
-  ).length;
-  const statActive = document.getElementById("hero-stat-active");
+  const activeCount = window.allMonitors.filter((m) => m.is_active === 1).length;
+  const statActive = document.getElementById('hero-stat-active');
   if (statActive) {
     statActive.innerText = `${activeCount} / ${window.allMonitors.length}`;
   }
@@ -195,13 +217,10 @@ function updateOverviewHero(statusData) {
   const publicMonitors = statusData.monitors || [];
   let avgUptime = 100.0;
   if (publicMonitors.length > 0) {
-    const sumUptime = publicMonitors.reduce(
-      (acc, m) => acc + (m.uptime_24h || 100),
-      0,
-    );
+    const sumUptime = publicMonitors.reduce((acc, m) => acc + (m.uptime_24h || 100), 0);
     avgUptime = sumUptime / publicMonitors.length;
   }
-  const statUptime = document.getElementById("hero-stat-uptime");
+  const statUptime = document.getElementById('hero-stat-uptime');
   if (statUptime) {
     statUptime.innerText = `${avgUptime.toFixed(2)}%`;
   }
@@ -210,11 +229,7 @@ function updateOverviewHero(statusData) {
   let latencies = [];
   window.allMonitors.forEach((m) => {
     const live = statusMap[m.id];
-    if (
-      live &&
-      live.last_latency_ms !== null &&
-      live.last_latency_ms !== undefined
-    ) {
+    if (live && live.last_latency_ms !== null && live.last_latency_ms !== undefined) {
       latencies.push(live.last_latency_ms);
     }
   });
@@ -224,55 +239,61 @@ function updateOverviewHero(statusData) {
       ? Math.round(latencies.reduce((a, b) => a + b, 0) / latencies.length)
       : 0;
 
-  const statLatency = document.getElementById("hero-stat-latency");
+  const statLatency = document.getElementById('hero-stat-latency');
   if (statLatency) {
-    statLatency.innerText = latencies.length > 0 ? `${avgLatency} ms` : "—";
+    statLatency.innerText = latencies.length > 0 ? `${avgLatency} ms` : '—';
   }
 }
 
 // ── Rendering Monitors (Card Grid vs Compact List with Pagination & Sorting) ──
 
+window.monitorsCurrentPage = 1;
+window.monitorsPageSize = 12;
+
+function changeMonitorsPage(page) {
+  window.monitorsCurrentPage = Number(page);
+  renderMonitors();
+  const panel = document.getElementById('monitors-panel');
+  if (panel && window.scrollY > panel.offsetTop + 100) {
+    panel.scrollIntoView({ behavior: 'smooth', block: 'start' });
+  }
+}
+
+function changeMonitorsPageSize(size) {
+  window.monitorsPageSize = size === 'all' ? 'all' : parseInt(size, 10) || 12;
+  window.monitorsCurrentPage = 1;
+  renderMonitors();
+}
+
+window.changeMonitorsPage = changeMonitorsPage;
+window.changeMonitorsPageSize = changeMonitorsPageSize;
+
 const MONITORS_PAGE_SIZE = 9;
 let monitorDisplayLimit = MONITORS_PAGE_SIZE;
 
-let currentSortKey = localStorage.getItem("keepup_sort_key") || "status";
-let currentSortDir = localStorage.getItem("keepup_sort_dir") || "desc";
+let currentSortKey = localStorage.getItem('keepup_sort_key') || 'status';
+let currentSortDir = localStorage.getItem('keepup_sort_dir') || 'desc';
 
 function getStatusRank(m) {
   if (m.is_active === 0) return 4; // PAUSED
   const sm = window.statusMap || statusMap;
   const live = (sm && sm[m.id]) || m;
-  const status =
-    live?.current_status ||
-    (live?.is_up === false ? "DOWN" : m.current_status || "UP");
+  const status = live?.current_status || (live?.is_up === false ? 'DOWN' : (m.current_status || 'UP'));
   switch (status.toUpperCase()) {
-    case "DOWN":
-      return 0;
-    case "DEGRADED":
-      return 1;
-    case "MAINTENANCE":
-      return 2;
-    case "UP":
-      return 3;
-    default:
-      return 3;
+    case 'DOWN': return 0;
+    case 'DEGRADED': return 1;
+    case 'MAINTENANCE': return 2;
+    case 'UP': return 3;
+    default: return 3;
   }
 }
 
 function getAssetExpiryDays(m) {
   const daysArr = [];
-  if (
-    m.check_ssl &&
-    m.ssl_days_remaining !== null &&
-    m.ssl_days_remaining !== undefined
-  ) {
+  if (m.check_ssl && m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
     daysArr.push(m.ssl_days_remaining);
   }
-  if (
-    m.check_domain_expiry &&
-    m.domain_days_remaining !== null &&
-    m.domain_days_remaining !== undefined
-  ) {
+  if (m.check_domain_expiry && m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
     daysArr.push(m.domain_days_remaining);
   }
   if (daysArr.length === 0) return Infinity;
@@ -281,54 +302,51 @@ function getAssetExpiryDays(m) {
 
 function sortMonitors(list) {
   const sorted = [...list];
-  const isAsc = currentSortDir === "asc";
+  const isAsc = currentSortDir === 'asc';
 
   sorted.sort((a, b) => {
     let result = 0;
 
     switch (currentSortKey) {
-      case "status": {
+      case 'status': {
         const rankA = getStatusRank(a);
         const rankB = getStatusRank(b);
         // Default (desc): rank 0 (DOWN) before rank 1 (DEGRADED) before rank 3 (UP)
-        result = isAsc ? rankB - rankA : rankA - rankB;
+        result = isAsc ? (rankB - rankA) : (rankA - rankB);
         break;
       }
-      case "name": {
-        const nameA = (a.name || "").toLowerCase();
-        const nameB = (b.name || "").toLowerCase();
-        result = nameA.localeCompare(nameB, undefined, {
-          numeric: true,
-          sensitivity: "base",
-        });
+      case 'name': {
+        const nameA = (a.name || '').toLowerCase();
+        const nameB = (b.name || '').toLowerCase();
+        result = nameA.localeCompare(nameB, undefined, { numeric: true, sensitivity: 'base' });
         if (!isAsc) result = -result;
         break;
       }
-      case "latency": {
+      case 'uptime': {
         const sm = window.statusMap || statusMap;
         const liveA = (sm && sm[a.id]) || a;
         const liveB = (sm && sm[b.id]) || b;
-        const latA =
-          liveA &&
-          liveA.last_latency_ms !== null &&
-          liveA.last_latency_ms !== undefined
-            ? liveA.last_latency_ms
-            : -1;
-        const latB =
-          liveB &&
-          liveB.last_latency_ms !== null &&
-          liveB.last_latency_ms !== undefined
-            ? liveB.last_latency_ms
-            : -1;
-        // Default (desc): highest latency first
-        result = isAsc ? latA - latB : latB - latA;
+        const upA = (liveA && liveA.uptime_24h !== undefined && liveA.uptime_24h !== null) ? liveA.uptime_24h : 100;
+        const upB = (liveB && liveB.uptime_24h !== undefined && liveB.uptime_24h !== null) ? liveB.uptime_24h : 100;
+        // Default (desc): highest uptime first
+        result = isAsc ? (upA - upB) : (upB - upA);
         break;
       }
-      case "expiry": {
+      case 'latency': {
+        const sm = window.statusMap || statusMap;
+        const liveA = (sm && sm[a.id]) || a;
+        const liveB = (sm && sm[b.id]) || b;
+        const latA = (liveA && liveA.last_latency_ms !== null && liveA.last_latency_ms !== undefined) ? liveA.last_latency_ms : -1;
+        const latB = (liveB && liveB.last_latency_ms !== null && liveB.last_latency_ms !== undefined) ? liveB.last_latency_ms : -1;
+        // Default (desc): highest latency first
+        result = isAsc ? (latA - latB) : (latB - latA);
+        break;
+      }
+      case 'expiry': {
         const expA = getAssetExpiryDays(a);
         const expB = getAssetExpiryDays(b);
         // Default (asc): lowest days remaining first (nearest expiration)
-        result = isAsc ? expA - expB : expB - expA;
+        result = isAsc ? (expA - expB) : (expB - expA);
         break;
       }
       default:
@@ -337,9 +355,7 @@ function sortMonitors(list) {
 
     // Tie-breaker: Name alphabetical
     if (result === 0) {
-      result = (a.name || "")
-        .toLowerCase()
-        .localeCompare((b.name || "").toLowerCase());
+      result = (a.name || '').toLowerCase().localeCompare((b.name || '').toLowerCase());
     }
 
     return result;
@@ -351,39 +367,39 @@ function sortMonitors(list) {
 function setSortKey(key) {
   if (key !== currentSortKey) {
     currentSortKey = key;
-    if (key === "name" || key === "expiry") {
-      currentSortDir = "asc";
+    if (key === 'name' || key === 'expiry') {
+      currentSortDir = 'asc';
     } else {
-      currentSortDir = "desc";
+      currentSortDir = 'desc';
     }
   }
-  localStorage.setItem("keepup_sort_key", currentSortKey);
-  localStorage.setItem("keepup_sort_dir", currentSortDir);
+  localStorage.setItem('keepup_sort_key', currentSortKey);
+  localStorage.setItem('keepup_sort_dir', currentSortDir);
   updateSortDirectionBtnUI();
   renderMonitors();
 }
 window.setSortKey = setSortKey;
 
 function toggleSortDirection() {
-  currentSortDir = currentSortDir === "asc" ? "desc" : "asc";
-  localStorage.setItem("keepup_sort_dir", currentSortDir);
+  currentSortDir = currentSortDir === 'asc' ? 'desc' : 'asc';
+  localStorage.setItem('keepup_sort_dir', currentSortDir);
   updateSortDirectionBtnUI();
   renderMonitors();
 }
 window.toggleSortDirection = toggleSortDirection;
 
 function updateSortDirectionBtnUI() {
-  const btn = document.getElementById("sort-dir-btn");
-  const icon = document.getElementById("sort-dir-icon");
-  const text = document.getElementById("sort-dir-text");
+  const btn = document.getElementById('sort-dir-btn');
+  const icon = document.getElementById('sort-dir-icon');
+  const text = document.getElementById('sort-dir-text');
   if (!btn) return;
 
-  const isAsc = currentSortDir === "asc";
-  btn.title = `Sort order: ${isAsc ? "Ascending" : "Descending"} (click to toggle)`;
-  btn.setAttribute("aria-label", btn.title);
+  const isAsc = currentSortDir === 'asc';
+  btn.title = `Sort order: ${isAsc ? 'Ascending' : 'Descending'} (click to toggle)`;
+  btn.setAttribute('aria-label', btn.title);
 
   if (text) {
-    text.textContent = isAsc ? "ASC" : "DESC";
+    text.textContent = isAsc ? 'ASC' : 'DESC';
   }
 
   if (icon) {
@@ -397,11 +413,9 @@ function updateSortDirectionBtnUI() {
 window.updateSortDirectionBtnUI = updateSortDirectionBtnUI;
 
 function initSortingControls() {
-  currentSortKey =
-    localStorage.getItem("keepup_sort_key") || currentSortKey || "status";
-  currentSortDir =
-    localStorage.getItem("keepup_sort_dir") || currentSortDir || "desc";
-  const sortSelect = document.getElementById("sort-select");
+  currentSortKey = localStorage.getItem('keepup_sort_key') || currentSortKey || 'status';
+  currentSortDir = localStorage.getItem('keepup_sort_dir') || currentSortDir || 'desc';
+  const sortSelect = document.getElementById('sort-select');
   if (sortSelect) {
     sortSelect.value = currentSortKey;
   }
@@ -417,21 +431,13 @@ function handleMonitorCardCheckbox(id, checked, event) {
   }
 
   // Shift-Click Range Selection: Contiguous selection between last selected item and current
-  if (
-    event &&
-    event.shiftKey &&
-    lastSelectedMonitorId &&
-    lastSelectedMonitorId !== id
-  ) {
-    const searchInput = document.getElementById("search-input");
-    const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
+  if (event && event.shiftKey && lastSelectedMonitorId && lastSelectedMonitorId !== id) {
+    const searchInput = document.getElementById('search-input');
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
     const filtered = (window.allMonitors || []).filter(
-      (m) =>
-        m.name.toLowerCase().includes(query) ||
-        m.url.toLowerCase().includes(query),
+      (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
     );
-    const sorted =
-      typeof sortMonitors === "function" ? sortMonitors(filtered) : filtered;
+    const sorted = typeof sortMonitors === 'function' ? sortMonitors(filtered) : filtered;
 
     const idx1 = sorted.findIndex((m) => m.id === lastSelectedMonitorId);
     const idx2 = sorted.findIndex((m) => m.id === id);
@@ -462,15 +468,12 @@ function handleMonitorCardCheckbox(id, checked, event) {
 window.handleMonitorCardCheckbox = handleMonitorCardCheckbox;
 
 function handleMasterSelectToggle(checked) {
-  const searchInput = document.getElementById("search-input");
-  const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
+  const searchInput = document.getElementById('search-input');
+  const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
   const filtered = (window.allMonitors || []).filter(
-    (m) =>
-      m.name.toLowerCase().includes(query) ||
-      m.url.toLowerCase().includes(query),
+    (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
   );
-  const sorted =
-    typeof sortMonitors === "function" ? sortMonitors(filtered) : filtered;
+  const sorted = typeof sortMonitors === 'function' ? sortMonitors(filtered) : filtered;
 
   if (checked) {
     sorted.forEach((m) => window.selectedMonitorIds.add(m.id));
@@ -494,50 +497,36 @@ function clearMonitorSelection() {
 window.clearMonitorSelection = clearMonitorSelection;
 
 function updateBulkActionBarUI() {
-  const bar = document.getElementById("bulk-action-bar");
-  const countSpan = document.getElementById("bulk-selected-count");
-  const masterCb = document.getElementById("master-select-cb");
+  const bar = document.getElementById('bulk-action-bar');
+  const countSpan = document.getElementById('bulk-selected-count');
+  const masterCb = document.getElementById('master-select-cb');
 
   const count = window.selectedMonitorIds ? window.selectedMonitorIds.size : 0;
 
   if (bar) {
     if (count > 0) {
-      bar.classList.remove(
-        "hidden",
-        "translate-y-8",
-        "opacity-0",
-        "pointer-events-none",
-      );
-      bar.classList.add("translate-y-0", "opacity-100", "pointer-events-auto");
+      bar.classList.remove('hidden', 'translate-y-8', 'opacity-0', 'pointer-events-none');
+      bar.classList.add('translate-y-0', 'opacity-100', 'pointer-events-auto');
     } else {
-      bar.classList.remove(
-        "translate-y-0",
-        "opacity-100",
-        "pointer-events-auto",
-      );
-      bar.classList.add("translate-y-8", "opacity-0", "pointer-events-none");
+      bar.classList.remove('translate-y-0', 'opacity-100', 'pointer-events-auto');
+      bar.classList.add('translate-y-8', 'opacity-0', 'pointer-events-none');
       setTimeout(() => {
-        if (
-          !window.selectedMonitorIds ||
-          window.selectedMonitorIds.size === 0
-        ) {
-          bar.classList.add("hidden");
+        if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) {
+          bar.classList.add('hidden');
         }
       }, 300);
     }
   }
 
   if (countSpan) {
-    countSpan.textContent = `${count} monitor${count === 1 ? "" : "s"} selected`;
+    countSpan.textContent = `${count} monitor${count === 1 ? '' : 's'} selected`;
   }
 
   if (masterCb) {
-    const searchInput = document.getElementById("search-input");
-    const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
+    const searchInput = document.getElementById('search-input');
+    const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
     const filtered = (window.allMonitors || []).filter(
-      (m) =>
-        m.name.toLowerCase().includes(query) ||
-        m.url.toLowerCase().includes(query),
+      (m) => m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
     );
     const totalVisible = filtered.length;
 
@@ -556,25 +545,23 @@ function updateBulkActionBarUI() {
 window.updateBulkActionBarUI = updateBulkActionBarUI;
 
 async function executeBulkAction(action) {
-  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0)
-    return;
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
   const ids = Array.from(window.selectedMonitorIds);
 
-  const endpoint =
-    action === "pause"
-      ? "/api/admin/monitors/bulk-pause"
-      : "/api/admin/monitors/bulk-resume";
+  const endpoint = action === 'pause'
+    ? '/api/admin/monitors/bulk-pause'
+    : '/api/admin/monitors/bulk-resume';
 
   try {
     const res = await apiFetch(endpoint, {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ monitor_ids: ids }),
     });
 
     if (res.ok) {
       const data = await res.json();
-      const newActive = action === "pause" ? 0 : 1;
+      const newActive = action === 'pause' ? 0 : 1;
       (window.allMonitors || []).forEach((m) => {
         if (window.selectedMonitorIds.has(m.id)) {
           m.is_active = newActive;
@@ -583,37 +570,35 @@ async function executeBulkAction(action) {
 
       renderMonitors();
 
-      const statActive = document.getElementById("hero-stat-active");
+      const statActive = document.getElementById('hero-stat-active');
       if (statActive) {
-        const activeCount = (window.allMonitors || []).filter(
-          (m) => m.is_active === 1,
-        ).length;
+        const activeCount = (window.allMonitors || []).filter((m) => m.is_active === 1).length;
         statActive.innerText = `${activeCount} / ${window.allMonitors.length}`;
       }
 
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: action === "pause" ? "Monitors Paused" : "Monitors Resumed",
+          title: action === 'pause' ? 'Monitors Paused' : 'Monitors Resumed',
           message: data.message || `Selected monitors successfully updated`,
-          type: action === "pause" ? "info" : "success",
+          type: action === 'pause' ? 'info' : 'success',
         });
       }
     } else {
       const err = await res.json().catch(() => ({}));
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Batch Action Failed",
-          message: err.error || "Failed to update selected monitors",
-          type: "error",
+          title: 'Batch Action Failed',
+          message: err.error || 'Failed to update selected monitors',
+          type: 'error',
         });
       }
     }
   } catch (err) {
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Network Error",
-        message: err.message || "Could not reach server",
-        type: "error",
+        title: 'Network Error',
+        message: err.message || 'Could not reach server',
+        type: 'error',
       });
     }
   }
@@ -621,99 +606,96 @@ async function executeBulkAction(action) {
 window.executeBulkAction = executeBulkAction;
 
 async function openBulkDeleteModal() {
-  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0)
-    return;
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
   const ids = Array.from(window.selectedMonitorIds);
 
-  const modal = document.getElementById("bulk-delete-modal");
-  const countEl = document.getElementById("bulk-delete-count");
-  const logsCountEl = document.getElementById("bulk-delete-logs-count");
+  const modal = document.getElementById('bulk-delete-modal');
+  const countEl = document.getElementById('bulk-delete-count');
+  const logsCountEl = document.getElementById('bulk-delete-logs-count');
   if (countEl) countEl.textContent = String(ids.length);
-  if (logsCountEl) logsCountEl.textContent = "...";
+  if (logsCountEl) logsCountEl.textContent = '...';
 
   if (modal) {
-    modal.classList.remove("hidden");
+    modal.classList.remove('hidden');
   }
 
   try {
-    const res = await apiFetch("/api/admin/monitors/bulk-preview", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    const res = await apiFetch('/api/admin/monitors/bulk-preview', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ monitor_ids: ids }),
     });
     if (res.ok) {
       const stats = await res.json();
-      if (logsCountEl)
-        logsCountEl.textContent = String(stats.check_logs_count || 0);
+      if (logsCountEl) logsCountEl.textContent = String(stats.check_logs_count || 0);
     } else {
-      if (logsCountEl) logsCountEl.textContent = "all historical";
+      if (logsCountEl) logsCountEl.textContent = 'all historical';
     }
   } catch (_) {
-    if (logsCountEl) logsCountEl.textContent = "all historical";
+    if (logsCountEl) logsCountEl.textContent = 'all historical';
   }
 }
 window.openBulkDeleteModal = openBulkDeleteModal;
 
 function closeBulkDeleteModal() {
-  const modal = document.getElementById("bulk-delete-modal");
+  const modal = document.getElementById('bulk-delete-modal');
   if (modal) {
-    modal.classList.add("hidden");
+    modal.classList.add('hidden');
   }
 }
 window.closeBulkDeleteModal = closeBulkDeleteModal;
 
 async function confirmBulkDelete() {
-  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0)
-    return;
+  if (!window.selectedMonitorIds || window.selectedMonitorIds.size === 0) return;
   const ids = Array.from(window.selectedMonitorIds);
 
-  const confirmBtn = document.getElementById("confirm-bulk-delete-btn");
-  const originalText = confirmBtn ? confirmBtn.innerHTML : "";
+  const confirmBtn = document.getElementById('confirm-bulk-delete-btn');
+  const originalText = confirmBtn ? confirmBtn.innerHTML : '';
   if (confirmBtn) {
     confirmBtn.disabled = true;
-    confirmBtn.innerHTML = "<span>Deleting...</span>";
+    confirmBtn.innerHTML = '<span>Deleting...</span>';
   }
 
   try {
-    const res = await apiFetch("/api/admin/monitors/bulk-delete", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    const res = await apiFetch('/api/admin/monitors/bulk-delete', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ monitor_ids: ids }),
     });
 
     if (res.ok) {
       const data = await res.json();
       window.allMonitors = (window.allMonitors || []).filter(
-        (m) => !window.selectedMonitorIds.has(m.id),
+        (m) => !window.selectedMonitorIds.has(m.id)
       );
       window.selectedMonitorIds.clear();
       closeBulkDeleteModal();
       updateBulkActionBarUI();
       renderMonitors();
 
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Monitors Deleted",
+          title: 'Monitors Deleted',
           message: data.message || `Permanently removed ${ids.length} monitors`,
-          type: "success",
+          type: 'success',
         });
       }
     } else {
       const err = await res.json().catch(() => ({}));
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Delete Failed",
-          message: err.error || "Failed to delete selected monitors",
-          type: "error",
+          title: 'Delete Failed',
+          message: err.error || 'Failed to delete selected monitors',
+          type: 'error',
         });
       }
     }
   } catch (err) {
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Network Error",
-        message: err.message || "Could not reach server",
-        type: "error",
+        title: 'Network Error',
+        message: err.message || 'Could not reach server',
+        type: 'error',
       });
     }
   } finally {
@@ -732,123 +714,69 @@ function showMoreMonitors() {
 window.showMoreMonitors = showMoreMonitors;
 
 function updateSingleMonitorCardDOM(m) {
-  const isGrid = window.currentViewMode === "grid";
-  const el = document.getElementById(
-    isGrid ? `monitor-card-${m.id}` : `monitor-row-${m.id}`,
-  );
+  const isGrid = window.currentViewMode === 'grid';
+  const el = document.getElementById(isGrid ? `monitor-card-${m.id}` : `monitor-row-${m.id}`);
   if (!el) return false;
 
   const live = statusMap[m.id];
-  const isUp = live ? live.current_status === "UP" : true;
+  const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
-  const isSelected =
-    window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
-  const anySelected =
-    window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
 
-  let statusColor = "#30d158";
-  let statusLabel = "OPERATIONAL";
+  let statusColor = '#30d158';
+  let statusLabel = 'OPERATIONAL';
 
   if (isPaused) {
-    statusColor = "#8e8e93";
-    statusLabel = "PAUSED";
-  } else if (live && live.current_status === "MAINTENANCE") {
-    statusColor = "#c084fc";
-    statusLabel = "MAINTENANCE";
+    statusColor = '#8e8e93';
+    statusLabel = 'PAUSED';
+  } else if (live && live.current_status === 'MAINTENANCE') {
+    statusColor = '#c084fc';
+    statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
-    statusColor = "#ff453a";
-    statusLabel = "DOWN";
-  } else if (
-    live &&
-    (live.current_status === "DEGRADED" ||
-      (live.uptime_24h !== undefined && live.uptime_24h < 95.0))
-  ) {
-    statusColor = "#ffd60a";
-    statusLabel = "DEGRADED";
+    statusColor = '#ff453a';
+    statusLabel = 'DOWN';
+  } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
+    statusColor = '#ffd60a';
+    statusLabel = 'DEGRADED';
   }
 
   // Selection styling
   if (isSelected) {
-    el.classList.add(
-      "ring-2",
-      "ring-emerald-500/50",
-      "border-emerald-500/40",
-      "bg-emerald-500/[0.04]",
-    );
+    el.classList.add('ring-2', 'ring-emerald-500/50', 'border-emerald-500/40', 'bg-emerald-500/[0.04]');
   } else {
-    el.classList.remove(
-      "ring-2",
-      "ring-emerald-500/50",
-      "border-emerald-500/40",
-      "bg-emerald-500/[0.04]",
-    );
+    el.classList.remove('ring-2', 'ring-emerald-500/50', 'border-emerald-500/40', 'bg-emerald-500/[0.04]');
   }
 
   // Checkbox
-  const cb = el.querySelector("input.monitor-select-cb");
+  const cb = el.querySelector('input.monitor-select-cb');
   if (cb) {
     cb.checked = isSelected;
     if (isSelected) {
-      cb.classList.add("opacity-100", "ring-2", "ring-emerald-500/50");
-      cb.classList.remove("opacity-0", "opacity-70");
+      cb.classList.add('opacity-100', 'ring-2', 'ring-emerald-500/50');
+      cb.classList.remove('opacity-0', 'opacity-70');
     } else if (anySelected) {
-      cb.classList.add("opacity-70");
-      cb.classList.remove(
-        "opacity-0",
-        "opacity-100",
-        "ring-2",
-        "ring-emerald-500/50",
-      );
+      cb.classList.add('opacity-70');
+      cb.classList.remove('opacity-0', 'opacity-100', 'ring-2', 'ring-emerald-500/50');
     } else {
-      cb.classList.add("opacity-0");
-      cb.classList.remove(
-        "opacity-70",
-        "opacity-100",
-        "ring-2",
-        "ring-emerald-500/50",
-      );
+      cb.classList.add('opacity-0');
+      cb.classList.remove('opacity-70', 'opacity-100', 'ring-2', 'ring-emerald-500/50');
     }
   }
 
   // Status dot
-  const dotSpan = el.querySelector("span[data-status-dot]");
+  const dotSpan = el.querySelector('span[data-status-dot]');
   if (dotSpan) {
     dotSpan.title = statusLabel;
-    const dots = dotSpan.querySelectorAll("span");
+    const dots = dotSpan.querySelectorAll('span');
     dots.forEach((d) => {
       d.style.backgroundColor = statusColor;
     });
   }
 
   // Metrics
-  const isExpiry = (m.check_type || "").toLowerCase() === "expiry";
-  let minDaysRemaining = null;
-  if (
-    m.domain_days_remaining !== null &&
-    m.domain_days_remaining !== undefined
-  ) {
-    minDaysRemaining = m.domain_days_remaining;
-  }
-  if (m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
-    minDaysRemaining =
-      minDaysRemaining === null
-        ? m.ssl_days_remaining
-        : Math.min(minDaysRemaining, m.ssl_days_remaining);
-  }
-
-  const latencyText = isExpiry
-    ? minDaysRemaining !== null
-      ? `${minDaysRemaining}d`
-      : "—"
-    : live &&
-        live.last_latency_ms !== null &&
-        live.last_latency_ms !== undefined
-      ? `${live.last_latency_ms} ms`
-      : "—";
-  const uptimeText =
-    live && live.uptime_24h !== undefined
-      ? `${live.uptime_24h.toFixed(1)}%`
-      : "100%";
+  const latencyText = live && live.last_latency_ms !== null && live.last_latency_ms !== undefined ? `${live.last_latency_ms} ms` : '—';
+  const uptimeText = live && live.uptime_24h !== undefined ? `${live.uptime_24h.toFixed(1)}%` : '100%';
 
   const latencyEl = el.querySelector('[data-metric="latency"]');
   if (latencyEl && latencyEl.textContent !== latencyText) {
@@ -860,100 +788,155 @@ function updateSingleMonitorCardDOM(m) {
     uptimeEl.textContent = uptimeText;
   }
 
-  // Failing badge container update
-  const failingContainer = el.querySelector("[data-failing-container]");
-  if (failingContainer) {
-    const fails = m.current_consecutive_fails || 0;
-    const maxRetries = m.max_retries || 3;
-    if (fails > 0 && fails < maxRetries) {
-      failingContainer.innerHTML = `
-        <span data-badge="failing" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono font-medium bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30" title="${fails} of ${maxRetries} consecutive checks failing">
-          <span class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse"></span>
-          ${fails}/${maxRetries} failing
-        </span>
-      `;
-    } else {
-      failingContainer.innerHTML = "";
-    }
-  }
-
   return true;
 }
 
+function updateToolbarDisabledState() {
+  const totalMonitors = (window.allMonitors || []).length;
+  const isDisabled = totalMonitors === 0;
+
+  const masterCb = document.getElementById('master-select-cb');
+  if (masterCb) masterCb.disabled = isDisabled;
+
+  const searchInput = document.getElementById('search-input');
+  if (searchInput) searchInput.disabled = isDisabled;
+
+  const sortSelect = document.getElementById('sort-select');
+  if (sortSelect) sortSelect.disabled = isDisabled;
+
+  const sortDirBtn = document.getElementById('sort-dir-btn');
+  if (sortDirBtn) {
+    sortDirBtn.disabled = isDisabled;
+    sortDirBtn.classList.toggle('pointer-events-none', isDisabled);
+  }
+
+  const viewGridBtn = document.getElementById('view-grid-btn');
+  const viewListBtn = document.getElementById('view-list-btn');
+  if (viewGridBtn) viewGridBtn.disabled = isDisabled;
+  if (viewListBtn) viewListBtn.disabled = isDisabled;
+}
+window.updateToolbarDisabledState = updateToolbarDisabledState;
+
 function renderMonitors(forceRebuild = false) {
-  const container = document.getElementById("monitors-container");
+  const container = document.getElementById('monitors-container');
   if (!container) return;
 
-  const searchInput = document.getElementById("search-input");
-  const query = searchInput ? searchInput.value.toLowerCase().trim() : "";
+  updateToolbarDisabledState();
+
+  const searchInput = document.getElementById('search-input');
+  const query = searchInput ? searchInput.value.toLowerCase().trim() : '';
   const isSearching = query.length > 0;
 
   const filtered = window.allMonitors.filter(
     (m) =>
-      m.name.toLowerCase().includes(query) ||
-      m.url.toLowerCase().includes(query),
+      m.name.toLowerCase().includes(query) || m.url.toLowerCase().includes(query)
   );
 
   const sorted = sortMonitors(filtered);
 
-  const countBadge = document.getElementById("monitors-count-badge");
-  if (countBadge)
-    countBadge.innerText = `${filtered.length} target${filtered.length === 1 ? "" : "s"}`;
+  const countBadge = document.getElementById('monitors-count-badge');
+  if (countBadge) countBadge.innerText = `${filtered.length} target`;
 
-  const paginationContainer = document.getElementById("monitors-pagination");
+  const headerAddBtn = document.getElementById('header-add-monitor-btn');
+  if (headerAddBtn) {
+    headerAddBtn.classList.toggle('hidden', filtered.length === 0);
+  }
+
+  const paginationContainer = document.getElementById('monitors-pagination-container');
+  const pageInfo = document.getElementById('monitors-page-info');
+  const paginationControls = document.getElementById('monitors-pagination-controls');
+  const showMoreContainer = document.getElementById('monitors-pagination');
 
   if (filtered.length === 0) {
-    if (paginationContainer) paginationContainer.classList.add("hidden");
-    container.className =
-      "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4";
-    container.dataset.renderedKey = "";
-    const hasMonitors = window.allMonitors.length > 0;
-    if (hasMonitors && isSearching) {
-      batchInsertHTML(
-        container,
-        `
-        <div class="col-span-full w-full py-12 text-center">
-          <p class="text-sm font-medium text-white/80">No matching monitors found</p>
-          <button type="button" onclick="clearMonitorSearch()" class="mt-2 inline-flex items-center rounded-lg px-3 py-1.5 text-xs font-medium text-[#0a84ff] hover:bg-white/5 hover:text-white transition-colors">
-            Clear Search
+    if (paginationContainer) paginationContainer.classList.add('hidden');
+    container.className = 'w-full';
+    container.dataset.renderedKey = '';
+    const emptyMarkup = isSearching
+      ? `
+      <div class="w-full rounded-[16px] border border-dashed border-[#33333a] bg-[#111115] py-14 px-6 flex flex-col items-center justify-center text-center">
+        <div class="w-12 h-12 rounded-full bg-[#1b221e] border border-[#24312b] flex items-center justify-center mb-4 text-[#a1a1aa]" aria-hidden="true">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 21l-6-6m2-5a7 7 0 11-14 0 7 7 0 0114 0z"/>
+          </svg>
+        </div>
+        <h3 class="text-base font-semibold text-white tracking-tight">Tidak ada hasil untuk &ldquo;${escapeHtml(query)}&rdquo;</h3>
+        <p class="text-sm text-[#a1a1aa] max-w-sm mx-auto mt-1 leading-relaxed">
+          Coba periksa ejaan atau gunakan kata kunci pencarian yang lain.
+        </p>
+        <button type="button" onclick="document.getElementById('search-input').value=''; filterMonitors(true);" class="mt-5 h-[34px] px-4 rounded-[10px] bg-[#141418] hover:bg-[#1a1a20] text-white text-xs font-semibold border border-[#2a2a30] transition inline-flex items-center gap-1.5 cursor-pointer focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#30d158]">
+          <svg class="w-3.5 h-3.5 text-[#a1a1aa]" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18L18 6M6 6l12 12"/>
+          </svg>
+          <span>Reset pencarian</span>
+        </button>
+      </div>
+      `
+      : `
+      <div class="monitors-empty-box">
+        <!-- Lingkaran hijau gelap berisi garis denyut/pulse (#30d158) -->
+        <div class="monitors-empty-icon" aria-hidden="true">
+          <svg class="w-7 h-7" width="28" height="28" viewBox="0 0 24 24" fill="none" stroke="#30d158" stroke-width="2" stroke-linecap="round" stroke-linejoin="round">
+            <path d="M22 12h-4l-3 9L9 3l-3 9H2"/>
+          </svg>
+        </div>
+
+        <h3 class="text-lg sm:text-xl font-bold text-white tracking-tight mb-2">Belum ada monitor</h3>
+        <p class="text-xs sm:text-sm text-white/50 max-w-md mx-auto leading-relaxed mb-6">
+          Tambahkan target pertama Anda untuk mulai memantau<br class="hidden sm:inline"/> uptime, waktu respons, dan status kesehatan secara otomatis.
+        </p>
+
+        <!-- Tombol CTA Tambah Monitor -->
+        <button type="button" onclick="openEditMonitorModal(null)" aria-label="Tambah Monitor" class="monitors-empty-cta">
+          <svg class="w-4 h-4" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+          </svg>
+          <span>Tambah Monitor</span>
+        </button>
+
+        <!-- Tiga tombol pintasan template -->
+        <div class="monitors-template-row">
+          <button type="button" onclick="openCreateMonitorWithTemplate('http')" class="monitors-template-btn">
+            <span>Website HTTP(S)</span>
+          </button>
+          <button type="button" onclick="openCreateMonitorWithTemplate('tcp')" class="monitors-template-btn">
+            <span>Port TCP</span>
+          </button>
+          <button type="button" onclick="openCreateMonitorWithTemplate('ping')" class="monitors-template-btn">
+            <span>Ping</span>
           </button>
         </div>
-      `,
-      );
-      return;
-    }
-
-    batchInsertHTML(
-      container,
-      `
-      <section class="col-span-full w-full rounded-2xl border border-white/10 bg-white/[0.03] backdrop-blur-xl py-16 px-6 flex flex-col items-center justify-center text-center shadow-[inset_0_1px_0_0_rgba(255,255,255,0.05)]" aria-labelledby="monitors-empty-title">
-        <div class="w-12 h-12 rounded-2xl bg-[#30d158]/10 border border-[#30d158]/20 flex items-center justify-center mb-4 shadow-[0_0_20px_rgba(48,209,88,0.15)]" aria-hidden="true">
-          <svg class="w-6 h-6 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="1.8" d="M3 12h4l3-8 4 16 3-8h4"/>
-          </svg>
-        </div>
-        <h3 id="monitors-empty-title" class="text-base font-semibold tracking-tight text-white/90">No monitors yet</h3>
-        <p class="max-w-md text-xs leading-relaxed text-neutral-400 mt-1.5">Add your first target to automatically track uptime, response latency, and endpoint health.</p>
-        <button type="button" onclick="openEditMonitorModal(null)" class="mt-6 inline-flex items-center justify-center gap-2 rounded-xl bg-[#30d158] hover:bg-[#28b84c] px-4 py-2.5 text-xs font-semibold text-[#0b0b0c] transition-all shadow-sm focus-visible:outline-none focus-visible:ring-2 focus-visible:ring-[#30d158] focus-visible:ring-offset-2 focus-visible:ring-offset-[#0b0b0c]">
-          <svg class="w-4 h-4 shrink-0" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true">
-            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2.5" d="M12 4v16m8-8H4"/>
-          </svg>
-          <span>Add Monitor</span>
-        </button>
-      </section>
-    `,
-    );
+      </div>
+      `;
+    batchInsertHTML(container, emptyMarkup);
+    if (paginationContainer) paginationContainer.classList.add('hidden');
     return;
   }
 
-  // Client-side search (⌘K) automatically bypasses pagination limits to search across all monitors
-  const visible = isSearching ? sorted : sorted.slice(0, monitorDisplayLimit);
-  const currentKey = `${window.currentViewMode}:${visible.map((m) => m.id).join(",")}`;
+  // Calculate pagination bounds
+  const totalItems = filtered.length;
+  const isAll = window.monitorsPageSize === 'all';
+  const pageSize = isAll ? totalItems : (window.monitorsPageSize || 12);
+  const totalPages = isAll ? 1 : Math.max(1, Math.ceil(totalItems / pageSize));
+
+  // Clamp current page
+  if (window.monitorsCurrentPage > totalPages) {
+    window.monitorsCurrentPage = totalPages;
+  }
+  if (window.monitorsCurrentPage < 1) {
+    window.monitorsCurrentPage = 1;
+  }
+
+  const currentPage = window.monitorsCurrentPage;
+  const startIndex = isAll ? 0 : (currentPage - 1) * pageSize;
+  const endIndex = isAll ? totalItems : Math.min(startIndex + pageSize, totalItems);
+  const pageItems = isSearching ? sorted : sorted.slice(startIndex, endIndex);
+
+  const currentKey = `${window.currentViewMode}:${pageItems.map((m) => m.id).join(',')}`;
 
   if (!forceRebuild && container.dataset.renderedKey === currentKey) {
     // Perform targeted in-place DOM updates without re-creating DOM tree
     let allUpdated = true;
-    for (const m of visible) {
+    for (const m of pageItems) {
       if (!updateSingleMonitorCardDOM(m)) {
         allUpdated = false;
         break;
@@ -966,28 +949,86 @@ function renderMonitors(forceRebuild = false) {
   }
 
   container.dataset.renderedKey = currentKey;
-  if (window.currentViewMode === "grid") {
-    container.className =
-      "grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4";
-    batchInsertHTML(
-      container,
-      visible.map((m) => renderMonitorCard(m)).join(""),
-    );
+  if (window.currentViewMode === 'grid') {
+    container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
+    batchInsertHTML(container, pageItems.map((m) => renderMonitorCard(m)).join(''));
   } else {
-    container.className = "space-y-2.5";
-    batchInsertHTML(
-      container,
-      visible.map((m) => renderMonitorListRow(m)).join(""),
-    );
+    container.className = 'space-y-2.5';
+    batchInsertHTML(container, pageItems.map((m) => renderMonitorListRow(m)).join(''));
   }
 
-  // Toggle "Show More" pagination button
+  // Render pagination controls
   if (paginationContainer) {
-    if (!isSearching && filtered.length > monitorDisplayLimit) {
-      paginationContainer.classList.remove("hidden");
-    } else {
-      paginationContainer.classList.add("hidden");
+    paginationContainer.classList.remove('hidden');
+
+    if (pageInfo) {
+      if (isAll || totalItems <= pageSize) {
+        pageInfo.innerText = `Showing all ${totalItems} target${totalItems === 1 ? '' : 's'}`;
+      } else {
+        pageInfo.innerText = `Showing ${startIndex + 1}–${endIndex} of ${totalItems} targets`;
+      }
     }
+
+    if (paginationControls) {
+      if (totalPages <= 1) {
+        paginationControls.innerHTML = '';
+      } else {
+        let controlsHtml = '';
+
+        // Previous button
+        const prevDisabled = currentPage === 1;
+        controlsHtml += `
+          <button type="button" ${prevDisabled ? 'disabled' : `onclick="changeMonitorsPage(${currentPage - 1})"`} class="px-2.5 py-1 rounded-lg border border-white/10 ${prevDisabled ? 'opacity-30 cursor-not-allowed text-white/30' : 'text-white/70 hover:text-white hover:bg-white/10 cursor-pointer'} transition flex items-center gap-1">
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 19l-7-7 7-7"/>
+            </svg>
+            <span class="hidden sm:inline">Prev</span>
+          </button>
+        `;
+
+        // Smart page windowing
+        let pages = [];
+        if (totalPages <= 7) {
+          for (let i = 1; i <= totalPages; i++) pages.push(i);
+        } else {
+          pages.push(1);
+          if (currentPage > 3) pages.push('...');
+          const start = Math.max(2, currentPage - 1);
+          const end = Math.min(totalPages - 1, currentPage + 1);
+          for (let i = start; i <= end; i++) pages.push(i);
+          if (currentPage < totalPages - 2) pages.push('...');
+          pages.push(totalPages);
+        }
+
+        pages.forEach((p) => {
+          if (p === '...') {
+            controlsHtml += `<span class="px-1.5 py-1 text-white/30 text-xs">…</span>`;
+          } else {
+            const isActive = p === currentPage;
+            controlsHtml += `
+              <button type="button" onclick="changeMonitorsPage(${p})" class="w-7 h-7 rounded-lg text-xs font-mono font-medium transition flex items-center justify-center cursor-pointer ${isActive ? 'bg-[#30d158] text-[#0b0b0c] font-bold shadow-sm' : 'text-white/70 hover:text-white hover:bg-white/10 border border-white/10'}">${p}</button>
+            `;
+          }
+        });
+
+        // Next button
+        const nextDisabled = currentPage === totalPages;
+        controlsHtml += `
+          <button type="button" ${nextDisabled ? 'disabled' : `onclick="changeMonitorsPage(${currentPage + 1})"`} class="px-2.5 py-1 rounded-lg border border-white/10 ${nextDisabled ? 'opacity-30 cursor-not-allowed text-white/30' : 'text-white/70 hover:text-white hover:bg-white/10 cursor-pointer'} transition flex items-center gap-1">
+            <span class="hidden sm:inline">Next</span>
+            <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+              <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 5l7 7-7 7"/>
+            </svg>
+          </button>
+        `;
+
+        paginationControls.innerHTML = controlsHtml;
+      }
+    }
+  }
+
+  if (showMoreContainer) {
+    showMoreContainer.classList.add('hidden');
   }
 
   updateBulkActionBarUI();
@@ -996,17 +1037,14 @@ function renderMonitors(forceRebuild = false) {
 // ── Protocol Badge Component ───────────────────────────────────────────────
 
 function renderProtocolBadge(type) {
-  const t = (type || "http").toUpperCase();
-  let badgeStyle = "bg-blue-500/10 text-blue-400 border-blue-500/20";
-  if (t === "TCP") {
-    badgeStyle = "bg-purple-500/10 text-purple-400 border-purple-500/20";
-  } else if (t === "DNS") {
-    badgeStyle = "bg-amber-500/10 text-amber-400 border-amber-500/20";
-  } else if (t === "PING") {
-    badgeStyle = "bg-emerald-500/10 text-emerald-400 border-emerald-500/20";
-  } else if (t === "EXPIRY") {
-    badgeStyle =
-      "bg-cyan-500/10 text-cyan-400 border-cyan-500/30 font-semibold";
+  const t = (type || 'http').toUpperCase();
+  let badgeStyle = 'bg-blue-500/10 text-blue-400 border-blue-500/20';
+  if (t === 'TCP') {
+    badgeStyle = 'bg-purple-500/10 text-purple-400 border-purple-500/20';
+  } else if (t === 'DNS') {
+    badgeStyle = 'bg-amber-500/10 text-amber-400 border-amber-500/20';
+  } else if (t === 'PING') {
+    badgeStyle = 'bg-emerald-500/10 text-emerald-400 border-emerald-500/20';
   }
   return `<span class="inline-flex items-center px-1.5 py-0.5 rounded text-[10px] font-mono font-medium border ${badgeStyle} shrink-0">${t}</span>`;
 }
@@ -1016,112 +1054,65 @@ window.renderProtocolBadge = renderProtocolBadge;
 
 function renderMonitorCard(m) {
   const live = statusMap[m.id];
-  const isUp = live ? live.current_status === "UP" : true;
+  const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
-  const isSelected =
-    window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
-  const anySelected =
-    window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
 
-  let statusColor = "#30d158"; // Status Green
-  let statusLabel = "OPERATIONAL";
+  let statusColor = '#30d158'; // Status Green
+  let statusLabel = 'OPERATIONAL';
 
   if (isPaused) {
-    statusColor = "#8e8e93"; // Neutral Gray
-    statusLabel = "PAUSED";
-  } else if (live && live.current_status === "MAINTENANCE") {
-    statusColor = "#c084fc"; // Maintenance Purple
-    statusLabel = "MAINTENANCE";
+    statusColor = '#8e8e93'; // Neutral Gray
+    statusLabel = 'PAUSED';
+  } else if (live && live.current_status === 'MAINTENANCE') {
+    statusColor = '#c084fc'; // Maintenance Purple
+    statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
-    statusColor = "#ff453a"; // Outage Red
-    statusLabel = "DOWN";
-  } else if (
-    live &&
-    (live.current_status === "DEGRADED" ||
-      (live.uptime_24h !== undefined && live.uptime_24h < 95.0))
-  ) {
-    statusColor = "#ffd60a"; // Degraded Yellow
-    statusLabel = "DEGRADED";
+    statusColor = '#ff453a'; // Outage Red
+    statusLabel = 'DOWN';
+  } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
+    statusColor = '#ffd60a'; // Degraded Yellow
+    statusLabel = 'DEGRADED';
   }
 
-  const isExpiry = (m.check_type || "").toLowerCase() === "expiry";
-  let minDaysRemaining = null;
-  if (
-    m.domain_days_remaining !== null &&
-    m.domain_days_remaining !== undefined
-  ) {
-    minDaysRemaining = m.domain_days_remaining;
-  }
-  if (m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
-    minDaysRemaining =
-      minDaysRemaining === null
-        ? m.ssl_days_remaining
-        : Math.min(minDaysRemaining, m.ssl_days_remaining);
-  }
-
-  const metric1Label = isExpiry ? "Days Left" : "Latency";
-  const latencyText = isExpiry
-    ? minDaysRemaining !== null
-      ? `${minDaysRemaining}d`
-      : "—"
-    : live &&
-        live.last_latency_ms !== null &&
-        live.last_latency_ms !== undefined
+  const latencyText =
+    live && live.last_latency_ms !== null && live.last_latency_ms !== undefined
       ? `${live.last_latency_ms} ms`
-      : "—";
-  const intervalText = isExpiry
-    ? m.check_interval_secs >= 86400
-      ? "Daily"
-      : `${Math.round(m.check_interval_secs / 3600)}h`
-    : `${m.check_interval_secs}s`;
+      : '—';
 
   const uptimeText =
-    live && live.uptime_24h !== undefined
-      ? `${live.uptime_24h.toFixed(1)}%`
-      : "100%";
+    live && live.uptime_24h !== undefined ? `${live.uptime_24h.toFixed(1)}%` : '100%';
 
   const logs = logsCache[m.id] || [];
   const barsHtml = renderUptimeTickBars(logs);
 
-  const fails = m.current_consecutive_fails || 0;
-  const maxRetries = m.max_retries || 3;
-  let failingBadge = "";
-  if (fails > 0 && fails < maxRetries) {
-    failingBadge = `
-      <span data-badge="failing" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono font-medium bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30" title="${fails} of ${maxRetries} consecutive checks failing">
-        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse"></span>
-        ${fails}/${maxRetries} failing
-      </span>
-    `;
-  }
-
   return `
-    <div id="monitor-card-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer relative ${isSelected ? "ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]" : ""}">
+    <div id="monitor-card-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-5 shadow-xl transition-all duration-200 hover:border-black/15 dark:hover:border-white/20 flex flex-col justify-between space-y-4 cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
       <!-- Card Header: Left-Aligned Status Dot, Title & Target URL with Right Selection Checkbox -->
       <div class="flex items-start justify-between gap-3 min-w-0">
         <div class="flex items-start gap-2.5 min-w-0 flex-1">
           <span data-status-dot="true" class="relative flex h-2.5 w-2.5 mt-1.5 shrink-0" title="${statusLabel}">
-            ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ""}
+            ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
             <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
           </span>
           <div class="min-w-0 flex-1">
-            <div class="flex items-center gap-2 flex-wrap">
+            <div class="flex items-center gap-2">
               <h3 class="font-semibold text-neutral-900 dark:text-white text-sm sm:text-base truncate tracking-tight leading-snug">${escapeHtml(m.name)}</h3>
               ${renderProtocolBadge(m.check_type)}
-              <span data-failing-container="true">${failingBadge}</span>
             </div>
-            <p class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ""}</p>
+            <p class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</p>
           </div>
         </div>
         <div class="shrink-0 pt-0.5" onclick="event.stopPropagation()">
-          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? "checked" : ""} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? "opacity-100 ring-2 ring-emerald-500/50" : anySelected ? "opacity-70 hover:opacity-100" : "opacity-0 group-hover:opacity-70 hover:!opacity-100"}" title="Select monitor" />
+          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? 'checked' : ''} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? 'opacity-100 ring-2 ring-emerald-500/50' : (anySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100')}" title="Select monitor" />
         </div>
       </div>
 
       <!-- Metrics Row -->
       <div class="grid grid-cols-3 gap-2 py-2 border-y border-black/5 dark:border-white/5 text-center">
         <div>
-          <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">${metric1Label}</div>
+          <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Latency</div>
           <div data-metric="latency" class="text-sm font-semibold text-neutral-900 dark:text-white font-mono mt-0.5">${latencyText}</div>
         </div>
         <div>
@@ -1130,7 +1121,7 @@ function renderMonitorCard(m) {
         </div>
         <div>
           <div class="text-[10px] uppercase tracking-wider text-neutral-500 dark:text-white/40">Interval</div>
-          <div class="text-sm font-semibold text-neutral-700 dark:text-white/80 font-mono mt-0.5">${intervalText}</div>
+          <div class="text-sm font-semibold text-neutral-700 dark:text-white/80 font-mono mt-0.5">${m.check_interval_secs}s</div>
         </div>
       </div>
 
@@ -1138,7 +1129,7 @@ function renderMonitorCard(m) {
       <div class="space-y-1.5">
         <div class="flex items-center justify-between text-[10px] text-neutral-500 dark:text-white/40 font-mono">
           <span>Recent Checks</span>
-          <span>${logs.length > 0 ? `${logs.length} ticks` : "No logs"}</span>
+          <span>${logs.length > 0 ? `${logs.length} ticks` : 'No logs'}</span>
         </div>
         <div class="flex items-center gap-[2px] h-6 w-full p-1 bg-black/5 dark:bg-black/30 rounded-lg border border-black/5 dark:border-white/5">
           ${barsHtml}
@@ -1148,17 +1139,17 @@ function renderMonitorCard(m) {
       <!-- Card Footer Actions -->
       <div class="flex items-center justify-between pt-1 text-xs">
         <span class="text-[11px] text-neutral-500 dark:text-white/40 font-mono">
-          ${m.is_public === 1 ? "🌐 Public" : "🔒 Private"}
+          ${m.is_public === 1 ? '🌐 Public' : '🔒 Private'}
         </span>
         <div class="flex items-center gap-1.5">
-          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? "Pause Monitor" : "Resume Monitor"}">
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="${m.is_active === 1 ? 'Pause Monitor' : 'Resume Monitor'}">
             ${
               m.is_active === 1
                 ? `<svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M10 9v6m4-6v6m7-3a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
                 : `<svg class="w-4 h-4 text-[#30d158] pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M14.752 11.168l-3.197-2.132A1 1 0 0010 9.87v4.263a1 1 0 001.555.832l3.197-2.132a1 1 0 000-1.664z"/><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M21 12a9 9 0 11-18 0 9 9 0 0118 0z"/></svg>`
             }
           </button>
-          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
             <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
@@ -1172,10 +1163,10 @@ function renderMonitorCard(m) {
           <button data-action="edit-monitor" data-id="${m.id}" onclick="openEditMonitorModal('${m.id}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="Edit Target">
             Edit
           </button>
-          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" onclick="viewLogs('${m.id}', '${escapeHtml(m.name)}', '${escapeHtml(m.url)}')" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
+          <button data-action="view-logs" data-id="${m.id}" data-name="${escapeHtml(m.name)}" data-url="${escapeHtml(m.url)}" class="px-2.5 py-1 rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white font-medium border border-black/5 dark:border-white/10 transition" title="View History Logs">
             Logs
           </button>
-          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="deleteMonitor('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
+          <button data-action="delete-monitor" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 rounded-lg text-neutral-400 hover:text-[#ff453a] hover:bg-[#ff453a]/10 transition" title="Delete Target">
             <svg class="w-4 h-4 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
             </svg>
@@ -1190,107 +1181,63 @@ function renderMonitorCard(m) {
 
 function renderMonitorListRow(m) {
   const live = statusMap[m.id];
-  const isUp = live ? live.current_status === "UP" : true;
+  const isUp = live ? live.current_status === 'UP' : true;
   const isPaused = m.is_active === 0;
-  const isSelected =
-    window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
-  const anySelected =
-    window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
+  const isSelected = window.selectedMonitorIds && window.selectedMonitorIds.has(m.id);
+  const anySelected = window.selectedMonitorIds && window.selectedMonitorIds.size > 0;
 
-  let statusColor = "#30d158";
-  let statusLabel = "UP";
+  let statusColor = '#30d158';
+  let statusLabel = 'UP';
 
   if (isPaused) {
-    statusColor = "#8e8e93";
-    statusLabel = "PAUSED";
-  } else if (live && live.current_status === "MAINTENANCE") {
-    statusColor = "#c084fc";
-    statusLabel = "MAINTENANCE";
+    statusColor = '#8e8e93';
+    statusLabel = 'PAUSED';
+  } else if (live && live.current_status === 'MAINTENANCE') {
+    statusColor = '#c084fc';
+    statusLabel = 'MAINTENANCE';
   } else if (!isUp) {
-    statusColor = "#ff453a";
-    statusLabel = "DOWN";
-  } else if (
-    live &&
-    (live.current_status === "DEGRADED" ||
-      (live.uptime_24h !== undefined && live.uptime_24h < 95.0))
-  ) {
-    statusColor = "#ffd60a";
-    statusLabel = "DEGRADED";
+    statusColor = '#ff453a';
+    statusLabel = 'DOWN';
+  } else if (live && (live.current_status === 'DEGRADED' || (live.uptime_24h !== undefined && live.uptime_24h < 95.0))) {
+    statusColor = '#ffd60a';
+    statusLabel = 'DEGRADED';
   }
 
-  const isExpiry = (m.check_type || "").toLowerCase() === "expiry";
-  let minDaysRemaining = null;
-  if (
-    m.domain_days_remaining !== null &&
-    m.domain_days_remaining !== undefined
-  ) {
-    minDaysRemaining = m.domain_days_remaining;
-  }
-  if (m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
-    minDaysRemaining =
-      minDaysRemaining === null
-        ? m.ssl_days_remaining
-        : Math.min(minDaysRemaining, m.ssl_days_remaining);
-  }
-
-  const latencyText = isExpiry
-    ? minDaysRemaining !== null
-      ? `${minDaysRemaining}d remaining`
-      : "—"
-    : live &&
-        live.last_latency_ms !== null &&
-        live.last_latency_ms !== undefined
+  const latencyText =
+    live && live.last_latency_ms !== null && live.last_latency_ms !== undefined
       ? `${live.last_latency_ms} ms`
-      : "—";
-  const intervalText = isExpiry
-    ? m.check_interval_secs >= 86400
-      ? "Daily"
-      : `${Math.round(m.check_interval_secs / 3600)}h`
-    : `${m.check_interval_secs}s`;
-
-  const fails = m.current_consecutive_fails || 0;
-  const maxRetries = m.max_retries || 3;
-  let failingBadge = "";
-  if (fails > 0 && fails < maxRetries) {
-    failingBadge = `
-      <span data-badge="failing" class="inline-flex items-center gap-1 px-1.5 py-0.5 rounded-md text-[10px] font-mono font-medium bg-amber-500/15 text-amber-500 dark:text-amber-400 border border-amber-500/30" title="${fails} of ${maxRetries} consecutive checks failing">
-        <span class="w-1.5 h-1.5 rounded-full bg-amber-500 dark:bg-amber-400 animate-pulse"></span>
-        ${fails}/${maxRetries} failing
-      </span>
-    `;
-  }
+      : '—';
 
   return `
-    <div id="monitor-row-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer relative ${isSelected ? "ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]" : ""}">
+    <div id="monitor-row-${m.id}" data-action="open-detail" data-id="${m.id}" class="group glass-card rounded-2xl p-4 shadow-lg flex flex-col sm:flex-row sm:items-center justify-between gap-3 hover:border-black/15 dark:hover:border-white/20 transition cursor-pointer relative ${isSelected ? 'ring-2 ring-emerald-500/50 border-emerald-500/40 bg-emerald-500/[0.04]' : ''}">
       <div class="flex items-center gap-2.5 min-w-0 flex-1">
         <div class="shrink-0" onclick="event.stopPropagation()">
-          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? "checked" : ""} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? "opacity-100 ring-2 ring-emerald-500/50" : anySelected ? "opacity-70 hover:opacity-100" : "opacity-0 group-hover:opacity-70 hover:!opacity-100"}" title="Select monitor" />
+          <input type="checkbox" data-monitor-id="${m.id}" ${isSelected ? 'checked' : ''} onclick="handleMonitorCardCheckbox('${m.id}', this.checked, event)" class="monitor-select-cb rounded border-white/20 bg-white/5 text-emerald-500 focus:ring-0 focus:outline-none w-4 h-4 accent-emerald-500 cursor-pointer transition ${isSelected ? 'opacity-100 ring-2 ring-emerald-500/50' : (anySelected ? 'opacity-70 hover:opacity-100' : 'opacity-0 group-hover:opacity-70 hover:!opacity-100')}" title="Select monitor" />
         </div>
         <span data-status-dot="true" class="relative flex h-2.5 w-2.5 shrink-0" title="${statusLabel}">
-          ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ""}
+          ${!isPaused && isUp ? `<span class="animate-ping absolute inline-flex h-full w-full rounded-full opacity-75" style="background-color: ${statusColor}"></span>` : ''}
           <span class="relative inline-flex rounded-full h-2.5 w-2.5" style="background-color: ${statusColor}"></span>
         </span>
         <div class="min-w-0 flex-1">
-          <div class="flex items-center gap-2 flex-wrap">
+          <div class="flex items-center gap-2">
             <span class="font-semibold text-neutral-900 dark:text-white text-sm truncate tracking-tight">${escapeHtml(m.name)}</span>
             ${renderProtocolBadge(m.check_type)}
-            <span data-failing-container="true">${failingBadge}</span>
           </div>
-          <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ""}</div>
+          <div class="text-xs text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(m.url)}${m.port ? `:${m.port}` : ''}</div>
         </div>
       </div>
 
       <div class="flex items-center justify-between sm:justify-end gap-4 font-mono text-xs shrink-0">
         <div class="text-right">
           <span data-metric="latency" class="text-neutral-900 dark:text-white font-medium">${latencyText}</span>
-          <span class="text-neutral-500 dark:text-white/40 text-[10px] ml-1">(${intervalText})</span>
+          <span class="text-neutral-500 dark:text-white/40 text-[10px] ml-1">(${m.check_interval_secs}s)</span>
         </div>
 
         <div class="flex items-center gap-1.5 shrink-0">
-          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" onclick="toggleMonitorActive('${m.id}', ${m.is_active === 1})" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
-            ${m.is_active === 1 ? "⏸" : "▶"}
+          <button data-action="toggle-active" data-id="${m.id}" data-active="${m.is_active === 1}" class="p-1.5 rounded-lg text-neutral-500 hover:text-neutral-900 dark:text-white/60 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/10 transition" title="Toggle Pause">
+            ${m.is_active === 1 ? '⏸' : '▶'}
           </button>
-          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" onclick="openBadgeModal('${m.id}', '${escapeHtml(m.name)}')" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
+          <button data-action="open-badge" data-id="${m.id}" data-name="${escapeHtml(m.name)}" class="p-1.5 text-neutral-400 hover:text-emerald-400 hover:bg-white/5 rounded-md transition" title="Get Status Badge">
             <svg class="w-4 h-4 pointer-events-none" fill="none" stroke="currentColor" viewBox="0 0 24 24">
               <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M7 7h10v10M7 17L17 7"/>
             </svg>
@@ -1317,7 +1264,7 @@ function renderUptimeTickBars(logs) {
   const recent = logs.slice(-totalTicks);
   const emptyCount = Math.max(0, totalTicks - recent.length);
 
-  let html = "";
+  let html = '';
 
   // Placeholder ticks if fewer than 30 logs available
   for (let i = 0; i < emptyCount; i++) {
@@ -1327,9 +1274,9 @@ function renderUptimeTickBars(logs) {
   // Render actual tick logs
   recent.forEach((log) => {
     const isUp = log.is_up === 1;
-    const color = isUp ? "bg-[#30d158]" : "bg-[#ff453a]";
-    const latency = log.latency_ms !== null ? `${log.latency_ms} ms` : "err";
-    const status = isUp ? "UP" : "DOWN";
+    const color = isUp ? 'bg-[#30d158]' : 'bg-[#ff453a]';
+    const latency = log.latency_ms !== null ? `${log.latency_ms} ms` : 'err';
+    const status = isUp ? 'UP' : 'DOWN';
     const time = formatDate(log.checked_at);
 
     html += `<div class="flex-1 h-full rounded-[1.5px] ${color} hover:opacity-80 transition cursor-pointer" title="${status} • ${latency} • ${time}"></div>`;
@@ -1343,11 +1290,11 @@ function renderUptimeTickBars(logs) {
 function renderWebhookItem(w) {
   const isEnabled = w.is_enabled === 1 || w.is_enabled === true;
   const providerColor =
-    w.provider.toLowerCase() === "discord"
-      ? "text-[#5865F2] border-[#5865F2]/30 bg-[#5865F2]/10"
-      : w.provider.toLowerCase() === "slack"
-        ? "text-[#ECB22E] border-[#ECB22E]/30 bg-[#ECB22E]/10"
-        : "text-[#30d158] border-[#30d158]/30 bg-[#30d158]/10";
+    w.provider.toLowerCase() === 'discord'
+      ? 'text-[#5865F2] border-[#5865F2]/30 bg-[#5865F2]/10'
+      : w.provider.toLowerCase() === 'slack'
+      ? 'text-[#ECB22E] border-[#ECB22E]/30 bg-[#ECB22E]/10'
+      : 'text-[#30d158] border-[#30d158]/30 bg-[#30d158]/10';
 
   return `
     <div class="glass-card rounded-2xl p-4 flex items-center justify-between gap-3 shadow-lg hover:border-black/15 dark:hover:border-white/20 transition">
@@ -1355,19 +1302,19 @@ function renderWebhookItem(w) {
         <div class="flex items-center gap-2">
           <span class="font-semibold text-neutral-900 dark:text-white text-xs truncate">${escapeHtml(w.name)}</span>
           <span class="px-2 py-0.5 rounded-full text-[9px] uppercase font-mono border ${providerColor}">${escapeHtml(w.provider)}</span>
-          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-neutral-400 border border-black/5 dark:border-white/5">${w.use_default_template !== 0 && w.use_default_template !== false ? "Default" : "Custom"}</span>
-          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono ${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? "bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20" : "bg-black/5 dark:bg-white/5 text-neutral-500 dark:text-neutral-400 border border-black/5 dark:border-white/5"}" title="Resolve Notifications">${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? "Resolve: ON" : "Resolve: OFF"}</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono bg-black/5 dark:bg-white/5 text-neutral-600 dark:text-neutral-400 border border-black/5 dark:border-white/5">${w.use_default_template !== 0 && w.use_default_template !== false ? 'Default' : 'Custom'}</span>
+          <span class="px-1.5 py-0.5 rounded text-[9px] uppercase font-mono ${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? 'bg-emerald-500/15 text-emerald-700 dark:text-emerald-400 border border-emerald-500/20' : 'bg-black/5 dark:bg-white/5 text-neutral-500 dark:text-neutral-400 border border-black/5 dark:border-white/5'}" title="Resolve Notifications">${w.notify_on_resolve !== 0 && w.notify_on_resolve !== false ? 'Resolve: ON' : 'Resolve: OFF'}</span>
         </div>
         <p class="text-[11px] text-neutral-500 dark:text-white/40 truncate font-mono mt-0.5">${escapeHtml(w.url)}</p>
       </div>
 
       <div class="flex items-center gap-2 shrink-0">
-        <button data-action="test-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" onclick="testWebhookDirect('${w.id}', '${escapeHtml(w.name)}')" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
+        <button data-action="test-webhook" data-id="${w.id}" data-name="${escapeHtml(w.name)}" class="px-2.5 py-1 text-xs font-medium rounded-lg bg-black/5 hover:bg-black/10 dark:bg-white/5 dark:hover:bg-white/10 text-neutral-700 hover:text-neutral-900 dark:text-white/80 dark:hover:text-white border border-black/5 dark:border-white/10 transition" title="Test Notification">
           Test
         </button>
         <!-- Smooth toggle -->
         <label class="relative inline-flex items-center cursor-pointer">
-          <input type="checkbox" ${isEnabled ? "checked" : ""} data-action="toggle-webhook" data-id="${w.id}" data-enabled="${isEnabled}" onchange="toggleWebhookActive('${w.id}', ${isEnabled})" class="sr-only peer">
+          <input type="checkbox" ${isEnabled ? 'checked' : ''} data-action="toggle-webhook" data-id="${w.id}" data-enabled="${isEnabled}" class="sr-only peer">
           <div class="w-9 h-5 bg-neutral-300 dark:bg-neutral-700 peer-focus:outline-none rounded-full peer peer-checked:after:translate-x-full peer-checked:after:border-white after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:h-4 after:w-4 after:transition-all peer-checked:bg-[#30d158]"></div>
         </label>
       </div>
@@ -1375,26 +1322,33 @@ function renderWebhookItem(w) {
   `;
 }
 
+async function loadWebhooksPreview() {
+  const container = document.getElementById('webhooks-preview-list');
+  if (!container) return;
+  try {
+    const res = await apiFetch('/api/admin/channels');
+    if (res && res.ok) {
+      window.allWebhooks = await res.json();
+      renderWebhooksSection(window.allWebhooks);
+    } else {
+      renderWebhooksSection([]);
+    }
+  } catch (e) {
+    renderWebhooksSection([]);
+  }
+}
+window.loadWebhooksPreview = loadWebhooksPreview;
+
 function renderWebhooksSection(webhooks) {
-  const container = document.getElementById("webhooks-preview-list");
+  const container = document.getElementById('webhooks-preview-list');
   if (!container) return;
 
-  if (webhooks.length === 0) {
-    batchInsertHTML(
-      container,
-      `
-      <div class="col-span-full p-6 text-center text-neutral-500 dark:text-white/40 text-xs glass-card rounded-xl">
-        No notification webhooks registered. Click "+ Add Webhook" to receive instant alert cards.
-      </div>
-    `,
-    );
+  if (!webhooks || webhooks.length === 0) {
+    container.innerHTML = '';
     return;
   }
 
-  batchInsertHTML(
-    container,
-    webhooks.map((w) => renderWebhookItem(w)).join(""),
-  );
+  batchInsertHTML(container, webhooks.map((w) => renderWebhookItem(w)).join(''));
 }
 
 // ── Interactive Actions (Pause/Resume, Webhook Toggle, Direct Test) ───────────
@@ -1403,25 +1357,23 @@ async function toggleMonitorActive(id, currentActive) {
   const newActive = !currentActive;
   try {
     const res = await apiFetch(`/api/monitors/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ is_active: newActive }),
     });
 
     if (res && res.ok) {
       showToast({
-        title: "Monitor Updated",
-        message: newActive
-          ? "Target resumed (checks active)"
-          : "Target paused (checks stopped)",
-        type: "info",
+        title: 'Monitor Updated',
+        message: newActive ? 'Target resumed (checks active)' : 'Target paused (checks stopped)',
+        type: 'info',
       });
       fetchDashboardData();
     } else if (res && res.status !== 401 && res.status !== 429) {
       showToast({
-        title: "Update Failed",
-        message: "Failed to update monitor status",
-        type: "error",
+        title: 'Update Failed',
+        message: 'Failed to update monitor status',
+        type: 'error',
       });
     }
   } catch (err) {
@@ -1432,26 +1384,24 @@ async function toggleMonitorActive(id, currentActive) {
 async function toggleWebhookActive(id, currentEnabled) {
   const newEnabled = !currentEnabled;
   try {
-    const res = await apiFetch(`/api/webhooks/${id}`, {
-      method: "PUT",
-      headers: { "Content-Type": "application/json" },
+    const res = await apiFetch(`/api/admin/channels/${id}`, {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({ is_enabled: newEnabled }),
     });
 
     if (res && res.ok) {
       showToast({
-        title: "Webhook Updated",
-        message: newEnabled
-          ? "Webhook alert channel enabled"
-          : "Webhook alert channel disabled",
-        type: "info",
+        title: 'Webhook Updated',
+        message: newEnabled ? 'Webhook alert channel enabled' : 'Webhook alert channel disabled',
+        type: 'info',
       });
       fetchDashboardData();
     } else if (res && res.status !== 401 && res.status !== 429) {
       showToast({
-        title: "Update Failed",
-        message: "Failed to toggle webhook state",
-        type: "error",
+        title: 'Update Failed',
+        message: 'Failed to toggle webhook state',
+        type: 'error',
       });
     }
   } catch (err) {
@@ -1461,25 +1411,25 @@ async function toggleWebhookActive(id, currentEnabled) {
 
 async function testWebhookDirect(id, name) {
   showToast({
-    title: "Testing Webhook",
+    title: 'Testing Webhook',
     message: `Dispatching test alert to "${name}"...`,
-    type: "info",
+    type: 'info',
   });
   try {
-    const res = await apiFetch(`/api/webhooks/${id}/test`, { method: "POST" });
+    const res = await apiFetch(`/api/admin/channels/${id}/test`, { method: 'POST' });
     if (res) {
       const data = await res.json().catch(() => ({}));
       if (res.ok) {
         showToast({
-          title: "Alert Delivered",
-          message: data.message || "Test alert delivered successfully!",
-          type: "success",
+          title: 'Alert Delivered',
+          message: data.message || 'Test alert delivered successfully!',
+          type: 'success',
         });
       } else if (res.status !== 401 && res.status !== 429) {
         showToast({
-          title: "Delivery Failed",
-          message: data.error || "Test alert delivery failed",
-          type: "error",
+          title: 'Delivery Failed',
+          message: data.error || 'Test alert delivery failed',
+          type: 'error',
         });
       }
     }
@@ -1492,20 +1442,21 @@ async function testWebhookDirect(id, name) {
 
 function setViewMode(mode) {
   window.currentViewMode = mode;
-  localStorage.setItem("keepup_view_mode", mode);
+  localStorage.setItem('keepup_view_mode', mode);
 
-  const gridBtn = document.getElementById("view-grid-btn");
-  const listBtn = document.getElementById("view-list-btn");
+  const gridBtn = document.getElementById('view-grid-btn');
+  const listBtn = document.getElementById('view-list-btn');
 
   if (gridBtn && listBtn) {
-    if (mode === "grid") {
-      gridBtn.className = "p-1.5 rounded-lg text-white bg-white/10 transition";
-      listBtn.className =
-        "p-1.5 rounded-lg text-white/40 hover:text-white transition";
+    const isGrid = mode === 'grid';
+    gridBtn.setAttribute('aria-pressed', isGrid ? 'true' : 'false');
+    listBtn.setAttribute('aria-pressed', isGrid ? 'false' : 'true');
+    if (isGrid) {
+      gridBtn.className = 'w-8 h-8 rounded-lg flex items-center justify-center text-white bg-white/10 transition';
+      listBtn.className = 'w-8 h-8 rounded-lg flex items-center justify-center text-white/40 hover:text-white transition';
     } else {
-      listBtn.className = "p-1.5 rounded-lg text-white bg-white/10 transition";
-      gridBtn.className =
-        "p-1.5 rounded-lg text-white/40 hover:text-white transition";
+      listBtn.className = 'w-8 h-8 rounded-lg flex items-center justify-center text-white bg-white/10 transition';
+      gridBtn.className = 'w-8 h-8 rounded-lg flex items-center justify-center text-white/40 hover:text-white transition';
     }
   }
 
@@ -1514,6 +1465,7 @@ function setViewMode(mode) {
 
 let searchDebounceTimer = null;
 function filterMonitors(immediate = false) {
+  window.monitorsCurrentPage = 1;
   if (searchDebounceTimer) {
     clearTimeout(searchDebounceTimer);
     searchDebounceTimer = null;
@@ -1528,46 +1480,37 @@ function filterMonitors(immediate = false) {
 }
 window.filterMonitors = filterMonitors;
 
-function clearMonitorSearch() {
-  const searchInput = document.getElementById("search-input");
-  if (!searchInput) return;
-  searchInput.value = "";
-  filterMonitors(true);
-  searchInput.focus();
-}
-window.clearMonitorSearch = clearMonitorSearch;
-
 // ── Global Helper Utilities ──────────────────────────────────────────────────
 
 function escapeHtml(str) {
-  if (!str) return "";
+  if (!str) return '';
   return String(str).replace(
     /[&<>"']/g,
     (s) =>
       ({
-        "&": "&amp;",
-        "<": "&lt;",
-        ">": "&gt;",
-        '"': "&quot;",
-        "'": "&#39;",
-      })[s],
+        '&': '&amp;',
+        '<': '&lt;',
+        '>': '&gt;',
+        '"': '&quot;',
+        "'": '&#39;',
+      }[s])
   );
 }
 
 const appTimeFormatter = new Intl.DateTimeFormat([], {
-  hour: "2-digit",
-  minute: "2-digit",
-  second: "2-digit",
+  hour: '2-digit',
+  minute: '2-digit',
+  second: '2-digit',
 });
 const appDateFormatter = new Intl.DateTimeFormat([], {
-  month: "short",
-  day: "numeric",
+  month: 'short',
+  day: 'numeric',
 });
 
 function formatDate(str) {
-  if (!str) return "—";
+  if (!str) return '—';
   try {
-    const d = new Date(str.includes("Z") ? str : str + "Z");
+    const d = new Date(str.includes('Z') ? str : str + 'Z');
     return `${appTimeFormatter.format(d)} ${appDateFormatter.format(d)}`;
   } catch {
     return str;
@@ -1578,59 +1521,48 @@ function formatDate(str) {
 
 // ── Status Badge Embed Modal Logic ───────────────────────────────────────────
 
-let currentBadgeMonitor = { id: "", name: "" };
-let currentBadgeStyle = "shield";
-let currentBadgeFormat = "markdown";
+let currentBadgeMonitor = { id: '', name: '' };
+let currentBadgeStyle = 'shield';
+let currentBadgeFormat = 'markdown';
 
 function estimateBadgeTextWidth(text) {
   let width = 0;
   for (let i = 0; i < text.length; i++) {
     const ch = text[i];
-    if (["m", "M", "W", "w", "@"].includes(ch)) width += 9.2;
-    else if (ch >= "A" && ch <= "Z") width += 7.5;
-    else if (["i", "l", "!", "|", ".", ":", ";", "'", " "].includes(ch))
-      width += 3.6;
-    else if (["f", "r", "t", "j"].includes(ch)) width += 4.8;
-    else if (
-      (ch >= "a" && ch <= "z") ||
-      (ch >= "0" && ch <= "9") ||
-      ch === "-" ||
-      ch === "_"
-    )
-      width += 6.2;
+    if (['m', 'M', 'W', 'w', '@'].includes(ch)) width += 9.2;
+    else if (ch >= 'A' && ch <= 'Z') width += 7.5;
+    else if (['i', 'l', '!', '|', '.', ':', ';', "'", ' '].includes(ch)) width += 3.6;
+    else if (['f', 'r', 't', 'j'].includes(ch)) width += 4.8;
+    else if ((ch >= 'a' && ch <= 'z') || (ch >= '0' && ch <= '9') || ch === '-' || ch === '_') width += 6.2;
     else width += 6.5;
   }
   return width;
 }
 
 function renderBadgePreviewSvg(name, status, style) {
-  const normStatus = (status || "UP").toUpperCase();
-  let statusText = "operational";
-  let color = "#30D158";
-  let textColor = "#09090b";
+  const normStatus = (status || 'UP').toUpperCase();
+  let statusText = 'operational';
+  let color = '#30D158';
+  let textColor = '#09090b';
 
-  if (
-    normStatus === "DOWN" ||
-    normStatus === "DOWNTIME" ||
-    normStatus === "OUTAGE"
-  ) {
-    statusText = "downtime";
-    color = "#FF453A";
-    textColor = "#ffffff";
-  } else if (normStatus === "DEGRADED") {
-    statusText = "degraded";
-    color = "#FFD60A";
-    textColor = "#09090b";
-  } else if (normStatus === "MAINTENANCE") {
-    statusText = "maintenance";
-    color = "#A855F7";
-    textColor = "#ffffff";
+  if (normStatus === 'DOWN' || normStatus === 'DOWNTIME' || normStatus === 'OUTAGE') {
+    statusText = 'downtime';
+    color = '#FF453A';
+    textColor = '#ffffff';
+  } else if (normStatus === 'DEGRADED') {
+    statusText = 'degraded';
+    color = '#FFD60A';
+    textColor = '#09090b';
+  } else if (normStatus === 'MAINTENANCE') {
+    statusText = 'maintenance';
+    color = '#A855F7';
+    textColor = '#ffffff';
   }
 
-  const safeName = escapeHtml(name || "Service");
+  const safeName = escapeHtml(name || 'Service');
   const safeStatus = escapeHtml(statusText);
 
-  if (style === "dot") {
+  if (style === 'dot') {
     const statusUpper = safeStatus.toUpperCase();
     const fullText = `${name}: ${statusText.toUpperCase()}`;
     const width = Math.max(160, Math.round(fullText.length * 7.5) + 38);
@@ -1648,10 +1580,10 @@ function renderBadgePreviewSvg(name, status, style) {
 </svg>`;
   }
 
-  if (style === "compact") {
-    const labelUpper = escapeHtml((name || "Service").toUpperCase());
+  if (style === 'compact') {
+    const labelUpper = escapeHtml((name || 'Service').toUpperCase());
     const statusUpper = safeStatus.toUpperCase();
-    const fullText = `${(name || "Service").toUpperCase()} // ${statusText.toUpperCase()}`;
+    const fullText = `${(name || 'Service').toUpperCase()} // ${statusText.toUpperCase()}`;
     const width = Math.max(170, Math.round(fullText.length * 7.2) + 32);
     const endX = width - 10;
     return `<svg xmlns="http://www.w3.org/2000/svg" width="${width}" height="26" viewBox="0 0 ${width} 26" fill="none" role="img" aria-label="${labelUpper} // ${statusUpper}">
@@ -1664,18 +1596,12 @@ function renderBadgePreviewSvg(name, status, style) {
   }
 
   // Classic Shield (2-part vector badge matching KeepUp standard)
-  const leftLabel = `KeepUp | ${name || "Service"}`;
+  const leftLabel = `KeepUp | ${name || 'Service'}`;
   const rightLabel = statusText;
   const leftEsc = escapeHtml(leftLabel);
   const rightEsc = escapeHtml(rightLabel);
-  const leftW = Math.max(
-    40,
-    Math.round(estimateBadgeTextWidth(leftLabel) + 16),
-  );
-  const rightW = Math.max(
-    40,
-    Math.round(estimateBadgeTextWidth(rightLabel) + 16),
-  );
+  const leftW = Math.max(40, Math.round(estimateBadgeTextWidth(leftLabel) + 16));
+  const rightW = Math.max(40, Math.round(estimateBadgeTextWidth(rightLabel) + 16));
   const totalW = leftW + rightW;
   const leftCenterX = Math.round(leftW / 2);
   const rightCenterX = Math.round(leftW + rightW / 2);
@@ -1700,45 +1626,42 @@ function renderBadgePreviewSvg(name, status, style) {
 function updateBadgeModalContent() {
   if (!currentBadgeMonitor.id) return;
 
-  const origin =
-    window.location.origin && window.location.origin !== "null"
-      ? window.location.origin
-      : "http://localhost:8080";
+  const origin = (window.location.origin && window.location.origin !== 'null')
+    ? window.location.origin
+    : 'http://localhost:8080';
   const badgeUrl = `${origin}/api/badge/${currentBadgeMonitor.id}?style=${currentBadgeStyle}`;
 
-  let snippet = "";
-  if (currentBadgeFormat === "markdown") {
+  let snippet = '';
+  if (currentBadgeFormat === 'markdown') {
     snippet = `![${currentBadgeMonitor.name} Status](${badgeUrl})`;
-  } else if (currentBadgeFormat === "html") {
+  } else if (currentBadgeFormat === 'html') {
     snippet = `<img src="${badgeUrl}" alt="${escapeHtml(currentBadgeMonitor.name)} Status" />`;
   } else {
     snippet = badgeUrl;
   }
 
-  const codeEl = document.getElementById("badge-modal-code");
+  const codeEl = document.getElementById('badge-modal-code');
   if (codeEl) {
     codeEl.textContent = snippet;
   }
 
-  let liveStatus = "UP";
+  let liveStatus = 'UP';
   const live = statusMap[currentBadgeMonitor.id];
   if (live && live.current_status) {
     liveStatus = live.current_status;
   } else if (Array.isArray(window.allMonitors)) {
-    const found = window.allMonitors.find(
-      (m) => m.id === currentBadgeMonitor.id,
-    );
+    const found = window.allMonitors.find((m) => m.id === currentBadgeMonitor.id);
     if (found && found.last_status) {
       liveStatus = found.last_status;
     }
   }
 
-  const previewContainer = document.getElementById("badge-modal-preview");
+  const previewContainer = document.getElementById('badge-modal-preview');
   if (previewContainer) {
     previewContainer.innerHTML = renderBadgePreviewSvg(
       currentBadgeMonitor.name,
       liveStatus,
-      currentBadgeStyle,
+      currentBadgeStyle
     );
   }
 }
@@ -1746,16 +1669,16 @@ function updateBadgeModalContent() {
 function setBadgeModalStyle(style) {
   currentBadgeStyle = style;
 
-  const styles = ["shield", "dot", "compact"];
+  const styles = ['shield', 'dot', 'compact'];
   styles.forEach((s) => {
     const btn = document.getElementById(`badge-style-${s}`);
     if (!btn) return;
     if (s === style) {
       btn.className =
-        "badge-style-btn py-2 px-2.5 rounded-xl border text-xs font-medium text-center transition flex flex-col items-center gap-0.5 bg-black/5 dark:bg-white/10 border-emerald-500/50 text-neutral-900 dark:text-white shadow-sm font-semibold";
+        'badge-style-btn py-2 px-2.5 rounded-xl border text-xs font-medium text-center transition flex flex-col items-center gap-0.5 bg-black/5 dark:bg-white/10 border-emerald-500/50 text-neutral-900 dark:text-white shadow-sm font-semibold';
     } else {
       btn.className =
-        "badge-style-btn py-2 px-2.5 rounded-xl border text-xs font-medium text-center transition flex flex-col items-center gap-0.5 border-black/5 dark:border-white/10 text-neutral-500 dark:text-white/60 hover:text-neutral-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5";
+        'badge-style-btn py-2 px-2.5 rounded-xl border text-xs font-medium text-center transition flex flex-col items-center gap-0.5 border-black/5 dark:border-white/10 text-neutral-500 dark:text-white/60 hover:text-neutral-900 dark:hover:text-white hover:bg-black/5 dark:hover:bg-white/5';
     }
   });
 
@@ -1765,16 +1688,16 @@ function setBadgeModalStyle(style) {
 function setBadgeModalFormat(format) {
   currentBadgeFormat = format;
 
-  const formats = ["markdown", "html", "url"];
+  const formats = ['markdown', 'html', 'url'];
   formats.forEach((f) => {
     const btn = document.getElementById(`badge-fmt-${f}`);
     if (!btn) return;
     if (f === format) {
       btn.className =
-        "badge-fmt-btn py-1 px-3 rounded-lg transition-all text-xs font-mono bg-white dark:bg-white/10 text-neutral-900 dark:text-white shadow-sm font-semibold";
+        'badge-fmt-btn py-1 px-3 rounded-lg transition-all text-xs font-mono bg-white dark:bg-white/10 text-neutral-900 dark:text-white shadow-sm font-semibold';
     } else {
       btn.className =
-        "badge-fmt-btn py-1 px-3 rounded-lg transition-all text-xs font-mono text-neutral-500 dark:text-white/50 hover:text-neutral-900 dark:hover:text-white";
+        'badge-fmt-btn py-1 px-3 rounded-lg transition-all text-xs font-mono text-neutral-500 dark:text-white/50 hover:text-neutral-900 dark:hover:text-white';
     }
   });
 
@@ -1784,64 +1707,61 @@ function setBadgeModalFormat(format) {
 function openBadgeModal(monitorId, monitorName) {
   currentBadgeMonitor = { id: monitorId, name: monitorName };
 
-  const titleEl = document.getElementById("badge-modal-title");
-  const subtitleEl = document.getElementById("badge-modal-subtitle");
+  const titleEl = document.getElementById('badge-modal-title');
+  const subtitleEl = document.getElementById('badge-modal-subtitle');
   if (titleEl) titleEl.innerText = monitorName;
-  if (subtitleEl)
-    subtitleEl.innerText = `Status Badge Embed • /api/badge/${monitorId}`;
+  if (subtitleEl) subtitleEl.innerText = `Status Badge Embed • /api/badge/${monitorId}`;
 
   // Apply current active styles and format
-  setBadgeModalStyle(currentBadgeStyle || "shield");
-  setBadgeModalFormat(currentBadgeFormat || "markdown");
+  setBadgeModalStyle(currentBadgeStyle || 'shield');
+  setBadgeModalFormat(currentBadgeFormat || 'markdown');
 
-  const backdrop = document.getElementById("badge-modal");
-  const card = document.getElementById("badge-modal-card");
+  const backdrop = document.getElementById('badge-modal');
+  const card = document.getElementById('badge-modal-card');
   if (!backdrop || !card) return;
 
-  backdrop.classList.remove("hidden");
+  backdrop.classList.remove('hidden');
   requestAnimationFrame(() => {
-    card.classList.remove("scale-95", "opacity-0");
-    card.classList.add("scale-100", "opacity-100");
+    card.classList.remove('scale-95', 'opacity-0');
+    card.classList.add('scale-100', 'opacity-100');
   });
 }
 
 function closeBadgeModal() {
-  const backdrop = document.getElementById("badge-modal");
-  const card = document.getElementById("badge-modal-card");
+  const backdrop = document.getElementById('badge-modal');
+  const card = document.getElementById('badge-modal-card');
   if (!backdrop || !card) return;
 
-  card.classList.remove("scale-100", "opacity-100");
-  card.classList.add("scale-95", "opacity-0");
+  card.classList.remove('scale-100', 'opacity-100');
+  card.classList.add('scale-95', 'opacity-0');
 
   setTimeout(() => {
-    backdrop.classList.add("hidden");
+    backdrop.classList.add('hidden');
   }, 200);
 }
 
 async function copyBadgeModalCode(btn) {
-  const codeEl = document.getElementById("badge-modal-code");
+  const codeEl = document.getElementById('badge-modal-code');
   if (!codeEl) return;
   const text = codeEl.innerText || codeEl.textContent;
   if (!text) return;
 
-  const btnEl = btn || document.getElementById("badge-modal-copy-btn");
-  const label = btnEl
-    ? btnEl.querySelector(".copy-label") || btnEl.querySelector("span") || btnEl
-    : null;
-  const originalText = label ? label.innerText : "Copy Code";
+  const btnEl = btn || document.getElementById('badge-modal-copy-btn');
+  const label = btnEl ? (btnEl.querySelector('.copy-label') || btnEl.querySelector('span') || btnEl) : null;
+  const originalText = label ? label.innerText : 'Copy Code';
 
   const onSuccess = () => {
     if (label) {
-      label.innerText = "Copied!";
+      label.innerText = 'Copied!';
       setTimeout(() => {
         label.innerText = originalText;
       }, 2000);
     }
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Badge Copied",
-        message: "Embed snippet copied to clipboard",
-        type: "success",
+        title: 'Badge Copied',
+        message: 'Embed snippet copied to clipboard',
+        type: 'success',
       });
     }
   };
@@ -1850,21 +1770,21 @@ async function copyBadgeModalCode(btn) {
     await navigator.clipboard.writeText(text);
     onSuccess();
   } catch (_) {
-    const textarea = document.createElement("textarea");
+    const textarea = document.createElement('textarea');
     textarea.value = text;
-    textarea.style.position = "fixed";
-    textarea.style.opacity = "0";
+    textarea.style.position = 'fixed';
+    textarea.style.opacity = '0';
     document.body.appendChild(textarea);
     textarea.select();
     try {
-      document.execCommand("copy");
+      document.execCommand('copy');
       onSuccess();
     } catch (e) {
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Copy Failed",
-          message: "Could not copy to clipboard",
-          type: "error",
+          title: 'Copy Failed',
+          message: 'Could not copy to clipboard',
+          type: 'error',
         });
       }
     }
@@ -1891,87 +1811,81 @@ window.testWebhookDirect = testWebhookDirect;
 // ── Admin Password Update Modal Controller ───────────────────────────────────
 
 function openPasswordModal() {
-  const modal = document.getElementById("password-modal");
-  const errorContainer = document.getElementById("password-modal-error");
-  const form = document.getElementById("password-form");
+  const modal = document.getElementById('password-modal');
+  const errorContainer = document.getElementById('password-modal-error');
+  const form = document.getElementById('password-form');
   if (errorContainer) {
-    errorContainer.classList.add("hidden");
-    errorContainer.textContent = "";
-    errorContainer.className =
-      "hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono";
+    errorContainer.classList.add('hidden');
+    errorContainer.textContent = '';
+    errorContainer.className = 'hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono';
   }
   if (form) form.reset();
   if (modal) {
-    modal.classList.remove("hidden");
-    const currInput = document.getElementById("current-password");
+    modal.classList.remove('hidden');
+    const currInput = document.getElementById('current-password');
     if (currInput) setTimeout(() => currInput.focus(), 50);
   }
 }
 
 function closePasswordModal() {
-  const modal = document.getElementById("password-modal");
+  const modal = document.getElementById('password-modal');
   if (modal) {
-    modal.classList.add("hidden");
+    modal.classList.add('hidden');
   }
-  const form = document.getElementById("password-form");
+  const form = document.getElementById('password-form');
   if (form) form.reset();
-  const errorContainer = document.getElementById("password-modal-error");
+  const errorContainer = document.getElementById('password-modal-error');
   if (errorContainer) {
-    errorContainer.classList.add("hidden");
-    errorContainer.textContent = "";
-    errorContainer.className =
-      "hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono";
+    errorContainer.classList.add('hidden');
+    errorContainer.textContent = '';
+    errorContainer.className = 'hidden text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono';
   }
 }
 
 async function handlePasswordSubmit(e) {
   if (e && e.preventDefault) e.preventDefault();
 
-  const currentPassword =
-    document.getElementById("current-password")?.value || "";
-  const newPassword = document.getElementById("new-password")?.value || "";
-  const confirmPassword =
-    document.getElementById("confirm-password")?.value || "";
-  const errorContainer = document.getElementById("password-modal-error");
-  const submitBtn = document.getElementById("password-submit-btn");
+  const currentPassword = document.getElementById('current-password')?.value || '';
+  const newPassword = document.getElementById('new-password')?.value || '';
+  const confirmPassword = document.getElementById('confirm-password')?.value || '';
+  const errorContainer = document.getElementById('password-modal-error');
+  const submitBtn = document.getElementById('password-submit-btn');
 
   function showError(msg) {
     if (errorContainer) {
       errorContainer.textContent = msg;
-      errorContainer.className =
-        "text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono";
-      errorContainer.classList.remove("hidden");
+      errorContainer.className = 'text-xs text-rose-400 bg-rose-500/10 border border-rose-500/20 p-2.5 rounded-lg font-mono';
+      errorContainer.classList.remove('hidden');
     }
   }
 
   function showSuccess(msg) {
     if (errorContainer) {
       errorContainer.textContent = msg;
-      errorContainer.className =
-        "text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-lg font-mono";
-      errorContainer.classList.remove("hidden");
+      errorContainer.className = 'text-xs text-emerald-400 bg-emerald-500/10 border border-emerald-500/20 p-2.5 rounded-lg font-mono';
+      errorContainer.classList.remove('hidden');
     }
   }
 
   if (newPassword.length < 8) {
-    showError("New password must be at least 8 characters long");
+    showError('New password must be at least 8 characters long');
     return;
   }
 
   if (newPassword !== confirmPassword) {
-    showError("New passwords do not match");
+    showError('New passwords do not match');
     return;
   }
 
   if (submitBtn) {
     submitBtn.disabled = true;
-    submitBtn.textContent = "Updating...";
+    submitBtn.textContent = 'Updating...';
   }
 
   try {
-    const res = await apiFetch("/api/admin/change-password", {
-      method: "POST",
-      headers: { "Content-Type": "application/json" },
+    const res = await apiFetch('/api/admin/change-password', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         current_password: currentPassword,
         new_password: newPassword,
@@ -1982,21 +1896,21 @@ async function handlePasswordSubmit(e) {
     const data = await res.json().catch(() => ({}));
 
     if (!res.ok) {
-      const errMsg = data.error || "Failed to update password";
+      const errMsg = data.error || 'Failed to update password';
       showError(errMsg);
       return;
     }
 
     // Success state
-    showSuccess(data.message || "Password updated successfully");
-    const form = document.getElementById("password-form");
+    showSuccess(data.message || 'Password updated successfully');
+    const form = document.getElementById('password-form');
     if (form) form.reset();
 
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Security",
-        message: "Admin password updated successfully",
-        type: "success",
+        title: 'Security',
+        message: 'Admin password updated successfully',
+        type: 'success',
       });
     }
 
@@ -2004,11 +1918,11 @@ async function handlePasswordSubmit(e) {
       closePasswordModal();
     }, 1500);
   } catch (err) {
-    showError("Network error while updating password");
+    showError('Network error while updating password');
   } finally {
     if (submitBtn) {
       submitBtn.disabled = false;
-      submitBtn.textContent = "Save New Password";
+      submitBtn.textContent = 'Save New Password';
     }
   }
 }
@@ -2019,43 +1933,36 @@ let currentDetailMonitorId = null;
 
 async function openMonitorDetailModal(id) {
   currentDetailMonitorId = id;
-  const modal =
-    document.getElementById("monitor-detail-modal") ||
-    document.getElementById("status-log-modal");
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (!modal) return;
 
-  modal.classList.remove("hidden");
+  modal.classList.remove('hidden');
 
   // Loading skeleton state
-  const nameEl = document.getElementById("detail-modal-name");
-  const urlEl = document.getElementById("detail-modal-url");
-  const tbodyEl = document.getElementById("detail-logs-tbody");
-  const chartEl = document.getElementById("detail-latency-chart");
-  const countEl = document.getElementById("detail-logs-count");
+  const nameEl = document.getElementById('detail-modal-name');
+  const urlEl = document.getElementById('detail-modal-url');
+  const tbodyEl = document.getElementById('detail-logs-tbody');
+  const chartEl = document.getElementById('detail-latency-chart');
+  const countEl = document.getElementById('detail-logs-count');
 
-  if (nameEl) nameEl.textContent = "Loading monitor telemetry...";
-  if (urlEl) urlEl.textContent = "—";
-  if (countEl) countEl.textContent = "...";
+  if (nameEl) nameEl.textContent = 'Loading monitor telemetry...';
+  if (urlEl) urlEl.textContent = '—';
+  if (countEl) countEl.textContent = '...';
   if (chartEl) {
-    chartEl.innerHTML =
-      '<div class="text-xs text-neutral-500 font-mono py-6">Loading latency telemetry...</div>';
+    chartEl.innerHTML = '<div class="text-xs text-neutral-500 font-mono py-6">Loading latency telemetry...</div>';
   }
   if (tbodyEl) {
-    tbodyEl.innerHTML =
-      '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">Loading check history...</td></tr>';
+    tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">Loading check history...</td></tr>';
   }
 
   try {
     const fetchFn = window.apiFetch || window.fetch;
-    const res = await fetchFn(
-      `/api/admin/monitors/${encodeURIComponent(id)}/details`,
-      {
-        credentials: "include",
-      },
-    );
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/details`, {
+      credentials: 'include',
+    });
 
     if (!res.ok) {
-      if (nameEl) nameEl.textContent = "Monitor Details";
+      if (nameEl) nameEl.textContent = 'Monitor Details';
       if (tbodyEl) {
         tbodyEl.innerHTML = `<tr><td colspan="4" class="py-6 text-center text-rose-400 font-sans">Failed to load telemetry (${res.status} ${res.statusText})</td></tr>`;
       }
@@ -2065,51 +1972,41 @@ async function openMonitorDetailModal(id) {
     const data = await res.json();
     renderMonitorDetailData(data);
   } catch (err) {
-    if (nameEl) nameEl.textContent = "Monitor Details";
+    if (nameEl) nameEl.textContent = 'Monitor Details';
     if (tbodyEl) {
-      tbodyEl.innerHTML =
-        '<tr><td colspan="4" class="py-6 text-center text-rose-400 font-sans">Unable to connect to server</td></tr>';
+      tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-rose-400 font-sans">Unable to connect to server</td></tr>';
     }
   }
 }
 
 function closeMonitorDetailModal() {
-  const modal =
-    document.getElementById("monitor-detail-modal") ||
-    document.getElementById("status-log-modal");
+  const modal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (modal) {
-    modal.classList.add("hidden");
+    modal.classList.add('hidden');
   }
   currentDetailMonitorId = null;
 }
 
 function renderDetailHourlySvg(hourlyList) {
-  const list =
-    Array.isArray(hourlyList) && hourlyList.length > 0 ? hourlyList : [];
+  const list = Array.isArray(hourlyList) && hourlyList.length > 0 ? hourlyList : [];
   const items = [];
   for (let i = 0; i < 24; i++) {
-    items.push(
-      list[i] || { avg_latency_ms: 0, status: "NO_DATA", timestamp: "" },
-    );
+    items.push(list[i] || { avg_latency_ms: 0, status: 'NO_DATA', timestamp: '' });
   }
 
   const maxLat = Math.max(
-    ...items.map((h) =>
-      typeof h.avg_latency_ms === "number" ? h.avg_latency_ms : 0,
-    ),
-    50,
+    ...items.map((h) => (typeof h.avg_latency_ms === 'number' ? h.avg_latency_ms : 0)),
+    50
   );
 
   const bars = items
     .map((item, idx) => {
-      const lat =
-        typeof item.avg_latency_ms === "number" ? item.avg_latency_ms : 0;
-      const status = item.status || "NO_DATA";
-      let fill = "rgba(255, 255, 255, 0.12)";
-      if (status === "UP") fill = "#30D158";
-      else if (status === "DEGRADED") fill = "#FFD60A";
-      else if (status === "DOWN") fill = "#FF453A";
-      else if (status === "MAINTENANCE") fill = "#A855F7";
+      const lat = typeof item.avg_latency_ms === 'number' ? item.avg_latency_ms : 0;
+      const status = item.status || 'NO_DATA';
+      let fill = 'rgba(255, 255, 255, 0.12)';
+      if (status === 'UP') fill = '#30D158';
+      else if (status === 'DEGRADED') fill = '#FFD60A';
+      else if (status === 'DOWN') fill = '#FF453A';
 
       const barHeight = Math.max(4, Math.round((lat / maxLat) * 55));
       const x = idx * 20 + 3;
@@ -2118,10 +2015,7 @@ function renderDetailHourlySvg(hourlyList) {
       let timeLabel = `${24 - idx}h ago`;
       if (item.timestamp) {
         try {
-          timeLabel = new Date(item.timestamp).toLocaleTimeString([], {
-            hour: "2-digit",
-            minute: "2-digit",
-          });
+          timeLabel = new Date(item.timestamp).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' });
         } catch (_) {}
       }
 
@@ -2129,7 +2023,7 @@ function renderDetailHourlySvg(hourlyList) {
         <title>${timeLabel}: ${lat} ms (${status})</title>
       </rect>`;
     })
-    .join("");
+    .join('');
 
   return `<svg viewBox="0 0 480 70" class="w-full h-16 overflow-visible" preserveAspectRatio="none">${bars}</svg>`;
 }
@@ -2137,272 +2031,104 @@ function renderDetailHourlySvg(hourlyList) {
 function renderMonitorDetailData(data) {
   if (!data || !data.monitor) return;
   const m = data.monitor;
-  const slas = data.slas || {
-    uptime_24h: 100,
-    uptime_7d: 100,
-    uptime_30d: 100,
-  };
+  const slas = data.slas || { uptime_24h: 100, uptime_7d: 100, uptime_30d: 100 };
   const lat = data.latency || { p50: 0, p95: 0, p99: 0, avg: 0 };
   const logs = data.logs || [];
   const hourly = data.hourly_latency || [];
 
   // 1. Header Section
-  const nameEl = document.getElementById("detail-modal-name");
-  const urlEl = document.getElementById("detail-modal-url");
-  const methodEl = document.getElementById("detail-modal-method");
-  const statusBadge = document.getElementById("detail-modal-status-badge");
+  const nameEl = document.getElementById('detail-modal-name');
+  const urlEl = document.getElementById('detail-modal-url');
+  const methodEl = document.getElementById('detail-modal-method');
+  const statusBadge = document.getElementById('detail-modal-status-badge');
 
-  if (nameEl) nameEl.textContent = m.name || "Monitor";
-  if (urlEl)
-    urlEl.textContent = m.url ? (m.port ? `${m.url}:${m.port}` : m.url) : "";
-  if (methodEl)
-    methodEl.textContent = (m.check_type || m.method || "HTTP").toUpperCase();
+  if (nameEl) nameEl.textContent = m.name || 'Monitor';
+  if (urlEl) urlEl.textContent = m.url ? (m.port ? `${m.url}:${m.port}` : m.url) : '';
+  if (methodEl) methodEl.textContent = (m.check_type || m.method || 'HTTP').toUpperCase();
 
   if (statusBadge) {
     const isPaused = !m.is_active;
-    const status = m.status || (isPaused ? "PAUSED" : "UP");
+    const status = m.status || (isPaused ? 'PAUSED' : 'UP');
     statusBadge.textContent = status;
 
     if (isPaused) {
-      statusBadge.className =
-        "px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-neutral-500/15 text-neutral-400 border-neutral-500/20";
-    } else if (status === "MAINTENANCE") {
-      statusBadge.className =
-        "px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-purple-500/15 text-purple-400 border-purple-500/20";
-    } else if (status === "DOWN") {
-      statusBadge.className =
-        "px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-rose-500/15 text-rose-400 border-rose-500/20";
-    } else if (status === "DEGRADED") {
-      statusBadge.className =
-        "px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-amber-500/15 text-amber-400 border-amber-500/20";
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-neutral-500/15 text-neutral-400 border-neutral-500/20';
+    } else if (status === 'MAINTENANCE') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-purple-500/15 text-purple-400 border-purple-500/20';
+    } else if (status === 'DOWN') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-rose-500/15 text-rose-400 border-rose-500/20';
+    } else if (status === 'DEGRADED') {
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-amber-500/15 text-amber-400 border-amber-500/20';
     } else {
-      statusBadge.className =
-        "px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border-emerald-500/20";
+      statusBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-medium border uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border-emerald-500/20';
     }
   }
 
-  const failsBadge = document.getElementById("detail-modal-fails-badge");
-  if (failsBadge) {
-    const fails = m.current_consecutive_fails || 0;
-    const maxRetries = m.max_retries || 3;
-    if (fails > 0) {
-      failsBadge.classList.remove("hidden");
-      failsBadge.className =
-        "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20";
-      failsBadge.textContent = `⚠️ ${fails}/${maxRetries} failing`;
-    } else {
-      failsBadge.classList.add("hidden");
-    }
-  }
-
-  const domainBadge = document.getElementById("detail-modal-domain-badge");
+  const domainBadge = document.getElementById('detail-modal-domain-badge');
   if (domainBadge) {
-    if (
-      m.check_domain_expiry &&
-      m.domain_days_remaining !== null &&
-      m.domain_days_remaining !== undefined
-    ) {
+    if (m.check_domain_expiry && m.domain_days_remaining !== null && m.domain_days_remaining !== undefined) {
       const days = m.domain_days_remaining;
       const warningDays = m.domain_warning_days || 30;
-      domainBadge.classList.remove("hidden");
+      domainBadge.classList.remove('hidden');
       if (days <= 0) {
-        domainBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20";
-        domainBadge.textContent = "🔴 Domain Expired";
+        domainBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20';
+        domainBadge.textContent = '🔴 Domain Expired';
       } else if (days <= warningDays) {
-        domainBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20";
+        domainBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20';
         domainBadge.textContent = `⚠️ ${days}d domain left`;
       } else {
-        domainBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10";
+        domainBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10';
         domainBadge.textContent = `🌐 ${days}d domain left`;
       }
     } else {
-      domainBadge.classList.add("hidden");
+      domainBadge.classList.add('hidden');
     }
   }
 
-  const sslBadge = document.getElementById("detail-modal-ssl-badge");
+  const sslBadge = document.getElementById('detail-modal-ssl-badge');
   if (sslBadge) {
-    if (
-      m.check_ssl &&
-      m.ssl_days_remaining !== null &&
-      m.ssl_days_remaining !== undefined
-    ) {
+    if (m.check_ssl && m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined) {
       const days = m.ssl_days_remaining;
       const warningDays = m.ssl_warning_days || 30;
-      sslBadge.classList.remove("hidden");
+      sslBadge.classList.remove('hidden');
       if (days <= 0) {
-        sslBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20";
-        sslBadge.textContent = "🔴 SSL Expired";
+        sslBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20';
+        sslBadge.textContent = '🔴 SSL Expired';
       } else if (days <= warningDays) {
-        sslBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20";
+        sslBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-amber-500/15 text-amber-400 border-amber-500/20';
         sslBadge.textContent = `🔒 ${days}d SSL left`;
       } else {
-        sslBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10";
+        sslBadge.className = 'px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10';
         sslBadge.textContent = `🔒 ${days}d SSL left`;
       }
     } else {
-      sslBadge.classList.add("hidden");
-    }
-  }
-
-  const caaBadge = document.getElementById("detail-modal-caa-badge");
-  if (caaBadge) {
-    if (m.caa_status) {
-      caaBadge.classList.remove("hidden");
-      if (m.caa_status === "VALID") {
-        caaBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-emerald-500/15 text-emerald-400 border-emerald-500/20";
-        caaBadge.textContent = "🛡️ CAA Valid";
-      } else if (m.caa_status === "UNRESTRICTED") {
-        caaBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-300 border-white/10";
-        caaBadge.textContent = "🛡️ CAA Unrestricted";
-      } else if (m.caa_status === "MISMATCH") {
-        caaBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-rose-500/15 text-rose-400 border-rose-500/20 animate-pulse";
-        caaBadge.textContent = "🚨 CAA Mismatch";
-      } else {
-        caaBadge.className =
-          "px-2.5 py-0.5 rounded-full text-[10px] font-mono font-medium border bg-white/5 text-neutral-400 border-white/10";
-        caaBadge.textContent = `🛡️ CAA ${m.caa_status}`;
-      }
-    } else {
-      caaBadge.classList.add("hidden");
-    }
-  }
-
-  // 2. SSL Security & CA Certificate Card
-  const sslCard = document.getElementById("detail-ssl-security-card");
-  if (sslCard) {
-    const hasSslData = Boolean(
-      m.ssl_issuer ||
-      m.caa_status ||
-      m.ssl_expires_at ||
-      m.check_ssl ||
-      (m.check_type && m.check_type.toLowerCase() === "expiry"),
-    );
-    if (hasSslData) {
-      sslCard.classList.remove("hidden");
-      const caaPill = document.getElementById("detail-caa-status-pill");
-      if (caaPill) {
-        if (m.caa_status === "VALID") {
-          caaPill.className =
-            "px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-emerald-500/15 text-emerald-400 border-emerald-500/20";
-          caaPill.textContent = "CAA Valid";
-        } else if (m.caa_status === "UNRESTRICTED") {
-          caaPill.className =
-            "px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-white/5 text-neutral-300 border-white/10";
-          caaPill.textContent = "CAA Unrestricted";
-        } else if (m.caa_status === "MISMATCH") {
-          caaPill.className =
-            "px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-rose-500/15 text-rose-400 border-rose-500/20 animate-pulse";
-          caaPill.textContent = "CAA Mismatch";
-        } else {
-          caaPill.className =
-            "px-2 py-0.5 rounded-full text-[10px] font-mono font-semibold uppercase tracking-wider border bg-neutral-500/15 text-neutral-400 border-neutral-500/20";
-          caaPill.textContent = m.caa_status || "CAA Unknown";
-        }
-      }
-
-      const issuerEl = document.getElementById("detail-ssl-issuer");
-      const algoEl = document.getElementById("detail-ssl-algo");
-      const serialEl = document.getElementById("detail-ssl-serial");
-      const sansEl = document.getElementById("detail-ssl-sans");
-      const issuedEl = document.getElementById("detail-ssl-issued");
-      const expiresEl = document.getElementById("detail-ssl-expires");
-      const caaDetailsEl = document.getElementById("detail-caa-details");
-
-      if (issuerEl) issuerEl.textContent = m.ssl_issuer || "—";
-      if (algoEl) algoEl.textContent = m.ssl_signature_algorithm || "—";
-      if (serialEl) serialEl.textContent = m.ssl_serial_number || "—";
-      if (sansEl) {
-        if (m.ssl_sans) {
-          const sanList = m.ssl_sans
-            .split(",")
-            .map((s) => s.trim())
-            .filter(Boolean);
-          sansEl.textContent =
-            sanList.length > 3
-              ? `${sanList.slice(0, 3).join(", ")} (+${sanList.length - 3} more)`
-              : m.ssl_sans;
-          sansEl.title = m.ssl_sans;
-        } else {
-          sansEl.textContent = "—";
-          sansEl.title = "";
-        }
-      }
-
-      if (issuedEl) {
-        if (m.ssl_issued_at) {
-          try {
-            issuedEl.textContent = new Date(
-              m.ssl_issued_at,
-            ).toLocaleDateString();
-          } catch (_) {
-            issuedEl.textContent = m.ssl_issued_at;
-          }
-        } else {
-          issuedEl.textContent = "—";
-        }
-      }
-
-      if (expiresEl) {
-        if (m.ssl_expires_at) {
-          let expFormatted = m.ssl_expires_at;
-          try {
-            expFormatted = new Date(m.ssl_expires_at).toLocaleDateString();
-          } catch (_) {}
-          expiresEl.textContent =
-            m.ssl_days_remaining !== null && m.ssl_days_remaining !== undefined
-              ? `${expFormatted} (${m.ssl_days_remaining}d left)`
-              : expFormatted;
-        } else {
-          expiresEl.textContent = "—";
-        }
-      }
-
-      if (caaDetailsEl) {
-        caaDetailsEl.textContent =
-          m.caa_details ||
-          (m.caa_status === "UNRESTRICTED"
-            ? "No CAA records present (all CAs allowed)"
-            : "—");
-        caaDetailsEl.title = m.caa_details || "";
-      }
-    } else {
-      sslCard.classList.add("hidden");
+      sslBadge.classList.add('hidden');
     }
   }
 
   // 2. SLA Telemetry Row (3 Cards)
-  const sla24 = document.getElementById("detail-sla-24h");
-  const sla7d = document.getElementById("detail-sla-7d");
-  const sla30 = document.getElementById("detail-sla-30d");
+  const sla24 = document.getElementById('detail-sla-24h');
+  const sla7d = document.getElementById('detail-sla-7d');
+  const sla30 = document.getElementById('detail-sla-30d');
 
   if (sla24) {
     sla24.textContent = `${slas.uptime_24h.toFixed(2)}%`;
-    sla24.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_24h >= 99 ? "text-emerald-400" : slas.uptime_24h >= 90 ? "text-amber-400" : "text-rose-400"}`;
+    sla24.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_24h >= 99 ? 'text-emerald-400' : slas.uptime_24h >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
   }
   if (sla7d) {
     sla7d.textContent = `${slas.uptime_7d.toFixed(2)}%`;
-    sla7d.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_7d >= 99 ? "text-emerald-400" : slas.uptime_7d >= 90 ? "text-amber-400" : "text-rose-400"}`;
+    sla7d.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_7d >= 99 ? 'text-emerald-400' : slas.uptime_7d >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
   }
   if (sla30) {
     sla30.textContent = `${slas.uptime_30d.toFixed(2)}%`;
-    sla30.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_30d >= 99 ? "text-emerald-400" : slas.uptime_30d >= 90 ? "text-amber-400" : "text-rose-400"}`;
+    sla30.className = `text-lg sm:text-xl font-bold font-mono mt-1 ${slas.uptime_30d >= 99 ? 'text-emerald-400' : slas.uptime_30d >= 90 ? 'text-amber-400' : 'text-rose-400'}`;
   }
 
   // 3. Latency Breakdown Bar
-  const p50El = document.getElementById("detail-lat-p50");
-  const p95El = document.getElementById("detail-lat-p95");
-  const p99El = document.getElementById("detail-lat-p99");
-  const avgEl = document.getElementById("detail-lat-avg");
+  const p50El = document.getElementById('detail-lat-p50');
+  const p95El = document.getElementById('detail-lat-p95');
+  const p99El = document.getElementById('detail-lat-p99');
+  const avgEl = document.getElementById('detail-lat-avg');
 
   if (p50El) p50El.textContent = `${lat.p50}ms`;
   if (p95El) p95El.textContent = `${lat.p95}ms`;
@@ -2410,61 +2136,51 @@ function renderMonitorDetailData(data) {
   if (avgEl) avgEl.textContent = `${lat.avg}ms`;
 
   // 4. Interactive SVG Latency Chart
-  const chartEl = document.getElementById("detail-latency-chart");
+  const chartEl = document.getElementById('detail-latency-chart');
   if (chartEl) {
     chartEl.innerHTML = renderDetailHourlySvg(hourly);
   }
 
   // 5. Recent Check Logs Table
-  const countEl = document.getElementById("detail-logs-count");
-  const tbodyEl = document.getElementById("detail-logs-tbody");
+  const countEl = document.getElementById('detail-logs-count');
+  const tbodyEl = document.getElementById('detail-logs-tbody');
 
   if (countEl) countEl.textContent = `${logs.length} logs`;
   if (tbodyEl) {
     if (logs.length === 0) {
-      tbodyEl.innerHTML =
-        '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">No check logs recorded yet for this target.</td></tr>';
+      tbodyEl.innerHTML = '<tr><td colspan="4" class="py-6 text-center text-neutral-500 font-sans">No check logs recorded yet for this target.</td></tr>';
       return;
     }
 
-    const rowsHtml = logs
-      .map((log) => {
-        const isUp = log.is_up;
-        const statusNum = log.status_code;
-        const is2xx = statusNum && statusNum >= 200 && statusNum < 300;
-        const isCaaMismatch = log.caa_status === "MISMATCH";
+    const rowsHtml = logs.map((log) => {
+      const isUp = log.is_up;
+      const statusNum = log.status_code;
+      const is2xx = statusNum && statusNum >= 200 && statusNum < 300;
 
-        const rowClass = isCaaMismatch
-          ? "bg-rose-500/20 hover:bg-rose-500/25 border-l-2 border-rose-500 text-rose-200 transition"
-          : isUp && is2xx
-            ? "hover:bg-white/5 transition"
-            : "bg-rose-500/10 hover:bg-rose-500/15 text-rose-200 transition";
+      const rowClass = isUp && is2xx
+        ? 'hover:bg-white/5 transition'
+        : 'bg-rose-500/10 hover:bg-rose-500/15 text-rose-200 transition';
 
-        const statusTag = is2xx
-          ? `<span class="text-emerald-400 font-semibold">${statusNum}</span>`
-          : `<span class="text-rose-400 font-semibold">${statusNum || "—"}</span>`;
+      const statusTag = is2xx
+        ? `<span class="text-emerald-400 font-semibold">${statusNum}</span>`
+        : `<span class="text-rose-400 font-semibold">${statusNum || '—'}</span>`;
 
-        let resultTag = isUp
-          ? '<span class="text-emerald-400">UP</span>'
-          : `<span class="text-rose-400 font-semibold">${log.error_message ? escapeHtml(log.error_message) : "Check Failed"}</span>`;
+      const resultTag = isUp
+        ? '<span class="text-emerald-400">UP</span>'
+        : `<span class="text-rose-400 font-semibold">${log.error_message ? escapeHtml(log.error_message) : 'Check Failed'}</span>`;
 
-        if (isCaaMismatch) {
-          resultTag = `<span class="text-rose-400 font-semibold flex items-center gap-1.5"><span class="px-1.5 py-0.5 rounded bg-rose-500/20 border border-rose-500/40 text-[9px] font-mono uppercase">CAA MISMATCH</span> <span>${log.error_message ? escapeHtml(log.error_message) : "Unauthorized CA"}</span></span>`;
-        }
+      let dateStr = log.created_at;
+      try {
+        dateStr = new Date(log.created_at).toLocaleString();
+      } catch (_) {}
 
-        let dateStr = log.created_at;
-        try {
-          dateStr = new Date(log.created_at).toLocaleString();
-        } catch (_) {}
-
-        return `<tr class="${rowClass}">
+      return `<tr class="${rowClass}">
         <td class="py-2 px-3 text-neutral-400">${dateStr}</td>
         <td class="py-2 px-3">${statusTag}</td>
-        <td class="py-2 px-3 text-white">${log.response_time_ms !== null ? log.response_time_ms + " ms" : "—"}</td>
+        <td class="py-2 px-3 text-white">${log.response_time_ms !== null ? log.response_time_ms + ' ms' : '—'}</td>
         <td class="py-2 px-3 max-w-xs truncate">${resultTag}</td>
       </tr>`;
-      })
-      .join("");
+    }).join('');
 
     tbodyEl.innerHTML = rowsHtml;
   }
@@ -2473,84 +2189,78 @@ function renderMonitorDetailData(data) {
 async function triggerDetailPing() {
   if (!currentDetailMonitorId) return;
 
-  const btn = document.getElementById("detail-modal-ping-btn");
-  const icon = document.getElementById("detail-ping-icon");
-  const text = document.getElementById("detail-ping-text");
+  const btn = document.getElementById('detail-modal-ping-btn');
+  const icon = document.getElementById('detail-ping-icon');
+  const text = document.getElementById('detail-ping-text');
 
   if (btn) btn.disabled = true;
-  if (icon) icon.textContent = "⏳";
-  if (text) text.textContent = "Pinging...";
+  if (icon) icon.textContent = '⏳';
+  if (text) text.textContent = 'Pinging...';
 
   try {
     const fetchFn = window.apiFetch || window.fetch;
-    const res = await fetchFn(
-      `/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/ping`,
-      {
-        method: "POST",
-        credentials: "include",
-        skipAuthRedirect: true,
-      },
-    );
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/ping`, {
+      method: 'POST',
+      credentials: 'include',
+      skipAuthRedirect: true,
+    });
 
     if (res.status === 401) {
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Authentication Required",
-          message: "Admin login required to trigger on-demand ping.",
-          type: "warning",
+          title: 'Authentication Required',
+          message: 'Admin login required to trigger on-demand ping.',
+          type: 'warning',
         });
       }
       return;
     }
 
     if (!res.ok) {
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Ping Failed",
+          title: 'Ping Failed',
           message: `Server returned HTTP ${res.status}`,
-          type: "error",
+          type: 'error',
         });
       }
       return;
     }
 
     const pingData = await res.json();
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
       showToast({
         title: `Ping Result: ${pingData.status}`,
-        message: `HTTP ${pingData.status_code || "—"} in ${pingData.latency_ms} ms`,
-        type: pingData.status === "UP" ? "success" : "error",
+        message: `HTTP ${pingData.status_code || '—'} in ${pingData.latency_ms} ms`,
+        type: pingData.status === 'UP' ? 'success' : 'error',
       });
     }
 
     // Refresh telemetry immediately
-    const detailsRes = await fetchFn(
-      `/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/details`,
-      {
-        credentials: "include",
-      },
-    );
+    const detailsRes = await fetchFn(`/api/admin/monitors/${encodeURIComponent(currentDetailMonitorId)}/details`, {
+      credentials: 'include',
+    });
     if (detailsRes.ok) {
       const detailsData = await detailsRes.json();
       renderMonitorDetailData(detailsData);
     }
 
     // Trigger dashboard refresh if available
-    if (typeof fetchDashboardData === "function") {
+    if (typeof fetchDashboardData === 'function') {
       fetchDashboardData(false);
     }
   } catch (err) {
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Ping Error",
-        message: err.message || "Network error executing ping",
-        type: "error",
+        title: 'Ping Error',
+        message: err.message || 'Network error executing ping',
+        type: 'error',
       });
     }
   } finally {
     if (btn) btn.disabled = false;
-    if (icon) icon.textContent = "⚡";
-    if (text) text.textContent = "Ping Now";
+    if (icon) icon.textContent = '⚡';
+    if (text) text.textContent = 'Ping Now';
   }
 }
 
@@ -2562,9 +2272,7 @@ async function cloneMonitor(id) {
 
   try {
     const fetchFn = window.apiFetch || window.fetch;
-    const res = await fetchFn(
-      `/api/admin/monitors/${encodeURIComponent(id)}/channels`,
-    );
+    const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/channels`);
     if (res && res.ok) {
       channelIds = await res.json();
     }
@@ -2573,9 +2281,7 @@ async function cloneMonitor(id) {
   if (!monitor) {
     try {
       const fetchFn = window.apiFetch || window.fetch;
-      const res = await fetchFn(
-        `/api/admin/monitors/${encodeURIComponent(id)}/details`,
-      );
+      const res = await fetchFn(`/api/admin/monitors/${encodeURIComponent(id)}/details`);
       if (res && res.ok) {
         const details = await res.json();
         monitor = details.monitor;
@@ -2584,21 +2290,17 @@ async function cloneMonitor(id) {
   }
 
   if (!monitor) {
-    if (typeof showToast === "function") {
-      showToast({
-        title: "Error",
-        message: "Target monitor not found",
-        type: "error",
-      });
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: 'Target monitor not found', type: 'error' });
     }
     return;
   }
 
-  if (typeof closeMonitorDetailModal === "function") {
+  if (typeof closeMonitorDetailModal === 'function') {
     closeMonitorDetailModal();
   }
 
-  if (typeof window.openCloneMonitorModal === "function") {
+  if (typeof window.openCloneMonitorModal === 'function') {
     window.openCloneMonitorModal(monitor, channelIds);
   }
 }
@@ -2612,27 +2314,19 @@ window.triggerDetailClone = triggerDetailClone;
 
 function triggerDetailDelete() {
   if (!currentDetailMonitorId) return;
-  const nameEl = document.getElementById("detail-modal-name");
-  const monitor = (window.allMonitors || []).find(
-    (m) => m.id === currentDetailMonitorId,
-  );
-  const name =
-    nameEl &&
-    nameEl.textContent &&
-    nameEl.textContent !== "Monitor Details" &&
-    nameEl.textContent !== "Loading monitor telemetry..."
-      ? nameEl.textContent
-      : monitor
-        ? monitor.name
-        : "Target";
+  const nameEl = document.getElementById('detail-modal-name');
+  const monitor = (window.allMonitors || []).find((m) => m.id === currentDetailMonitorId);
+  const name = (nameEl && nameEl.textContent && nameEl.textContent !== 'Monitor Details' && nameEl.textContent !== 'Loading monitor telemetry...')
+    ? nameEl.textContent
+    : (monitor ? monitor.name : 'Target');
   openSingleDeleteModal(currentDetailMonitorId, name);
 }
 window.triggerDetailDelete = triggerDetailDelete;
 
 function openSingleDeleteModal(id, name) {
-  const modal = document.getElementById("single-delete-modal");
-  const idEl = document.getElementById("single-delete-id");
-  const nameEl = document.getElementById("single-delete-name");
+  const modal = document.getElementById('single-delete-modal');
+  const idEl = document.getElementById('single-delete-id');
+  const nameEl = document.getElementById('single-delete-name');
   if (!modal) {
     if (confirm(`Are you sure you want to delete monitor "${name}"?`)) {
       confirmSingleDeleteDirect(id, name);
@@ -2641,35 +2335,34 @@ function openSingleDeleteModal(id, name) {
   }
 
   if (idEl) idEl.value = id;
-  if (nameEl) nameEl.textContent = name || "Monitor Target";
+  if (nameEl) nameEl.textContent = name || 'Monitor Target';
 
-  modal.classList.remove("hidden");
+  modal.classList.remove('hidden');
 }
 window.openSingleDeleteModal = openSingleDeleteModal;
 
 function closeSingleDeleteModal() {
-  const modal = document.getElementById("single-delete-modal");
-  if (modal) modal.classList.add("hidden");
+  const modal = document.getElementById('single-delete-modal');
+  if (modal) modal.classList.add('hidden');
 }
 window.closeSingleDeleteModal = closeSingleDeleteModal;
 
 async function confirmSingleDelete() {
-  const id = document.getElementById("single-delete-id")?.value;
-  const name =
-    document.getElementById("single-delete-name")?.textContent || "Target";
+  const id = document.getElementById('single-delete-id')?.value;
+  const name = document.getElementById('single-delete-name')?.textContent || 'Target';
   if (!id) return;
 
-  const btn = document.getElementById("confirm-single-delete-btn");
-  const originalText = btn ? btn.innerHTML : "Delete Monitor";
+  const btn = document.getElementById('confirm-single-delete-btn');
+  const originalText = btn ? btn.innerHTML : 'Delete Monitor';
   if (btn) {
     btn.disabled = true;
-    btn.innerHTML = "<span>Deleting...</span>";
+    btn.innerHTML = '<span>Deleting...</span>';
   }
 
   try {
     const fetchFn = window.apiFetch || window.fetch;
     const res = await fetchFn(`/api/v1/monitors/${encodeURIComponent(id)}`, {
-      method: "DELETE",
+      method: 'DELETE',
     });
 
     if (res && res.ok) {
@@ -2677,13 +2370,9 @@ async function confirmSingleDelete() {
       closeMonitorDetailModal();
 
       // Dynamic in-memory purge & DOM re-render without full page reload
-      window.allMonitors = (window.allMonitors || []).filter(
-        (m) => m.id !== id,
-      );
-      if (typeof statusMap !== "undefined" && statusMap[id])
-        delete statusMap[id];
-      if (typeof logsCache !== "undefined" && logsCache[id])
-        delete logsCache[id];
+      window.allMonitors = (window.allMonitors || []).filter((m) => m.id !== id);
+      if (typeof statusMap !== 'undefined' && statusMap[id]) delete statusMap[id];
+      if (typeof logsCache !== 'undefined' && logsCache[id]) delete logsCache[id];
       if (window.selectedMonitorIds) {
         window.selectedMonitorIds.delete(id);
       }
@@ -2691,29 +2380,29 @@ async function confirmSingleDelete() {
       renderMonitors();
       updateBulkActionBarUI();
 
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Target Removed",
+          title: 'Target Removed',
           message: `Target "${name}" removed successfully`,
-          type: "success",
+          type: 'success',
         });
       }
     } else if (res && res.status !== 401 && res.status !== 429) {
       const err = await res.json().catch(() => ({}));
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Delete Failed",
-          message: err.error || "Failed to delete monitor",
-          type: "error",
+          title: 'Delete Failed',
+          message: err.error || 'Failed to delete monitor',
+          type: 'error',
         });
       }
     }
   } catch (err) {
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Network Error",
-        message: err.message || "Error deleting monitor",
-        type: "error",
+        title: 'Network Error',
+        message: err.message || 'Error deleting monitor',
+        type: 'error',
       });
     }
   } finally {
@@ -2733,20 +2422,20 @@ window.deleteMonitor = deleteMonitor;
 // ── Progressive Disclosure for Status Page SEO Settings ──────────────────────
 
 function syncStatusPageIndexingVisibility(isAllowed) {
-  const container = document.getElementById("sp-seo-details");
+  const container = document.getElementById('sp-seo-details');
   if (!container) return;
   if (isAllowed) {
-    container.classList.remove("hidden");
+    container.classList.remove('hidden');
   } else {
-    container.classList.add("hidden");
+    container.classList.add('hidden');
   }
 }
 window.syncStatusPageIndexingVisibility = syncStatusPageIndexingVisibility;
 
-document.addEventListener("change", (e) => {
-  if (e.target && e.target.id === "sp-allow-indexing") {
+document.addEventListener('change', (e) => {
+  if (e.target && e.target.id === 'sp-allow-indexing') {
     syncStatusPageIndexingVisibility(e.target.checked);
-    if (typeof window.updateStatusPageSeoPreview === "function") {
+    if (typeof window.updateStatusPageSeoPreview === 'function') {
       window.updateStatusPageSeoPreview();
     }
   }
@@ -2754,101 +2443,139 @@ document.addEventListener("change", (e) => {
 
 // ── Centralized Event Delegation ─────────────────────────────────────────────
 
-document.addEventListener("click", (e) => {
+document.addEventListener('click', (e) => {
   const detailCard = e.target.closest('[data-action="open-detail"]');
-  if (
-    detailCard &&
-    !e.target.closest("button, a, input, select, textarea, label")
-  ) {
+  if (detailCard && !e.target.closest('button, a, input, select, textarea, label')) {
     const id = detailCard.dataset.id;
     if (id) openMonitorDetailModal(id);
     return;
   }
 
-  const target = e.target.closest("[data-action]");
+  const target = e.target.closest('[data-action]');
   if (!target) return;
 
   const action = target.dataset.action;
   switch (action) {
-    case "open-detail": {
+    case 'open-detail': {
       const id = target.dataset.id;
       if (id) openMonitorDetailModal(id);
       break;
     }
-    case "close-detail-modal": {
+    case 'close-detail-modal': {
       closeMonitorDetailModal();
       break;
     }
-    case "toggle-active": {
+    case 'toggle-active': {
       const id = target.dataset.id;
-      const isActive = target.dataset.active === "true";
+      const isActive = target.dataset.active === 'true';
       toggleMonitorActive(id, isActive);
       break;
     }
-    case "open-badge": {
+    case 'open-badge': {
       const id = target.dataset.id;
       const name = target.dataset.name;
       openBadgeModal(id, name);
       break;
     }
-    case "clone-monitor": {
+    case 'clone-monitor': {
       const id = target.dataset.id;
       if (id) cloneMonitor(id);
       break;
     }
-    case "edit-monitor": {
+    case 'edit-monitor': {
       const id = target.dataset.id;
-      if (typeof window.openEditMonitorModal === "function") {
+      if (typeof window.openEditMonitorModal === 'function') {
         window.openEditMonitorModal(id);
       }
       break;
     }
-    case "view-logs": {
+    case 'view-logs': {
       const id = target.dataset.id;
       const name = target.dataset.name;
       const url = target.dataset.url;
-      if (typeof window.viewLogs === "function") {
+      if (typeof window.viewLogs === 'function') {
         window.viewLogs(id, name, url);
       }
       break;
     }
-    case "delete-monitor": {
+    case 'delete-monitor': {
       const id = target.dataset.id;
       const name = target.dataset.name;
-      if (typeof window.deleteMonitor === "function") {
+      if (typeof window.deleteMonitor === 'function') {
         window.deleteMonitor(id, name);
       }
       break;
     }
-    case "test-webhook": {
+    case 'test-webhook': {
       const id = target.dataset.id;
       const name = target.dataset.name;
       testWebhookDirect(id, name);
       break;
     }
-    case "close-badge-modal": {
+    case 'edit-channel': {
+      const id = target.dataset.id;
+      if (id) openEditChannelModal(id);
+      break;
+    }
+    case 'delete-channel': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      if (id) deleteNotificationChannel(id, name);
+      break;
+    }
+    case 'test-channel': {
+      const id = target.dataset.id;
+      const name = target.dataset.name;
+      if (id) testNotificationChannel(id, name, target);
+      break;
+    }
+    case 'open-update-incident': {
+      const id = target.dataset.id;
+      if (id) openAddIncidentUpdateModal(id);
+      break;
+    }
+    case 'resolve-incident': {
+      const id = target.dataset.id;
+      if (id) resolveIncident(id);
+      break;
+    }
+    case 'delete-incident': {
+      const id = target.dataset.id;
+      if (id) deleteIncident(id);
+      break;
+    }
+    case 'refresh-asset': {
+      const id = target.dataset.id;
+      if (id) forceRefreshAssetRow(id, target);
+      break;
+    }
+    case 'open-create-channel': {
+      openCreateChannelModal();
+      break;
+    }
+    case 'close-badge-modal': {
       closeBadgeModal();
       break;
     }
-    case "open-password-modal": {
+    case 'open-password-modal': {
       openPasswordModal();
       break;
     }
-    case "close-password-modal": {
+    case 'close-password-modal': {
       closePasswordModal();
       break;
     }
-    case "badge-style": {
+    case 'badge-style': {
       const style = target.dataset.style;
       if (style) setBadgeModalStyle(style);
       break;
     }
-    case "badge-fmt": {
+    case 'badge-fmt': {
       const fmt = target.dataset.fmt;
       if (fmt) setBadgeModalFormat(fmt);
       break;
     }
-    case "badge-copy": {
+    case 'badge-copy': {
       copyBadgeModalCode(target);
       break;
     }
@@ -2857,30 +2584,37 @@ document.addEventListener("click", (e) => {
   }
 });
 
-document.addEventListener("change", (e) => {
+document.addEventListener('change', (e) => {
   const target = e.target.closest('[data-action="toggle-webhook"]');
   if (target) {
     const id = target.dataset.id;
-    const currentEnabled = target.dataset.enabled === "true";
+    const currentEnabled = target.dataset.enabled === 'true';
     toggleWebhookActive(id, currentEnabled);
   }
 });
 
-// Escape key listener for modals
-document.addEventListener("keydown", (e) => {
-  if (e.key === "Escape") {
-    const badgeModal = document.getElementById("badge-modal");
-    if (badgeModal && !badgeModal.classList.contains("hidden")) {
+// Keyboard shortcut listeners (Escape for modals, ⌘K / Ctrl+K for search)
+document.addEventListener('keydown', (e) => {
+  if ((e.metaKey || e.ctrlKey) && (e.key === 'k' || e.key === 'K')) {
+    const searchInput = document.getElementById('search-input');
+    if (searchInput && !searchInput.disabled) {
+      e.preventDefault();
+      searchInput.focus();
+      searchInput.select();
+    }
+  }
+
+  if (e.key === 'Escape') {
+    const badgeModal = document.getElementById('badge-modal');
+    if (badgeModal && !badgeModal.classList.contains('hidden')) {
       closeBadgeModal();
     }
-    const passwordModal = document.getElementById("password-modal");
-    if (passwordModal && !passwordModal.classList.contains("hidden")) {
+    const passwordModal = document.getElementById('password-modal');
+    if (passwordModal && !passwordModal.classList.contains('hidden')) {
       closePasswordModal();
     }
-    const detailModal =
-      document.getElementById("monitor-detail-modal") ||
-      document.getElementById("status-log-modal");
-    if (detailModal && !detailModal.classList.contains("hidden")) {
+    const detailModal = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
+    if (detailModal && !detailModal.classList.contains('hidden')) {
       closeMonitorDetailModal();
     }
   }
@@ -2888,65 +2622,63 @@ document.addEventListener("keydown", (e) => {
 
 // ── Asset Expiry Navigation & Table Interactivity ─────────────────────────────
 
-let currentAdminView = "monitors";
+let currentAdminView = 'monitors';
 let isAssetExpiryLoading = false;
 let isChannelsLoading = false;
 let isChannelModalInline = false;
 window.cachedChannels = [];
 
 function switchAdminView(view) {
-  if (view === "status-pages") {
+  if (view === 'status-pages') {
     openStatusPagesModal();
     return;
   }
-  if (view === "maintenance") {
+  if (view === 'maintenance') {
     openMaintenanceModal();
     return;
   }
 
   currentAdminView = view;
-  const monitorsPanel = document.getElementById("monitors-panel");
-  const assetExpiryPanel = document.getElementById("asset-expiry-panel");
-  const channelsPanel = document.getElementById("channels-panel");
-  const diagnosticsPanel = document.getElementById("diagnostics-panel");
-  const navMonitorsBtn = document.getElementById("nav-btn-monitors");
-  const navStatusPagesBtn = document.getElementById("nav-btn-status-pages");
-  const navAssetsBtn = document.getElementById("nav-btn-assets");
-  const navChannelsBtn = document.getElementById("nav-btn-channels");
-  const navMaintenanceBtn = document.getElementById("nav-btn-maintenance");
-  const navDiagnosticsBtn = document.getElementById("nav-btn-diagnostics");
+  const monitorsPanel = document.getElementById('monitors-panel');
+  const assetExpiryPanel = document.getElementById('asset-expiry-panel');
+  const channelsPanel = document.getElementById('channels-panel');
+  const incidentsPanel = document.getElementById('incidents-panel');
+  const navMonitorsBtn = document.getElementById('nav-btn-monitors');
+  const navStatusPagesBtn = document.getElementById('nav-btn-status-pages');
+  const navAssetsBtn = document.getElementById('nav-btn-assets');
+  const navChannelsBtn = document.getElementById('nav-btn-channels');
+  const navMaintenanceBtn = document.getElementById('nav-btn-maintenance');
+  const navIncidentsBtn = document.getElementById('nav-btn-incidents');
 
-  if (monitorsPanel) monitorsPanel.classList.add("hidden");
-  if (assetExpiryPanel) assetExpiryPanel.classList.add("hidden");
-  if (channelsPanel) channelsPanel.classList.add("hidden");
-  if (diagnosticsPanel) diagnosticsPanel.classList.add("hidden");
+  if (monitorsPanel) monitorsPanel.classList.add('hidden');
+  if (assetExpiryPanel) assetExpiryPanel.classList.add('hidden');
+  if (channelsPanel) channelsPanel.classList.add('hidden');
+  if (incidentsPanel) incidentsPanel.classList.add('hidden');
 
-  const inactiveBtnClass =
-    "h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer";
-  const activeBtnClass =
-    "h-8 px-3 rounded-lg transition bg-white/15 text-white border border-white/20 shadow-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer";
+  const inactiveBtnClass = 'h-8 px-3 rounded-lg transition text-white/60 hover:text-white hover:bg-white/10 border border-transparent flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
+  const activeBtnClass = 'h-8 px-3 rounded-lg transition bg-white/15 text-white border border-white/20 shadow-sm font-medium flex items-center gap-1.5 whitespace-nowrap cursor-pointer';
 
   if (navMonitorsBtn) navMonitorsBtn.className = inactiveBtnClass;
   if (navStatusPagesBtn) navStatusPagesBtn.className = inactiveBtnClass;
   if (navAssetsBtn) navAssetsBtn.className = inactiveBtnClass;
   if (navChannelsBtn) navChannelsBtn.className = inactiveBtnClass;
   if (navMaintenanceBtn) navMaintenanceBtn.className = inactiveBtnClass;
-  if (navDiagnosticsBtn) navDiagnosticsBtn.className = inactiveBtnClass;
+  if (navIncidentsBtn) navIncidentsBtn.className = inactiveBtnClass;
 
-  if (view === "assets") {
-    if (assetExpiryPanel) assetExpiryPanel.classList.remove("hidden");
+  if (view === 'assets') {
+    if (assetExpiryPanel) assetExpiryPanel.classList.remove('hidden');
     if (navAssetsBtn) navAssetsBtn.className = activeBtnClass;
     loadAssetExpiryData(true);
-  } else if (view === "channels") {
-    if (channelsPanel) channelsPanel.classList.remove("hidden");
+  } else if (view === 'channels') {
+    if (channelsPanel) channelsPanel.classList.remove('hidden');
     if (navChannelsBtn) navChannelsBtn.className = activeBtnClass;
     loadNotificationChannels(true);
-  } else if (view === "diagnostics") {
-    if (diagnosticsPanel) diagnosticsPanel.classList.remove("hidden");
-    if (navDiagnosticsBtn) navDiagnosticsBtn.className = activeBtnClass;
-    loadMemoryDiagnostics(true);
+  } else if (view === 'incidents') {
+    if (incidentsPanel) incidentsPanel.classList.remove('hidden');
+    if (navIncidentsBtn) navIncidentsBtn.className = activeBtnClass;
+    loadAdminIncidents(true);
   } else {
-    if (monitorsPanel) monitorsPanel.classList.remove("hidden");
+    if (monitorsPanel) monitorsPanel.classList.remove('hidden');
     if (navMonitorsBtn) navMonitorsBtn.className = activeBtnClass;
     fetchDashboardData(true);
   }
@@ -2957,15 +2689,15 @@ async function loadAssetExpiryData(showLoader = true) {
   if (isAssetExpiryLoading) return;
   isAssetExpiryLoading = true;
 
-  const refreshIcon = document.getElementById("asset-refresh-icon");
+  const refreshIcon = document.getElementById('asset-refresh-icon');
   if (refreshIcon && showLoader) {
-    refreshIcon.classList.add("animate-spin");
+    refreshIcon.classList.add('animate-spin');
   }
 
   try {
-    const res = await apiFetch("/api/admin/assets/expiry", {
-      method: "GET",
-      headers: { "Content-Type": "application/json" },
+    const res = await apiFetch('/api/admin/assets/expiry', {
+      method: 'GET',
+      headers: { 'Content-Type': 'application/json' },
     });
 
     if (!res || !res.ok) {
@@ -2975,11 +2707,11 @@ async function loadAssetExpiryData(showLoader = true) {
     const items = await res.json();
     renderAssetExpiryTable(items);
   } catch (err) {
-    console.error("Failed to load asset expiry data:", err);
+    console.error('Failed to load asset expiry data:', err);
   } finally {
     isAssetExpiryLoading = false;
     if (refreshIcon) {
-      refreshIcon.classList.remove("animate-spin");
+      refreshIcon.classList.remove('animate-spin');
     }
   }
 }
@@ -2993,9 +2725,9 @@ function renderAssetExpiryCell(enabled, daysRemaining, expiresAt, type) {
     return `<span class="text-neutral-400 font-mono text-[11px] bg-white/5 px-2 py-0.5 rounded border border-white/5">Pending check</span>`;
   }
 
-  const icon = type === "ssl" ? "🔒" : "🌐";
-  const label = daysRemaining <= 0 ? "Expired" : `${daysRemaining}d left`;
-  const titleAttr = expiresAt ? `title="Expires ${escapeHtml(expiresAt)}"` : "";
+  const icon = type === 'ssl' ? '🔒' : '🌐';
+  const label = daysRemaining <= 0 ? 'Expired' : `${daysRemaining}d left`;
+  const titleAttr = expiresAt ? `title="Expires ${escapeHtml(expiresAt)}"` : '';
 
   if (daysRemaining <= 7) {
     return `<span class="inline-flex items-center gap-1.5 px-2 py-0.5 rounded-full text-[11px] font-mono font-medium bg-rose-500/10 text-rose-400 border border-rose-500/20" ${titleAttr}>${icon} ${label}</span>`;
@@ -3007,9 +2739,9 @@ function renderAssetExpiryCell(enabled, daysRemaining, expiresAt, type) {
 }
 
 function renderUrgencyBadge(urgency) {
-  if (urgency === "CRITICAL") {
+  if (urgency === 'CRITICAL') {
     return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-rose-500/10 text-rose-400 border border-rose-500/20"><span class="w-1.5 h-1.5 rounded-full bg-rose-400"></span>CRITICAL</span>`;
-  } else if (urgency === "WARNING") {
+  } else if (urgency === 'WARNING') {
     return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-amber-500/10 text-amber-400 border border-amber-500/20"><span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span>WARNING</span>`;
   } else {
     return `<span class="inline-flex items-center gap-1 px-2.5 py-0.5 rounded-full text-[10px] font-semibold bg-emerald-500/10 text-emerald-400 border border-emerald-500/20"><span class="w-1.5 h-1.5 rounded-full bg-emerald-400"></span>HEALTHY</span>`;
@@ -3017,13 +2749,13 @@ function renderUrgencyBadge(urgency) {
 }
 
 function renderAssetExpiryTable(items) {
-  const critEl = document.getElementById("asset-stat-critical");
-  const warnEl = document.getElementById("asset-stat-warning");
-  const totalEl = document.getElementById("asset-stat-total");
-  const tbody = document.getElementById("asset-expiry-tbody");
+  const critEl = document.getElementById('asset-stat-critical');
+  const warnEl = document.getElementById('asset-stat-warning');
+  const totalEl = document.getElementById('asset-stat-total');
+  const tbody = document.getElementById('asset-expiry-tbody');
 
-  const critCount = items.filter((i) => i.urgency === "CRITICAL").length;
-  const warnCount = items.filter((i) => i.urgency === "WARNING").length;
+  const critCount = items.filter((i) => i.urgency === 'CRITICAL').length;
+  const warnCount = items.filter((i) => i.urgency === 'WARNING').length;
   const totalCount = items.length;
 
   if (critEl) critEl.textContent = critCount;
@@ -3044,23 +2776,12 @@ function renderAssetExpiryTable(items) {
     return;
   }
 
-  const rowsHtml = items
-    .map((item) => {
-      const sslCell = renderAssetExpiryCell(
-        item.ssl_enabled,
-        item.ssl_days_remaining,
-        item.ssl_expires_at,
-        "ssl",
-      );
-      const domainCell = renderAssetExpiryCell(
-        item.domain_enabled,
-        item.domain_days_remaining,
-        item.domain_expires_at,
-        "domain",
-      );
-      const urgencyCell = renderUrgencyBadge(item.urgency);
+  const rowsHtml = items.map((item) => {
+    const sslCell = renderAssetExpiryCell(item.ssl_enabled, item.ssl_days_remaining, item.ssl_expires_at, 'ssl');
+    const domainCell = renderAssetExpiryCell(item.domain_enabled, item.domain_days_remaining, item.domain_expires_at, 'domain');
+    const urgencyCell = renderUrgencyBadge(item.urgency);
 
-      return `
+    return `
       <tr id="asset-row-${escapeHtml(item.monitor_id)}" class="hover:bg-white/5 transition">
         <td class="py-3 px-4">
           <div class="font-sans font-medium text-white text-sm">${escapeHtml(item.name)}</div>
@@ -3070,14 +2791,13 @@ function renderAssetExpiryTable(items) {
         <td class="py-3 px-4">${domainCell}</td>
         <td class="py-3 px-4">${urgencyCell}</td>
         <td class="py-3 px-4 text-right">
-          <button type="button" onclick="forceRefreshAssetRow('${escapeHtml(item.monitor_id)}', this)" class="px-2.5 py-1 text-xs rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 transition inline-flex items-center gap-1 font-sans cursor-pointer active:scale-95" title="Force immediate TLS and domain check">
+          <button type="button" data-action="refresh-asset" data-id="${escapeHtml(item.monitor_id)}" class="px-2.5 py-1 text-xs rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white border border-white/10 transition inline-flex items-center gap-1 font-sans cursor-pointer active:scale-95" title="Force immediate TLS and domain check">
             <span>⚡</span><span>Force Refresh</span>
           </button>
         </td>
       </tr>
     `;
-    })
-    .join("");
+  }).join('');
 
   tbody.innerHTML = rowsHtml;
 }
@@ -3089,41 +2809,38 @@ async function forceRefreshAssetRow(monitorId, btn) {
   }
 
   try {
-    const res = await apiFetch(
-      `/api/admin/monitors/${monitorId}/refresh-assets`,
-      {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      },
-    );
+    const res = await apiFetch(`/api/admin/monitors/${monitorId}/refresh-assets`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+    });
 
     if (res && res.ok) {
       const updatedItem = await res.json();
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Asset Refreshed",
+          title: 'Asset Refreshed',
           message: `Live telemetry updated for "${updatedItem.name}"`,
-          type: "success",
+          type: 'success',
         });
       }
       await loadAssetExpiryData(false);
     } else {
       const err = await res.json().catch(() => ({}));
-      if (typeof showToast === "function") {
+      if (typeof showToast === 'function') {
         showToast({
-          title: "Refresh Failed",
-          message: err.error || "Unable to refresh asset telemetry",
-          type: "error",
+          title: 'Refresh Failed',
+          message: err.error || 'Unable to refresh asset telemetry',
+          type: 'error',
         });
       }
     }
   } catch (err) {
-    console.error("Error refreshing asset:", err);
-    if (typeof showToast === "function") {
+    console.error('Error refreshing asset:', err);
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Refresh Error",
-        message: err.message || "Network error occurred",
-        type: "error",
+        title: 'Refresh Error',
+        message: err.message || 'Network error occurred',
+        type: 'error',
       });
     }
   } finally {
@@ -3138,23 +2855,20 @@ window.forceRefreshAssetRow = forceRefreshAssetRow;
 // ── Notification Channels Management & View ─────────────────────────────────
 
 function maskUrl(url) {
-  if (!url) return "";
+  if (!url) return '';
   try {
     const parsed = new URL(url);
-    const parts = parsed.pathname.split("/");
+    const parts = parsed.pathname.split('/');
     if (parts.length > 2) {
       const last = parts[parts.length - 1];
-      const masked =
-        last.length > 8
-          ? last.slice(0, 4) + "••••" + last.slice(-4)
-          : "••••••••";
+      const masked = last.length > 8 ? last.slice(0, 4) + '••••' + last.slice(-4) : '••••••••';
       parts[parts.length - 1] = masked;
-      return `${parsed.protocol}//${parsed.host}${parts.join("/")}`;
+      return `${parsed.protocol}//${parsed.host}${parts.join('/')}`;
     }
     return `${parsed.protocol}//${parsed.host}${parsed.pathname.slice(0, 8)}••••`;
   } catch (_) {
     if (url.length > 24) {
-      return url.slice(0, 16) + "••••" + url.slice(-4);
+      return url.slice(0, 16) + '••••' + url.slice(-4);
     }
     return url;
   }
@@ -3162,13 +2876,13 @@ function maskUrl(url) {
 window.maskUrl = maskUrl;
 
 function renderChannelCard(channel) {
-  const typeLower = (channel.type || "webhook").toLowerCase();
-  let typeBadge = "";
-  if (typeLower === "discord") {
+  const typeLower = (channel.type || 'webhook').toLowerCase();
+  let typeBadge = '';
+  if (typeLower === 'discord') {
     typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-[#5865F2]/15 text-[#5865F2] border border-[#5865F2]/30">Discord</span>`;
-  } else if (typeLower === "slack") {
+  } else if (typeLower === 'slack') {
     typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-[#E01E5A]/15 text-[#E01E5A] border border-[#E01E5A]/30">Slack</span>`;
-  } else if (typeLower === "telegram") {
+  } else if (typeLower === 'telegram') {
     typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-[#24A1DE]/15 text-[#24A1DE] border border-[#24A1DE]/30">Telegram</span>`;
   } else {
     typeBadge = `<span class="inline-flex items-center px-2 py-0.5 rounded text-[10px] font-mono font-semibold uppercase tracking-wider bg-emerald-500/15 text-emerald-400 border border-emerald-500/30">Custom Webhook</span>`;
@@ -3176,26 +2890,23 @@ function renderChannelCard(channel) {
 
   const defaultBadge = channel.is_default
     ? `<span class="inline-flex items-center px-2 py-0.5 rounded text-[9px] font-mono font-semibold uppercase tracking-wider bg-white/10 text-neutral-300 border border-white/15">DEFAULT</span>`
-    : "";
+    : '';
 
   const masked = maskUrl(channel.url);
 
-  const botCustomizationBadge =
-    typeLower === "discord" && (channel.bot_name || channel.avatar_url)
-      ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
+  const botCustomizationBadge = (typeLower === 'discord' && (channel.bot_name || channel.avatar_url))
+    ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
         ${channel.avatar_url ? `<img src="${escapeHtml(channel.avatar_url)}" alt="Bot Avatar" class="w-3.5 h-3.5 rounded-full object-cover">` : `<svg class="w-3.5 h-3.5 text-[#5865F2]" fill="currentColor" viewBox="0 0 24 24"><path d="M20.317 4.37a19.791 19.791 0 0 0-4.885-1.515.074.074 0 0 0-.079.037c-.21.375-.444.864-.608 1.25a18.27 18.27 0 0 0-5.487 0 12.64 12.64 0 0 0-.617-1.25.077.077 0 0 0-.079-.037A19.736 19.736 0 0 0 3.677 4.37a.07.07 0 0 0-.032.027C.533 9.046-.32 13.58.099 18.057a.082.082 0 0 0 .031.057 19.9 19.9 0 0 0 5.993 3.03.078.078 0 0 0 .084-.028c.462-.63.874-1.295 1.226-1.994.021-.041.001-.09-.041-.106a13.107 13.107 0 0 1-1.872-.892.077.077 0 0 1-.008-.128 10.2 10.2 0 0 0 .372-.292.074.074 0 0 1 .077-.01c3.929 1.793 8.18 1.793 12.061 0a.074.074 0 0 1 .078.01c.12.098.246.198.373.292a.077.077 0 0 1-.006.127 12.299 12.299 0 0 1-1.873.894.077.077 0 0 0-.041.107c.36.698.772 1.362 1.225 1.993a.076.076 0 0 0 .084.028 19.839 19.839 0 0 0 6.002-3.03.077.077 0 0 0 .032-.054c.5-5.177-.838-9.674-3.549-13.66a.061.061 0 0 0-.031-.028zM8.02 15.33c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.956-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.956 2.418-2.157 2.418zm7.975 0c-1.183 0-2.157-1.085-2.157-2.419 0-1.333.955-2.419 2.157-2.419 1.21 0 2.176 1.096 2.157 2.42 0 1.333-.946 2.418-2.157 2.418z"/></svg>`}
-        <span class="truncate font-mono">${escapeHtml(channel.bot_name || "KeepUp Monitor")}</span>
+        <span class="truncate font-mono">${escapeHtml(channel.bot_name || 'KeepUp Monitor')}</span>
       </div>`
-      : "";
+    : '';
 
-  const telegramTopicBadge =
-    typeLower === "telegram" &&
-    (channel.telegram_chat_id || channel.telegram_thread_id)
-      ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
+  const telegramTopicBadge = (typeLower === 'telegram' && (channel.telegram_chat_id || channel.telegram_thread_id))
+    ? `<div class="flex items-center gap-1.5 text-[11px] text-white/70 bg-white/5 border border-white/10 rounded-lg px-2.5 py-1">
         <svg class="w-3.5 h-3.5 text-[#24A1DE]" fill="currentColor" viewBox="0 0 24 24"><path d="M12 2C6.48 2 2 6.48 2 12s4.48 10 10 10 10-4.48 10-10S17.52 2 12 2zm4.64 6.8c-.15 1.58-.8 5.42-1.13 7.19-.14.75-.42 1-.68 1.03-.58.05-1.02-.38-1.58-.75-.88-.58-1.38-.94-2.23-1.5-.99-.65-.35-1.01.22-1.59.15-.15 2.71-2.48 2.76-2.69a.2.2 0 00-.05-.18c-.06-.05-.14-.03-.21-.02-.09.02-1.49.95-4.22 2.79-.4.27-.76.41-1.08.4-.36-.01-1.04-.2-1.55-.37-.63-.2-1.12-.31-1.08-.66.02-.18.27-.36.74-.55 2.92-1.27 4.86-2.11 5.83-2.52 2.78-1.16 3.35-1.36 3.73-1.36.08 0 .27.02.39.12.1.08.13.19.14.27-.01.06.01.24 0 .38z"/></svg>
-        <span class="truncate font-mono">${escapeHtml(channel.telegram_chat_id || "")}${channel.telegram_thread_id ? ` • Topic #${escapeHtml(channel.telegram_thread_id)}` : ""}</span>
+        <span class="truncate font-mono">${escapeHtml(channel.telegram_chat_id || '')}${channel.telegram_thread_id ? ` • Topic #${escapeHtml(channel.telegram_thread_id)}` : ''}</span>
       </div>`
-      : "";
+    : '';
 
   const warningBadge = channel.last_error
     ? `<div class="flex items-start gap-1.5 text-[11px] text-amber-300 bg-amber-500/10 border border-amber-500/25 rounded-lg px-2.5 py-1.5" title="${escapeHtml(channel.last_error)}">
@@ -3207,11 +2918,11 @@ function renderChannelCard(channel) {
           <div class="truncate text-amber-300/80 font-mono text-[10px]">${escapeHtml(channel.last_error)}</div>
         </div>
       </div>`
-    : "";
+    : '';
 
   const cardBorderClass = channel.last_error
-    ? "border-amber-500/35 hover:border-amber-500/55 shadow-[0_0_15px_rgba(245,158,11,0.08)]"
-    : "hover:border-white/20";
+    ? 'border-amber-500/35 hover:border-amber-500/55 shadow-[0_0_15px_rgba(245,158,11,0.08)]'
+    : 'hover:border-white/20';
 
   return `
     <div class="glass-card rounded-2xl p-5 shadow-xl transition flex flex-col justify-between space-y-4 ${cardBorderClass}" id="channel-card-${channel.id}">
@@ -3226,13 +2937,13 @@ function renderChannelCard(channel) {
           </div>
           <!-- Action Menu -->
           <div class="flex items-center gap-1 shrink-0">
-            <button onclick="openEditChannelModal('${channel.id}')" class="p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition cursor-pointer" title="Edit Channel">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button data-action="edit-channel" data-id="${channel.id}" class="p-1.5 rounded-lg text-white/50 hover:text-white hover:bg-white/10 transition cursor-pointer" title="Edit Channel">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15.232 5.232l3.536 3.536m-2.036-5.036a2.5 2.5 0 113.536 3.536L6.5 21.036H3v-3.572L16.732 3.732z"/>
               </svg>
             </button>
-            <button onclick="deleteNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}')" class="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer" title="Delete Channel">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <button data-action="delete-channel" data-id="${channel.id}" data-name="${escapeHtml(channel.name)}" class="p-1.5 rounded-lg text-white/50 hover:text-rose-400 hover:bg-rose-500/10 transition cursor-pointer" title="Delete Channel">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor">
                 <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/>
               </svg>
             </button>
@@ -3249,7 +2960,7 @@ function renderChannelCard(channel) {
 
       <div class="pt-2 border-t border-white/5 flex items-center justify-between">
         <span class="text-[10px] font-mono text-white/40">Created ${formatDate(channel.created_at)}</span>
-        <button id="test-chan-btn-${channel.id}" onclick="testNotificationChannel('${channel.id}', '${escapeHtml(channel.name)}', this)" class="px-3 py-1 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
+        <button id="test-chan-btn-${channel.id}" data-action="test-channel" data-id="${channel.id}" data-name="${escapeHtml(channel.name)}" class="px-3 py-1 text-xs font-medium rounded-xl bg-white/5 hover:bg-white/10 border border-white/10 text-white/90 hover:text-white transition flex items-center gap-1.5 cursor-pointer">
           <svg class="w-3 h-3 text-[#0a84ff]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13 10V3L4 14h7v7l9-11h-7z"/>
           </svg>
@@ -3262,28 +2973,36 @@ function renderChannelCard(channel) {
 window.renderChannelCard = renderChannelCard;
 
 function renderNotificationChannels(channels) {
-  const container = document.getElementById("channels-list-container");
+  const container = document.getElementById('channels-list-container');
   if (!container) return;
 
   if (!channels || channels.length === 0) {
+    container.className = 'w-full';
     container.innerHTML = `
-      <div class="col-span-full glass-card rounded-2xl p-12 text-center text-white/50 text-xs space-y-3 border border-white/10">
-        <div class="w-10 h-10 rounded-full bg-white/5 flex items-center justify-center mx-auto text-white/40">
-          <svg class="w-5 h-5 text-[#30d158]" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+      <div class="monitors-empty-box">
+        <div class="monitors-empty-icon" aria-hidden="true">
+          <svg class="w-7 h-7" width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor">
             <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 17h5l-1.405-1.405A2.032 2.032 0 0118 14.158V11a6.002 6.002 0 00-4-5.659V5a2 2 0 10-4 0v.341C7.67 6.165 6 8.388 6 11v3.159c0 .538-.214 1.055-.595 1.436L4 17h5m6 0v1a3 3 0 11-6 0v-1m6 0H9"/>
           </svg>
         </div>
-        <p class="font-medium text-white/70">No notification channels registered yet.</p>
-        <p class="text-[11px] text-white/40">Add reusable Discord, Slack, Custom Webhook, or Telegram endpoints to receive instant alerts.</p>
-        <button onclick="openCreateChannelModal()" class="px-4 py-1.5 rounded-xl bg-[#30d158] hover:bg-[#28b84d] text-[#0b0b0c] text-xs font-semibold shadow-sm hover:shadow-[0_0_15px_rgba(48,209,88,0.35)] transition cursor-pointer">
-          + Add First Channel
+        <h3 class="text-lg sm:text-xl font-bold text-white tracking-tight mb-2">No notification channels yet</h3>
+        <p class="text-xs sm:text-sm text-white/50 max-w-md mx-auto leading-relaxed mb-6">
+          Add reusable Discord, Slack, Custom Webhook, or Telegram endpoints to receive instant alerts when a monitor status changes.
+        </p>
+        <button type="button" onclick="openCreateChannelModal()" aria-label="Tambah Channel" class="monitors-empty-cta">
+          <svg class="w-4 h-4" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+          </svg>
+          <span>Add Channel</span>
         </button>
       </div>
     `;
     return;
   }
 
-  container.innerHTML = channels.map((c) => renderChannelCard(c)).join("");
+  container.className = 'grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-4';
+
+  container.innerHTML = channels.map((c) => renderChannelCard(c)).join('');
 }
 window.renderNotificationChannels = renderNotificationChannels;
 
@@ -3291,26 +3010,26 @@ async function loadNotificationChannels(showLoader = true) {
   if (isChannelsLoading) return;
   isChannelsLoading = true;
 
-  const refreshIcon = document.getElementById("channels-refresh-icon");
+  const refreshIcon = document.getElementById('channels-refresh-icon');
   if (refreshIcon && showLoader) {
-    refreshIcon.classList.add("animate-spin");
+    refreshIcon.classList.add('animate-spin');
   }
 
   try {
-    const res = await apiFetch("/api/admin/channels");
+    const res = await apiFetch('/api/admin/channels');
     if (res && res.ok) {
       const data = await res.json();
       window.cachedChannels = data;
       renderNotificationChannels(data);
     } else {
-      console.warn("Failed to fetch notification channels:", res?.status);
+      console.warn('Failed to fetch notification channels:', res?.status);
     }
   } catch (err) {
-    console.error("Error fetching notification channels:", err);
+    console.error('Error fetching notification channels:', err);
   } finally {
     isChannelsLoading = false;
     if (refreshIcon) {
-      refreshIcon.classList.remove("animate-spin");
+      refreshIcon.classList.remove('animate-spin');
     }
   }
 }
@@ -3322,28 +3041,26 @@ async function testNotificationChannel(id, name, btn) {
     btn.innerHTML = `<span class="inline-block w-3 h-3 border-2 border-white/20 border-t-white rounded-full animate-spin"></span> Testing...`;
   }
   try {
-    const res = await apiFetch(`/api/admin/channels/${id}/test`, {
-      method: "POST",
-    });
+    const res = await apiFetch(`/api/admin/channels/${id}/test`, { method: 'POST' });
     const data = await res.json().catch(() => ({}));
     if (res.ok && data.success !== false) {
       showToast({
-        title: "Channel Probe Delivered",
+        title: 'Channel Probe Delivered',
         message: data.message || `Test notification delivered to "${name}"`,
-        type: "success",
+        type: 'success',
       });
     } else {
       showToast({
-        title: "Channel Test Failed",
-        message: data.error || "Failed to dispatch test notification",
-        type: "error",
+        title: 'Channel Test Failed',
+        message: data.error || 'Failed to dispatch test notification',
+        type: 'error',
       });
     }
   } catch (err) {
     showToast({
-      title: "Channel Test Error",
-      message: err.message || "Network error while testing channel",
-      type: "error",
+      title: 'Channel Test Error',
+      message: err.message || 'Network error while testing channel',
+      type: 'error',
     });
   } finally {
     if (btn) {
@@ -3361,90 +3078,75 @@ async function testNotificationChannel(id, name, btn) {
 window.testNotificationChannel = testNotificationChannel;
 
 async function deleteNotificationChannel(id, name) {
-  if (
-    !confirm(
-      `Delete notification channel "${name}"? This channel will be unlinked from all monitors.`,
-    )
-  )
-    return;
+  if (!confirm(`Delete notification channel "${name}"? This channel will be unlinked from all monitors.`)) return;
 
   try {
-    const res = await apiFetch(`/api/admin/channels/${id}`, {
-      method: "DELETE",
-    });
+    const res = await apiFetch(`/api/admin/channels/${id}`, { method: 'DELETE' });
     if (res && res.ok) {
       showToast({
-        title: "Channel Deleted",
+        title: 'Channel Deleted',
         message: `Notification channel "${name}" removed`,
-        type: "success",
+        type: 'success',
       });
       loadNotificationChannels(false);
-      if (typeof loadMonitorChannelsChecklist === "function") {
+      if (typeof loadMonitorChannelsChecklist === 'function') {
         loadMonitorChannelsChecklist();
       }
     } else {
       showToast({
-        title: "Delete Failed",
-        message: "Failed to delete notification channel",
-        type: "error",
+        title: 'Delete Failed',
+        message: 'Failed to delete notification channel',
+        type: 'error',
       });
     }
   } catch (err) {
     showToast({
-      title: "Error",
-      message: err.message || "Network error while deleting channel",
-      type: "error",
+      title: 'Error',
+      message: err.message || 'Network error while deleting channel',
+      type: 'error',
     });
   }
 }
 window.deleteNotificationChannel = deleteNotificationChannel;
 
 function syncChannelTypeCustomization(type) {
-  const discordContainer = document.getElementById(
-    "channel-discord-customization",
-  );
-  const telegramContainer = document.getElementById(
-    "channel-telegram-customization",
-  );
-  const urlContainer = document.getElementById("channel-form-url-container");
-  const urlInput = document.getElementById("channel-form-url");
+  const discordContainer = document.getElementById('channel-discord-customization');
+  const telegramContainer = document.getElementById('channel-telegram-customization');
+  const urlContainer = document.getElementById('channel-form-url-container');
+  const urlInput = document.getElementById('channel-form-url');
 
-  const cType = (type || "").toLowerCase();
-  const isDiscord = cType === "discord";
-  const isTelegram = cType === "telegram";
+  const cType = (type || '').toLowerCase();
+  const isDiscord = cType === 'discord';
+  const isTelegram = cType === 'telegram';
 
   if (discordContainer) {
     if (isDiscord) {
-      discordContainer.classList.remove("hidden");
+      discordContainer.classList.remove('hidden');
     } else {
-      discordContainer.classList.add("hidden");
+      discordContainer.classList.add('hidden');
     }
   }
 
   if (telegramContainer) {
     if (isTelegram) {
-      telegramContainer.classList.remove("hidden");
+      telegramContainer.classList.remove('hidden');
     } else {
-      telegramContainer.classList.add("hidden");
+      telegramContainer.classList.add('hidden');
     }
   }
 
   if (urlContainer && urlInput) {
     if (isTelegram) {
-      urlContainer.classList.add("hidden");
-      urlInput.removeAttribute("required");
-      if (
-        !urlInput.value ||
-        urlInput.value.includes("discord") ||
-        urlInput.value.includes("slack")
-      ) {
-        urlInput.value = "https://api.telegram.org";
+      urlContainer.classList.add('hidden');
+      urlInput.removeAttribute('required');
+      if (!urlInput.value || urlInput.value.includes('discord') || urlInput.value.includes('slack')) {
+        urlInput.value = 'https://api.telegram.org';
       }
     } else {
-      urlContainer.classList.remove("hidden");
-      urlInput.setAttribute("required", "required");
-      if (urlInput.value === "https://api.telegram.org") {
-        urlInput.value = "";
+      urlContainer.classList.remove('hidden');
+      urlInput.setAttribute('required', 'required');
+      if (urlInput.value === 'https://api.telegram.org') {
+        urlInput.value = '';
       }
     }
   }
@@ -3452,16 +3154,16 @@ function syncChannelTypeCustomization(type) {
 window.syncChannelTypeCustomization = syncChannelTypeCustomization;
 
 function toggleTelegramTokenVisibility() {
-  const tokenInput = document.getElementById("channel-form-telegram-token");
-  const eyeIcon = document.getElementById("telegram-token-eye-icon");
+  const tokenInput = document.getElementById('channel-form-telegram-token');
+  const eyeIcon = document.getElementById('telegram-token-eye-icon');
   if (!tokenInput) return;
-  if (tokenInput.type === "password") {
-    tokenInput.type = "text";
+  if (tokenInput.type === 'password') {
+    tokenInput.type = 'text';
     if (eyeIcon) {
       eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M13.875 18.825A10.05 10.05 0 0112 19c-4.478 0-8.268-2.943-9.543-7a9.97 9.97 0 011.563-3.029m5.858.908a3 3 0 114.243 4.243M9.878 9.878l4.242 4.242M9.88 9.88l-3.29-3.29m7.532 7.532l3.29 3.29M3 3l18 18" />`;
     }
   } else {
-    tokenInput.type = "password";
+    tokenInput.type = 'password';
     if (eyeIcon) {
       eyeIcon.innerHTML = `<path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M15 12a3 3 0 11-6 0 3 3 0 016 0z" /><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M2.458 12C3.732 7.943 7.523 5 12 5c4.478 0 8.268 2.943 9.542 7-1.274 4.057-5.064 7-9.542 7-4.477 0-8.268-2.943-9.542-7z" />`;
     }
@@ -3470,43 +3172,41 @@ function toggleTelegramTokenVisibility() {
 window.toggleTelegramTokenVisibility = toggleTelegramTokenVisibility;
 
 function updateDiscordAvatarPreview() {
-  const avatarInput = document.getElementById("channel-form-avatar-url");
-  const previewImg = document.getElementById("channel-avatar-preview-img");
-  const placeholder = document.getElementById(
-    "channel-avatar-preview-placeholder",
-  );
+  const avatarInput = document.getElementById('channel-form-avatar-url');
+  const previewImg = document.getElementById('channel-avatar-preview-img');
+  const placeholder = document.getElementById('channel-avatar-preview-placeholder');
   if (!avatarInput || !previewImg || !placeholder) return;
 
   const url = avatarInput.value.trim();
-  if (url && (url.startsWith("http://") || url.startsWith("https://"))) {
+  if (url && (url.startsWith('http://') || url.startsWith('https://'))) {
     previewImg.onload = () => {
-      previewImg.classList.remove("hidden");
-      placeholder.classList.add("hidden");
+      previewImg.classList.remove('hidden');
+      placeholder.classList.add('hidden');
     };
     previewImg.onerror = () => {
-      previewImg.classList.add("hidden");
-      placeholder.classList.remove("hidden");
+      previewImg.classList.add('hidden');
+      placeholder.classList.remove('hidden');
     };
     previewImg.src = url;
   } else {
-    previewImg.src = "";
-    previewImg.classList.add("hidden");
-    placeholder.classList.remove("hidden");
+    previewImg.src = '';
+    previewImg.classList.add('hidden');
+    placeholder.classList.remove('hidden');
   }
 }
 window.updateDiscordAvatarPreview = updateDiscordAvatarPreview;
 
 async function testCurrentChannelModal(btn) {
-  const idEl = document.getElementById("channel-form-id");
-  const nameEl = document.getElementById("channel-form-name");
-  const id = idEl ? idEl.value.trim() : "";
-  const name = nameEl ? nameEl.value.trim() : "Channel";
+  const idEl = document.getElementById('channel-form-id');
+  const nameEl = document.getElementById('channel-form-name');
+  const id = idEl ? idEl.value.trim() : '';
+  const name = nameEl ? nameEl.value.trim() : 'Channel';
 
   if (!id) {
     showToast({
-      title: "Save Required",
-      message: "Please save the channel before testing",
-      type: "info",
+      title: 'Save Required',
+      message: 'Please save the channel before testing',
+      type: 'info',
     });
     return;
   }
@@ -3517,174 +3217,170 @@ window.testCurrentChannelModal = testCurrentChannelModal;
 
 function openCreateChannelModal(isInline = false) {
   isChannelModalInline = isInline;
-  const modal = document.getElementById("channel-modal");
-  const title = document.getElementById("channel-modal-title");
-  const form = document.getElementById("channel-form");
-  const idEl = document.getElementById("channel-form-id");
-  const botNameEl = document.getElementById("channel-form-bot-name");
-  const avatarUrlEl = document.getElementById("channel-form-avatar-url");
-  const telegramTokenEl = document.getElementById(
-    "channel-form-telegram-token",
-  );
-  const telegramChatEl = document.getElementById("channel-form-telegram-chat");
-  const telegramThreadEl = document.getElementById(
-    "channel-form-telegram-thread",
-  );
-  const testBtn = document.getElementById("channel-modal-test-btn");
+  const modal = document.getElementById('channel-modal');
+  const title = document.getElementById('channel-modal-title');
+  const form = document.getElementById('channel-form');
+  const idEl = document.getElementById('channel-form-id');
+  const botNameEl = document.getElementById('channel-form-bot-name');
+  const avatarUrlEl = document.getElementById('channel-form-avatar-url');
+  const telegramTokenEl = document.getElementById('channel-form-telegram-token');
+  const telegramChatEl = document.getElementById('channel-form-telegram-chat');
+  const telegramThreadEl = document.getElementById('channel-form-telegram-thread');
+  const testBtn = document.getElementById('channel-modal-test-btn');
 
-  if (title) title.innerText = "Add Notification Channel";
-  if (idEl) idEl.value = "";
-  if (botNameEl) botNameEl.value = "";
-  if (avatarUrlEl) avatarUrlEl.value = "";
+  if (title) title.innerText = 'Add Notification Channel';
+  if (idEl) idEl.value = '';
+  if (botNameEl) botNameEl.value = '';
+  if (avatarUrlEl) avatarUrlEl.value = '';
   if (telegramTokenEl) {
-    telegramTokenEl.value = "";
-    telegramTokenEl.type = "password";
+    telegramTokenEl.value = '';
+    telegramTokenEl.type = 'password';
   }
-  if (telegramChatEl) telegramChatEl.value = "";
-  if (telegramThreadEl) telegramThreadEl.value = "";
-  if (testBtn) testBtn.classList.add("hidden");
+  if (telegramChatEl) telegramChatEl.value = '';
+  if (telegramThreadEl) telegramThreadEl.value = '';
+  if (testBtn) testBtn.classList.add('hidden');
   if (form) form.reset();
 
-  const typeEl = document.getElementById("channel-form-type");
-  if (typeEl) typeEl.value = "discord";
+  const typeEl = document.getElementById('channel-form-type');
+  if (typeEl) typeEl.value = 'discord';
 
-  syncChannelTypeCustomization("discord");
+  const notifyResolveEl = document.getElementById('channel-form-notify-resolve');
+  if (notifyResolveEl) notifyResolveEl.checked = true;
+  const tmplEl = document.getElementById('channel-form-template');
+  if (tmplEl) tmplEl.value = '';
+
+  syncChannelTypeCustomization('discord');
   updateDiscordAvatarPreview();
 
-  if (modal) modal.classList.remove("hidden");
+  if (modal) modal.classList.remove('hidden');
 }
 window.openCreateChannelModal = openCreateChannelModal;
 
 function openEditChannelModal(id) {
   isChannelModalInline = false;
-  const modal = document.getElementById("channel-modal");
-  const title = document.getElementById("channel-modal-title");
-  const idEl = document.getElementById("channel-form-id");
-  const nameEl = document.getElementById("channel-form-name");
-  const typeEl = document.getElementById("channel-form-type");
-  const urlEl = document.getElementById("channel-form-url");
-  const defaultEl = document.getElementById("channel-form-default");
-  const botNameEl = document.getElementById("channel-form-bot-name");
-  const avatarUrlEl = document.getElementById("channel-form-avatar-url");
-  const telegramTokenEl = document.getElementById(
-    "channel-form-telegram-token",
-  );
-  const telegramChatEl = document.getElementById("channel-form-telegram-chat");
-  const telegramThreadEl = document.getElementById(
-    "channel-form-telegram-thread",
-  );
-  const testBtn = document.getElementById("channel-modal-test-btn");
+  const modal = document.getElementById('channel-modal');
+  const title = document.getElementById('channel-modal-title');
+  const idEl = document.getElementById('channel-form-id');
+  const nameEl = document.getElementById('channel-form-name');
+  const typeEl = document.getElementById('channel-form-type');
+  const urlEl = document.getElementById('channel-form-url');
+  const defaultEl = document.getElementById('channel-form-default');
+  const botNameEl = document.getElementById('channel-form-bot-name');
+  const avatarUrlEl = document.getElementById('channel-form-avatar-url');
+  const telegramTokenEl = document.getElementById('channel-form-telegram-token');
+  const telegramChatEl = document.getElementById('channel-form-telegram-chat');
+  const telegramThreadEl = document.getElementById('channel-form-telegram-thread');
+  const testBtn = document.getElementById('channel-modal-test-btn');
 
   const channel = (window.cachedChannels || []).find((c) => c.id === id);
   if (!channel) return;
 
-  if (title) title.innerText = "Edit Notification Channel";
+  if (title) title.innerText = 'Edit Notification Channel';
   if (idEl) idEl.value = channel.id;
   if (nameEl) nameEl.value = channel.name;
-  const cType = (channel.type || "discord").toLowerCase();
+  const cType = (channel.type || 'discord').toLowerCase();
   if (typeEl) typeEl.value = cType;
   if (urlEl) urlEl.value = channel.url;
   if (defaultEl) defaultEl.checked = channel.is_default;
-  if (botNameEl) botNameEl.value = channel.bot_name || "";
-  if (avatarUrlEl) avatarUrlEl.value = channel.avatar_url || "";
+  if (botNameEl) botNameEl.value = channel.bot_name || '';
+  if (avatarUrlEl) avatarUrlEl.value = channel.avatar_url || '';
   if (telegramTokenEl) {
-    telegramTokenEl.value = channel.telegram_bot_token || "";
-    telegramTokenEl.type = "password";
+    telegramTokenEl.value = channel.telegram_bot_token || '';
+    telegramTokenEl.type = 'password';
   }
-  if (telegramChatEl) telegramChatEl.value = channel.telegram_chat_id || "";
-  if (telegramThreadEl)
-    telegramThreadEl.value = channel.telegram_thread_id || "";
-  if (testBtn) testBtn.classList.remove("hidden");
+  if (telegramChatEl) telegramChatEl.value = channel.telegram_chat_id || '';
+  if (telegramThreadEl) telegramThreadEl.value = channel.telegram_thread_id || '';
+  if (testBtn) testBtn.classList.remove('hidden');
 
   syncChannelTypeCustomization(cType);
   updateDiscordAvatarPreview();
 
-  if (modal) modal.classList.remove("hidden");
+  const notifyResolveEl = document.getElementById('channel-form-notify-resolve');
+  if (notifyResolveEl) notifyResolveEl.checked = channel.notify_on_resolve !== false;
+  const tmplEl = document.getElementById('channel-form-template');
+  if (tmplEl) tmplEl.value = channel.custom_template || '';
+
+  if (modal) modal.classList.remove('hidden');
 }
 window.openEditChannelModal = openEditChannelModal;
 
 function closeChannelModal() {
-  const modal = document.getElementById("channel-modal");
-  if (modal) modal.classList.add("hidden");
+  const modal = document.getElementById('channel-modal');
+  if (modal) modal.classList.add('hidden');
   isChannelModalInline = false;
 }
 window.closeChannelModal = closeChannelModal;
 
 async function submitChannelForm(e) {
-  if (e && typeof e.preventDefault === "function") {
+  if (e && typeof e.preventDefault === 'function') {
     e.preventDefault();
   }
 
-  const id = document.getElementById("channel-form-id")?.value?.trim();
-  const name = document.getElementById("channel-form-name")?.value?.trim();
-  const type = document.getElementById("channel-form-type")?.value?.trim();
-  let url = document.getElementById("channel-form-url")?.value?.trim() || "";
-  const is_default =
-    document.getElementById("channel-form-default")?.checked || false;
-  const bot_name =
-    document.getElementById("channel-form-bot-name")?.value?.trim() || null;
-  const avatar_url =
-    document.getElementById("channel-form-avatar-url")?.value?.trim() || null;
-  const telegram_bot_token =
-    document.getElementById("channel-form-telegram-token")?.value?.trim() ||
-    null;
-  const telegram_chat_id =
-    document.getElementById("channel-form-telegram-chat")?.value?.trim() ||
-    null;
-  const telegram_thread_id =
-    document.getElementById("channel-form-telegram-thread")?.value?.trim() ||
-    null;
+  const id = document.getElementById('channel-form-id')?.value?.trim();
+  const name = document.getElementById('channel-form-name')?.value?.trim();
+  const type = document.getElementById('channel-form-type')?.value?.trim();
+  let url = document.getElementById('channel-form-url')?.value?.trim() || '';
+  const is_default = document.getElementById('channel-form-default')?.checked || false;
+  const notify_on_resolve = document.getElementById('channel-form-notify-resolve') ? document.getElementById('channel-form-notify-resolve').checked : true;
+  const custom_template = document.getElementById('channel-form-template')?.value?.trim() || null;
+  const bot_name = document.getElementById('channel-form-bot-name')?.value?.trim() || null;
+  const avatar_url = document.getElementById('channel-form-avatar-url')?.value?.trim() || null;
+  const telegram_bot_token = document.getElementById('channel-form-telegram-token')?.value?.trim() || null;
+  const telegram_chat_id = document.getElementById('channel-form-telegram-chat')?.value?.trim() || null;
+  const telegram_thread_id = document.getElementById('channel-form-telegram-thread')?.value?.trim() || null;
 
-  const saveBtn = document.getElementById("save-channel-btn");
-  const originalText = saveBtn ? saveBtn.innerText : "Save Channel";
+  const saveBtn = document.getElementById('save-channel-btn');
+  const originalText = saveBtn ? saveBtn.innerText : 'Save Channel';
 
   if (!name) {
     showToast({
-      title: "Validation Error",
-      message: "Channel name is required",
-      type: "error",
+      title: 'Validation Error',
+      message: 'Channel name is required',
+      type: 'error',
     });
     return;
   }
 
-  if (type === "telegram") {
+  if (type === 'telegram') {
     if (!telegram_bot_token || !telegram_chat_id) {
       showToast({
-        title: "Validation Error",
-        message: "Bot API Token and Chat ID are required for Telegram",
-        type: "error",
+        title: 'Validation Error',
+        message: 'Bot API Token and Chat ID are required for Telegram',
+        type: 'error',
       });
       return;
     }
     if (!url) {
-      url = "https://api.telegram.org";
+      url = 'https://api.telegram.org';
     }
   } else if (!url) {
     showToast({
-      title: "Validation Error",
-      message: "Endpoint URL is required",
-      type: "error",
+      title: 'Validation Error',
+      message: 'Endpoint URL is required',
+      type: 'error',
     });
     return;
   }
 
   if (saveBtn) {
     saveBtn.disabled = true;
-    saveBtn.innerText = "Saving...";
+    saveBtn.innerText = 'Saving...';
   }
 
   try {
-    const endpoint = id ? `/api/admin/channels/${id}` : "/api/admin/channels";
-    const method = id ? "PUT" : "POST";
+    const endpoint = id ? `/api/admin/channels/${id}` : '/api/admin/channels';
+    const method = id ? 'PUT' : 'POST';
 
     const res = await apiFetch(endpoint, {
       method,
-      headers: { "Content-Type": "application/json" },
+      headers: { 'Content-Type': 'application/json' },
       body: JSON.stringify({
         name,
         type,
         url,
         is_default,
+        notify_on_resolve,
+        custom_template,
         bot_name,
         avatar_url,
         telegram_bot_token,
@@ -3697,18 +3393,18 @@ async function submitChannelForm(e) {
       const savedChannel = await res.json();
       closeChannelModal();
       showToast({
-        title: id ? "Channel Updated" : "Channel Created",
+        title: id ? 'Channel Updated' : 'Channel Created',
         message: `Notification channel "${name}" successfully saved`,
-        type: "success",
+        type: 'success',
       });
 
       // Refresh channels cache
       await loadNotificationChannels(false);
 
       // If opened inline from monitor modal, re-render checklist and check this channel
-      if (typeof loadMonitorChannelsChecklist === "function") {
+      if (typeof loadMonitorChannelsChecklist === 'function') {
         const currentlyChecked = Array.from(
-          document.querySelectorAll('input[name="monitor-channel"]:checked'),
+          document.querySelectorAll('input[name="monitor-channel"]:checked')
         ).map((cb) => cb.value);
         if (!currentlyChecked.includes(savedChannel.id)) {
           currentlyChecked.push(savedChannel.id);
@@ -3718,16 +3414,16 @@ async function submitChannelForm(e) {
     } else {
       const err = await res.json().catch(() => ({}));
       showToast({
-        title: "Save Error",
-        message: err.error || "Failed to save channel",
-        type: "error",
+        title: 'Save Error',
+        message: err.error || 'Failed to save channel',
+        type: 'error',
       });
     }
   } catch (err) {
     showToast({
-      title: "Error",
-      message: err.message || "Network error occurred",
-      type: "error",
+      title: 'Error',
+      message: err.message || 'Network error occurred',
+      type: 'error',
     });
   } finally {
     if (saveBtn) {
@@ -3738,280 +3434,528 @@ async function submitChannelForm(e) {
 }
 window.submitChannelForm = submitChannelForm;
 
-// ── System & Memory Diagnostics Engine ──────────────────────────────────────
+// ── Incidents Management ───────────────────────────────────────────────────
 
-let isDiagnosticsLoading = false;
-let isPurgingArena = false;
-let isDumpingHeap = false;
+let isAdminIncidentsLoading = false;
+async function loadAdminIncidents(showLoader = true) {
+  if (isAdminIncidentsLoading) return;
+  isAdminIncidentsLoading = true;
 
-function formatBytes(bytes) {
-  if (bytes === null || bytes === undefined || isNaN(bytes)) return "—";
-  if (bytes === 0) return "0 B";
-  const k = 1024;
-  const sizes = ["B", "KB", "MB", "GB", "TB"];
-  const i = Math.floor(Math.log(Math.abs(bytes)) / Math.log(k));
-  const val = (bytes / Math.pow(k, i)).toFixed(i === 0 ? 0 : 2);
-  return `${val} ${sizes[i]}`;
-}
-window.formatBytes = formatBytes;
-
-async function loadMemoryDiagnostics(showLoader = true) {
-  if (isDiagnosticsLoading) return;
-  isDiagnosticsLoading = true;
-
-  const refreshIcon = document.getElementById("mem-refresh-icon");
-  if (refreshIcon && showLoader) {
-    refreshIcon.classList.add("animate-spin");
-  }
+  const refreshIcon = document.getElementById('incidents-refresh-icon');
+  if (refreshIcon && showLoader) refreshIcon.classList.add('animate-spin');
 
   try {
-    const res = await apiFetch("/api/admin/diagnostics/memory");
-    if (!res || !res.ok) {
-      console.warn("Failed to fetch memory diagnostics:", res?.status);
-      return;
-    }
-
-    const stats = await res.json();
-    renderMemoryDiagnostics(stats);
+    const res = await apiFetch('/api/admin/incidents');
+    if (!res.ok) throw new Error('Failed to load incidents: ' + res.status);
+    const incidents = await res.json();
+    window.cachedIncidents = incidents;
+    renderAdminIncidents(incidents);
   } catch (err) {
-    console.error("Error fetching memory diagnostics:", err);
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
   } finally {
-    isDiagnosticsLoading = false;
-    if (refreshIcon) {
-      refreshIcon.classList.remove("animate-spin");
-    }
+    isAdminIncidentsLoading = false;
+    if (refreshIcon) refreshIcon.classList.remove('animate-spin');
   }
 }
-window.loadMemoryDiagnostics = loadMemoryDiagnostics;
+window.loadAdminIncidents = loadAdminIncidents;
 
-function renderMemoryDiagnostics(stats) {
-  if (!stats) return;
+function renderAdminIncidents(incidents) {
+  const container = document.getElementById('incidents-list-container');
+  if (!container) return;
 
-  const rssEl = document.getElementById("mem-stat-rss");
-  const activeEl = document.getElementById("mem-stat-active");
-  const allocEl = document.getElementById("mem-stat-allocated");
-  const fragEl = document.getElementById("mem-stat-fragmentation");
-  const mappedEl = document.getElementById("mem-stat-mapped");
-  const retainedEl = document.getElementById("mem-stat-retained");
-  const driverEl = document.getElementById("mem-stat-driver");
-  const allocatorEl = document.getElementById("mem-stat-allocator");
-  const tsEl = document.getElementById("mem-stat-timestamp");
-
-  if (rssEl) rssEl.textContent = formatBytes(stats.resident_bytes);
-  if (activeEl) activeEl.textContent = formatBytes(stats.active_bytes);
-  if (allocEl) allocEl.textContent = formatBytes(stats.allocated_bytes);
-  if (fragEl) {
-    const pct =
-      typeof stats.fragmentation_pct === "number"
-        ? stats.fragmentation_pct.toFixed(1)
-        : stats.fragmentation_pct;
-    fragEl.textContent = `${pct}%`;
+  if (!incidents || incidents.length === 0) {
+    container.className = 'w-full';
+    container.innerHTML = `
+      <div class="monitors-empty-box">
+        <div class="monitors-empty-icon" aria-hidden="true">
+          <svg class="w-7 h-7" width="28" height="28" fill="none" viewBox="0 0 24 24" stroke="currentColor">
+            <path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M9 12l2 2 4-4m6 2a9 9 0 11-18 0 9 9 0 0118 0z"/>
+          </svg>
+        </div>
+        <h3 class="text-lg sm:text-xl font-bold text-white tracking-tight mb-2">No active incidents recorded</h3>
+        <p class="text-xs sm:text-sm text-white/50 max-w-md mx-auto leading-relaxed mb-6">
+          All systems are running smoothly without disruptions. Use the button below to declare an incident or maintenance notice if needed.
+        </p>
+        <button type="button" onclick="openCreateIncidentModal()" aria-label="Create Incident" class="monitors-empty-cta">
+          <svg class="w-4 h-4" width="16" height="16" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5" aria-hidden="true">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/>
+          </svg>
+          <span>Create Incident</span>
+        </button>
+      </div>
+    `;
+    return;
   }
-  if (mappedEl) mappedEl.textContent = formatBytes(stats.mapped_bytes);
-  if (retainedEl) retainedEl.textContent = formatBytes(stats.retained_bytes);
-  if (driverEl) driverEl.textContent = stats.allocator || "jemalloc";
-  if (allocatorEl)
-    allocatorEl.textContent = (stats.allocator || "jemalloc").toUpperCase();
-  if (tsEl && stats.timestamp) {
-    try {
-      tsEl.textContent = new Date(stats.timestamp).toLocaleTimeString();
-    } catch (_) {
-      tsEl.textContent = stats.timestamp;
+
+  container.className = 'space-y-4';
+
+  const html = incidents.map((inc) => {
+    const isResolved = inc.status === 'RESOLVED';
+    const statusBadgeClass = isResolved
+      ? 'status-badge-operational'
+      : inc.status === 'INVESTIGATING'
+      ? 'status-badge-down'
+      : 'status-badge-degraded';
+
+    let updatesHtml = '';
+    if (Array.isArray(inc.updates) && inc.updates.length > 0) {
+      updatesHtml = `
+        <div class="mt-3 space-y-2 pl-3 border-l border-white/10 text-xs">
+          ${inc.updates.map((u) => `
+            <div class="space-y-0.5">
+              <div class="flex items-center gap-2">
+                <span class="font-semibold text-white/90 uppercase text-[10px]">${escapeHtml(u.status)}</span>
+                <span class="text-white/40 font-mono text-[10px]">${escapeHtml(formatDate(u.created_at))}</span>
+              </div>
+              <p class="text-white/70 text-xs">${escapeHtml(u.message)}</p>
+            </div>
+          `).join('')}
+        </div>
+      `;
     }
-  }
+
+    return `
+      <div class="glass-card rounded-2xl p-5 border border-white/10 space-y-3">
+        <div class="flex flex-col sm:flex-row sm:items-center justify-between gap-2">
+          <div class="flex items-center gap-2.5 flex-wrap">
+            <h3 class="font-semibold text-white text-sm">${escapeHtml(inc.title)}</h3>
+            <span class="px-2 py-0.5 rounded-full text-[10px] ${statusBadgeClass} font-medium">${escapeHtml(inc.status)}</span>
+            <span class="px-1.5 py-0.2 rounded text-[9px] bg-white/10 text-white/60 font-mono">${escapeHtml(inc.severity)}</span>
+          </div>
+          <div class="flex items-center gap-2">
+            <button data-action="open-update-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-white/10 hover:bg-white/15 text-white transition cursor-pointer">
+              + Update
+            </button>
+            ${!isResolved ? `
+              <button data-action="resolve-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-[#30d158]/20 hover:bg-[#30d158]/30 text-[#30d158] transition cursor-pointer">
+                Resolve
+              </button>
+            ` : ''}
+            <button data-action="delete-incident" data-id="${escapeHtml(inc.id)}" class="text-xs px-2.5 py-1 rounded-lg bg-red-500/10 hover:bg-red-500/20 text-red-400 transition cursor-pointer">
+              Delete
+            </button>
+          </div>
+        </div>
+        <div class="text-[11px] text-white/40 font-mono">
+          <span>Started: ${escapeHtml(formatDate(inc.started_at))}</span>
+          ${inc.resolved_at ? `<span> • Resolved: ${escapeHtml(formatDate(inc.resolved_at))}</span>` : ''}
+        </div>
+        ${updatesHtml}
+      </div>
+    `;
+  }).join('');
+
+  container.innerHTML = html;
 }
-window.renderMemoryDiagnostics = renderMemoryDiagnostics;
 
-async function purgeMemoryArena() {
-  if (isPurgingArena) return;
-  isPurgingArena = true;
+function openCreateIncidentModal() {
+  const modal = document.getElementById('incident-modal');
+  const monitorSelect = document.getElementById('incident-form-monitor');
+  if (monitorSelect) {
+    monitorSelect.innerHTML = '<option value="">None / System-Wide</option>' +
+      (window.allMonitors || []).map((m) => `<option value="${escapeHtml(m.id)}">${escapeHtml(m.name)}</option>`).join('');
+  }
+  const form = document.getElementById('incident-form');
+  if (form) form.reset();
+  if (modal) modal.classList.remove('hidden');
+}
+window.openCreateIncidentModal = openCreateIncidentModal;
 
-  const btn = document.getElementById("mem-purge-btn");
-  const icon = document.getElementById("mem-purge-icon");
-  const feedback = document.getElementById("mem-action-feedback");
-  const feedbackText = document.getElementById("mem-action-feedback-text");
+function closeIncidentModal() {
+  const modal = document.getElementById('incident-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeIncidentModal = closeIncidentModal;
 
-  if (btn) btn.disabled = true;
-  if (icon) icon.classList.add("animate-spin");
+async function submitIncidentForm(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const title = document.getElementById('incident-form-title')?.value?.trim();
+  const status = document.getElementById('incident-form-status')?.value;
+  const severity = document.getElementById('incident-form-severity')?.value;
+  const monitor_id = document.getElementById('incident-form-monitor')?.value || null;
+  const message = document.getElementById('incident-form-message')?.value?.trim();
+
+  const saveBtn = document.getElementById('save-incident-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Posting...';
+  }
 
   try {
-    const res = await apiFetch("/api/admin/diagnostics/memory/purge", {
-      method: "POST",
+    const res = await apiFetch('/api/admin/incidents', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ title, status, severity, monitor_id, message }),
     });
-    const data = await res.json().catch(() => ({}));
 
-    if (res && res.ok && data.success) {
-      const freedStr = formatBytes(data.bytes_freed);
-      const msg = `Memory arena purge completed: ${freedStr} returned to OS`;
-      if (typeof showToast === "function") {
-        showToast({
-          title: "Arena Purged",
-          message: msg,
-          type: "success",
-        });
-      }
-      if (feedback && feedbackText) {
-        feedback.classList.remove("hidden");
-        feedbackText.textContent = `${msg}. Pre-purge: ${formatBytes(data.pre_purge?.resident_bytes)} RSS → Post-purge: ${formatBytes(data.post_purge?.resident_bytes)} RSS.`;
-      }
-      if (data.post_purge) {
-        renderMemoryDiagnostics(data.post_purge);
-      }
-    } else {
-      const errMsg = data.message || "Failed to execute memory purge";
-      if (typeof showToast === "function") {
-        showToast({
-          title: "Purge Failed",
-          message: errMsg,
-          type: "error",
-        });
-      }
-      if (feedback && feedbackText) {
-        feedback.classList.remove("hidden");
-        feedbackText.textContent = `Error: ${errMsg}`;
-      }
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to post incident');
+    }
+
+    closeIncidentModal();
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Incident Declared', message: `Incident "${title}" posted.`, type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Incident Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = 'Post Incident';
+    }
+  }
+}
+window.submitIncidentForm = submitIncidentForm;
+
+function openAddIncidentUpdateModal(id) {
+  const modal = document.getElementById('incident-update-modal');
+  const idEl = document.getElementById('update-form-incident-id');
+  if (idEl) idEl.value = id;
+  const msgEl = document.getElementById('update-form-message');
+  if (msgEl) msgEl.value = '';
+  if (modal) modal.classList.remove('hidden');
+}
+window.openAddIncidentUpdateModal = openAddIncidentUpdateModal;
+
+function closeIncidentUpdateModal() {
+  const modal = document.getElementById('incident-update-modal');
+  if (modal) modal.classList.add('hidden');
+}
+window.closeIncidentUpdateModal = closeIncidentUpdateModal;
+
+async function submitIncidentUpdateForm(e) {
+  if (e && typeof e.preventDefault === 'function') e.preventDefault();
+  const id = document.getElementById('update-form-incident-id')?.value;
+  const status = document.getElementById('update-form-status')?.value;
+  const message = document.getElementById('update-form-message')?.value?.trim();
+
+  if (!id || !message) return;
+
+  const saveBtn = document.getElementById('save-update-btn');
+  if (saveBtn) {
+    saveBtn.disabled = true;
+    saveBtn.innerText = 'Posting...';
+  }
+
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}/updates`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ status, message }),
+    });
+
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Failed to post update');
+    }
+
+    closeIncidentUpdateModal();
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Update Posted', message: 'Incident update appended.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Update Error', message: err.message, type: 'error' });
+    }
+  } finally {
+    if (saveBtn) {
+      saveBtn.disabled = false;
+      saveBtn.innerText = 'Post Update';
+    }
+  }
+}
+window.submitIncidentUpdateForm = submitIncidentUpdateForm;
+
+async function resolveIncident(id) {
+  if (!id) return;
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}/resolve`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ message: 'Incident marked as resolved by administrator.' }),
+    });
+    if (!res.ok) throw new Error('Failed to resolve incident');
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Resolved', message: 'Incident marked as RESOLVED.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  }
+}
+window.resolveIncident = resolveIncident;
+
+async function deleteIncident(id) {
+  if (!id) return;
+  if (!confirm('Are you sure you want to delete this incident and all timeline updates?')) return;
+  try {
+    const res = await apiFetch(`/api/admin/incidents/${id}`, { method: 'DELETE' });
+    if (!res.ok) throw new Error('Failed to delete incident');
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Deleted', message: 'Incident deleted.', type: 'success' });
+    }
+    loadAdminIncidents(false);
+  } catch (err) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Error', message: err.message, type: 'error' });
+    }
+  }
+}
+window.deleteIncident = deleteIncident;
+
+// ── JSON Configuration Export & Import ─────────────────────────────────────
+
+async function exportConfigJson() {
+  try {
+    const res = await apiFetch('/api/admin/export');
+    if (!res.ok) throw new Error('Export failed: ' + res.status);
+    const data = await res.json();
+    const blob = new Blob([JSON.stringify(data, null, 2)], { type: 'application/json' });
+    const url = URL.createObjectURL(blob);
+    const a = document.createElement('a');
+    a.href = url;
+    a.download = `keepup-export-${new Date().toISOString().slice(0, 10)}.json`;
+    document.body.appendChild(a);
+    a.click();
+    a.remove();
+    URL.revokeObjectURL(url);
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Export Complete', message: 'KeepUp configuration exported successfully.', type: 'success' });
     }
   } catch (err) {
-    const errMsg = err.message || "Network error executing purge";
-    if (typeof showToast === "function") {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Export Failed', message: err.message, type: 'error' });
+    }
+  }
+}
+window.exportConfigJson = exportConfigJson;
+
+async function importConfigJson(inputEl) {
+  const file = inputEl?.files?.[0];
+  if (!file) return;
+  try {
+    const text = await file.text();
+    const payload = JSON.parse(text);
+    const res = await apiFetch('/api/admin/import', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify(payload),
+    });
+    if (!res.ok) {
+      const err = await res.json().catch(() => ({}));
+      throw new Error(err.error || 'Import failed');
+    }
+    const result = await res.json();
+    if (typeof showToast === 'function') {
       showToast({
-        title: "Purge Error",
-        message: errMsg,
-        type: "error",
+        title: 'Import Successful',
+        message: `Imported ${result.imported_monitors} monitors, ${result.imported_channels} channels.`,
+        type: 'success',
       });
     }
-    if (feedback && feedbackText) {
-      feedback.classList.remove("hidden");
-      feedbackText.textContent = `Error: ${errMsg}`;
-    }
-  } finally {
-    isPurgingArena = false;
-    if (btn) btn.disabled = false;
-    if (icon) icon.classList.remove("animate-spin");
-  }
-}
-window.purgeMemoryArena = purgeMemoryArena;
-
-async function generateHeapSnapshot() {
-  if (isDumpingHeap) return;
-  isDumpingHeap = true;
-
-  const btn = document.getElementById("mem-dump-btn");
-  const icon = document.getElementById("mem-dump-icon");
-  const feedback = document.getElementById("mem-action-feedback");
-  const feedbackText = document.getElementById("mem-action-feedback-text");
-
-  if (btn) btn.disabled = true;
-  if (icon) icon.classList.add("animate-spin");
-
-  try {
-    const res = await apiFetch("/api/admin/diagnostics/memory/heap-dump", {
-      method: "POST",
-    });
-    const data = await res.json().catch(() => ({}));
-
-    if (res && res.ok && data.success) {
-      const msg = `Heap snapshot saved to: ${data.file_path}`;
-      if (typeof showToast === "function") {
-        showToast({
-          title: "Heap Snapshot Generated",
-          message: `Profile captured: ${data.file_name}`,
-          type: "success",
-        });
-      }
-      if (feedback && feedbackText) {
-        feedback.classList.remove("hidden");
-        feedbackText.textContent = `${msg} (Ready for jeprof analysis)`;
-      }
-    } else {
-      const errMsg = data.message || "Failed to capture heap profile";
-      if (typeof showToast === "function") {
-        showToast({
-          title: "Snapshot Failed",
-          message: errMsg,
-          type: "error",
-        });
-      }
-      if (feedback && feedbackText) {
-        feedback.classList.remove("hidden");
-        feedbackText.textContent = `Error: ${errMsg}`;
-      }
-    }
+    inputEl.value = '';
+    fetchDashboardData(true);
   } catch (err) {
-    const errMsg = err.message || "Network error triggering heap snapshot";
-    if (typeof showToast === "function") {
-      showToast({
-        title: "Snapshot Error",
-        message: errMsg,
-        type: "error",
-      });
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Import Failed', message: err.message, type: 'error' });
     }
-    if (feedback && feedbackText) {
-      feedback.classList.remove("hidden");
-      feedbackText.textContent = `Error: ${errMsg}`;
-    }
-  } finally {
-    isDumpingHeap = false;
-    if (btn) btn.disabled = false;
-    if (icon) icon.classList.remove("animate-spin");
+    inputEl.value = '';
   }
 }
-window.generateHeapSnapshot = generateHeapSnapshot;
+window.importConfigJson = importConfigJson;
+
+// ── Consolidated Navigation Dropdown Menu ────────────────────────────────────
+
+function toggleNavDropdown(e) {
+  if (e) {
+    e.stopPropagation();
+    e.preventDefault();
+  }
+  const menu = document.getElementById('nav-dropdown-menu');
+  const btn = document.getElementById('nav-dropdown-btn');
+  const caret = document.getElementById('nav-dropdown-caret');
+  if (!menu) return;
+
+  const isHidden = menu.classList.contains('hidden');
+  if (isHidden) {
+    menu.classList.remove('hidden');
+    menu.classList.add('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'true');
+    if (caret) caret.classList.add('rotate-180');
+  } else {
+    menu.classList.add('hidden');
+    menu.classList.remove('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (caret) caret.classList.remove('rotate-180');
+  }
+}
+
+function closeNavDropdown() {
+  const menu = document.getElementById('nav-dropdown-menu');
+  const btn = document.getElementById('nav-dropdown-btn');
+  const caret = document.getElementById('nav-dropdown-caret');
+  if (menu && !menu.classList.contains('hidden')) {
+    menu.classList.add('hidden');
+    menu.classList.remove('is-open');
+    if (btn) btn.setAttribute('aria-expanded', 'false');
+    if (caret) caret.classList.remove('rotate-180');
+  }
+}
+
+window.toggleNavDropdown = toggleNavDropdown;
+window.closeNavDropdown = closeNavDropdown;
+
+async function loadNavUserProfile() {
+  try {
+    const res = await apiFetch('/api/auth/me');
+    if (res && res.user) {
+      const label = document.getElementById('nav-user-label');
+      if (label) label.textContent = res.user;
+    }
+  } catch (_) {}
+}
 
 // ── Initialization & Auto-Refresh Loop (Every 5 seconds) ─────────────────────
 
-document.addEventListener("DOMContentLoaded", () => {
-  const badgeBackdrop = document.getElementById("badge-modal");
+document.addEventListener('DOMContentLoaded', () => {
+  document.addEventListener('click', (e) => {
+    const container = document.getElementById('nav-dropdown-container');
+    if (container && !container.contains(e.target)) {
+      closeNavDropdown();
+    }
+  });
+
+  const navContainer = document.getElementById('nav-dropdown-container');
+  if (navContainer) {
+    navContainer.addEventListener('keydown', (e) => {
+      const menu = document.getElementById('nav-dropdown-menu');
+      const btn = document.getElementById('nav-dropdown-btn');
+      if (!menu) return;
+      const isOpen = !menu.classList.contains('hidden');
+      const items = Array.from(menu.querySelectorAll('[role="menuitem"]'));
+
+      if (e.key === 'Escape') {
+        if (isOpen) {
+          e.preventDefault();
+          closeNavDropdown();
+          if (btn) btn.focus();
+        }
+        return;
+      }
+
+      if (!isOpen && (e.key === 'ArrowDown' || e.key === 'Enter' || e.key === ' ')) {
+        e.preventDefault();
+        toggleNavDropdown(e);
+        items[0]?.focus();
+        return;
+      }
+
+      if (isOpen) {
+        const currentIndex = items.indexOf(document.activeElement);
+
+        if (e.key === 'ArrowDown') {
+          e.preventDefault();
+          const nextIndex = (currentIndex + 1) % items.length;
+          items[nextIndex]?.focus();
+        } else if (e.key === 'ArrowUp') {
+          e.preventDefault();
+          const prevIndex = (currentIndex - 1 + items.length) % items.length;
+          items[prevIndex]?.focus();
+        } else if (e.key === 'Home') {
+          e.preventDefault();
+          items[0]?.focus();
+        } else if (e.key === 'End') {
+          e.preventDefault();
+          items[items.length - 1]?.focus();
+        } else if (e.key === 'Tab') {
+          closeNavDropdown();
+        }
+      }
+    });
+  }
+  const badgeBackdrop = document.getElementById('badge-modal');
   if (badgeBackdrop) {
-    badgeBackdrop.addEventListener("click", (e) => {
+    badgeBackdrop.addEventListener('click', (e) => {
       if (e.target === badgeBackdrop) {
         closeBadgeModal();
       }
     });
   }
 
-  const passwordBackdrop = document.getElementById("password-modal");
+  const passwordBackdrop = document.getElementById('password-modal');
   if (passwordBackdrop) {
-    passwordBackdrop.addEventListener("click", (e) => {
+    passwordBackdrop.addEventListener('click', (e) => {
       if (e.target === passwordBackdrop) {
         closePasswordModal();
       }
     });
   }
 
-  const detailBackdrop =
-    document.getElementById("monitor-detail-modal") ||
-    document.getElementById("status-log-modal");
+  const detailBackdrop = document.getElementById('monitor-detail-modal') || document.getElementById('status-log-modal');
   if (detailBackdrop) {
-    detailBackdrop.addEventListener("click", (e) => {
+    detailBackdrop.addEventListener('click', (e) => {
       if (e.target === detailBackdrop) {
         closeMonitorDetailModal();
       }
     });
   }
 
-  const channelBackdrop = document.getElementById("channel-modal");
+  const channelBackdrop = document.getElementById('channel-modal');
   if (channelBackdrop) {
-    channelBackdrop.addEventListener("click", (e) => {
+    channelBackdrop.addEventListener('click', (e) => {
       if (e.target === channelBackdrop) {
         closeChannelModal();
       }
     });
   }
 
-  const bulkDeleteBackdrop = document.getElementById("bulk-delete-modal");
+  const incidentBackdrop = document.getElementById('incident-modal');
+  if (incidentBackdrop) {
+    incidentBackdrop.addEventListener('click', (e) => {
+      if (e.target === incidentBackdrop) {
+        closeIncidentModal();
+      }
+    });
+  }
+
+  const updateBackdrop = document.getElementById('incident-update-modal');
+  if (updateBackdrop) {
+    updateBackdrop.addEventListener('click', (e) => {
+      if (e.target === updateBackdrop) {
+        closeIncidentUpdateModal();
+      }
+    });
+  }
+
+  const bulkDeleteBackdrop = document.getElementById('bulk-delete-modal');
   if (bulkDeleteBackdrop) {
-    bulkDeleteBackdrop.addEventListener("click", (e) => {
+    bulkDeleteBackdrop.addEventListener('click', (e) => {
       if (e.target === bulkDeleteBackdrop) {
         closeBulkDeleteModal();
       }
     });
   }
 
-  document.addEventListener("keydown", (e) => {
-    if (e.key === "Escape") {
-      const bulkDeleteModal = document.getElementById("bulk-delete-modal");
-      if (bulkDeleteModal && !bulkDeleteModal.classList.contains("hidden")) {
+  document.addEventListener('keydown', (e) => {
+    if (e.key === 'Escape') {
+      const menu = document.getElementById('nav-dropdown-menu');
+      const btn = document.getElementById('nav-dropdown-btn');
+      const wasMenuOpen = menu && !menu.classList.contains('hidden');
+      closeNavDropdown();
+      if (wasMenuOpen && btn) {
+        btn.focus();
+      }
+      const bulkDeleteModal = document.getElementById('bulk-delete-modal');
+      if (bulkDeleteModal && !bulkDeleteModal.classList.contains('hidden')) {
         closeBulkDeleteModal();
         return;
       }
@@ -4019,25 +3963,24 @@ document.addEventListener("DOMContentLoaded", () => {
         clearMonitorSelection();
         return;
       }
-      const channelModal = document.getElementById("channel-modal");
-      if (channelModal && !channelModal.classList.contains("hidden")) {
+      const channelModal = document.getElementById('channel-modal');
+      if (channelModal && !channelModal.classList.contains('hidden')) {
         closeChannelModal();
         return;
       }
-    } else if (
-      ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === "k") ||
-      (e.key === "/" &&
-        !e.metaKey &&
-        !e.ctrlKey &&
-        !e.altKey &&
-        document.activeElement &&
-        document.activeElement.tagName !== "INPUT" &&
-        document.activeElement.tagName !== "TEXTAREA")
-    ) {
-      const searchInput =
-        document.getElementById("search-input") ||
-        document.getElementById("status-search-input");
-      if (searchInput && !searchInput.closest(".hidden")) {
+      const incModal = document.getElementById('incident-modal');
+      if (incModal && !incModal.classList.contains('hidden')) {
+        closeIncidentModal();
+        return;
+      }
+      const upModal = document.getElementById('incident-update-modal');
+      if (upModal && !upModal.classList.contains('hidden')) {
+        closeIncidentUpdateModal();
+        return;
+      }
+    } else if ((e.metaKey || e.ctrlKey) && e.key.toLowerCase() === 'k') {
+      const searchInput = document.getElementById('search-input');
+      if (searchInput) {
         e.preventDefault();
         searchInput.focus();
         searchInput.select();
@@ -4045,56 +3988,50 @@ document.addEventListener("DOMContentLoaded", () => {
     }
   });
 
-  // Public status page search delegates (if app.js is present or bundled)
-  if (typeof window.applyStatusSearchFilter !== "function") {
-    window.applyStatusSearchFilter = function () {
-      if (typeof window.filterMonitors === "function") {
-        window.filterMonitors();
-      }
-    };
-  }
-  if (typeof window.clearStatusSearch !== "function") {
-    window.clearStatusSearch = function () {
-      const input =
-        document.getElementById("status-search-input") ||
-        document.getElementById("search-input");
-      if (input) {
-        input.value = "";
-        if (typeof window.applyStatusSearchFilter === "function")
-          window.applyStatusSearchFilter();
-        input.focus();
-      }
-    };
-  }
-
-  if (typeof window.submitMonitorForm !== "function") {
-    window.submitMonitorForm = function (e) {
-      if (typeof window.handleMonitorSubmit === "function") {
-        return window.handleMonitorSubmit(e);
-      }
-    };
-  }
-
   const isAuthOrStatusPage =
-    window.location.pathname.includes("login") ||
-    window.location.pathname.includes("status");
+    window.location.pathname.includes('login') ||
+    window.location.pathname.includes('status');
+
+  function initLiveEventStream() {
+    if (window.EventSource) {
+      try {
+        const evtSource = new EventSource('/api/events');
+        evtSource.onmessage = (event) => {
+          try {
+            const data = JSON.parse(event.data);
+            if (data.event === 'check_completed' || data.event === 'status_changed') {
+              if (!document.hidden && currentAdminView === 'monitors') {
+                fetchDashboardData(false);
+              }
+            }
+          } catch (_) {}
+        };
+        evtSource.onerror = () => {
+          // EventSource will auto-reconnect
+        };
+      } catch (_) {}
+    }
+  }
 
   if (!isAuthOrStatusPage) {
     initSortingControls();
     setViewMode(window.currentViewMode);
+    loadNavUserProfile();
     fetchDashboardData(true);
+    initLiveEventStream();
 
-    // Auto-refresh every 5 seconds per PRD requirements
+    // Auto-refresh fallback every 10 seconds (paused when tab hidden)
     setInterval(() => {
-      if (currentAdminView === "assets") {
+      if (document.hidden) return;
+      if (currentAdminView === 'assets') {
         loadAssetExpiryData(false);
-      } else if (currentAdminView === "channels") {
+      } else if (currentAdminView === 'channels') {
         loadNotificationChannels(false);
-      } else if (currentAdminView === "diagnostics") {
-        loadMemoryDiagnostics(false);
+      } else if (currentAdminView === 'incidents') {
+        loadAdminIncidents(false);
       } else {
         fetchDashboardData(false);
       }
-    }, 5000);
+    }, 10000);
   }
 });
