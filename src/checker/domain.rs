@@ -172,9 +172,27 @@ pub async fn check_domain_expiration(
             return Err(format!("RDAP returned HTTP {status}"));
         }
 
-        let value: serde_json::Value = resp
-            .json()
+        const MAX_RDAP_BYTES: usize = 1024 * 1024;
+        if let Some(len) = resp.content_length() {
+            if len > MAX_RDAP_BYTES as u64 {
+                return Err(format!("RDAP response too large ({len} bytes)"));
+            }
+        }
+
+        let mut body = Vec::new();
+        let mut resp = resp;
+        while let Some(chunk) = resp
+            .chunk()
             .await
+            .map_err(|e| format!("Failed reading RDAP response body: {e}"))?
+        {
+            if body.len() + chunk.len() > MAX_RDAP_BYTES {
+                return Err("RDAP response exceeded 1 MiB limit".to_string());
+            }
+            body.extend_from_slice(&chunk);
+        }
+
+        let value: serde_json::Value = serde_json::from_slice(&body)
             .map_err(|e| format!("Failed to parse RDAP JSON: {e}"))?;
 
         let expires_str = parse_rdap_expiration(&value)
