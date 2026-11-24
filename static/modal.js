@@ -2,146 +2,6 @@
 
 let cachedWebhooks = [];
 
-function setAdvancedHttpOptionsExpanded(expanded) {
-  const toggle = document.getElementById('m-advanced-http-toggle');
-  const content = document.getElementById('m-advanced-http-content');
-  const chevron = document.getElementById('m-advanced-http-chevron');
-  if (!toggle || !content) return;
-  toggle.setAttribute('aria-expanded', expanded ? 'true' : 'false');
-  content.classList.toggle('hidden', !expanded);
-  if (chevron) chevron.classList.toggle('rotate-180', expanded);
-}
-
-function toggleAdvancedHttpOptions() {
-  const toggle = document.getElementById('m-advanced-http-toggle');
-  setAdvancedHttpOptionsExpanded(toggle?.getAttribute('aria-expanded') !== 'true');
-}
-
-function handleHttpMethodChange() {
-  const method = document.getElementById('m-http-method')?.value?.toUpperCase() || 'GET';
-  const bodyContainer = document.getElementById('m-http-body-container');
-  const bodyField = document.getElementById('m-http-body');
-  const supportsBody = ['POST', 'PUT', 'PATCH'].includes(method);
-  if (bodyContainer) bodyContainer.classList.toggle('hidden', !supportsBody);
-  if (!supportsBody && bodyField) bodyField.value = '';
-}
-
-function clearHttpHeaderRows() {
-  const container = document.getElementById('m-http-headers');
-  if (container) container.replaceChildren();
-}
-
-function addHttpHeaderRow(name = '', value = '') {
-  const container = document.getElementById('m-http-headers');
-  if (!container) return;
-  const row = document.createElement('div');
-  row.className = 'grid grid-cols-[minmax(0,1fr)_minmax(0,1fr)_auto] gap-2';
-
-  const nameInput = document.createElement('input');
-  nameInput.type = 'text';
-  nameInput.autocomplete = 'off';
-  nameInput.placeholder = 'Header name';
-  nameInput.value = name;
-  nameInput.dataset.httpHeaderName = 'true';
-  nameInput.className = 'min-w-0 rounded-lg px-2.5 py-2 bg-black/40 border border-white/10 text-white font-mono text-[11px] focus:outline-none focus:ring-2 focus:ring-[#30d158]/40';
-
-  const valueInput = document.createElement('input');
-  valueInput.type = 'text';
-  valueInput.autocomplete = 'off';
-  valueInput.placeholder = 'Value';
-  valueInput.value = value;
-  valueInput.dataset.httpHeaderValue = 'true';
-  valueInput.className = nameInput.className;
-
-  const removeButton = document.createElement('button');
-  removeButton.type = 'button';
-  removeButton.title = 'Remove header';
-  removeButton.setAttribute('aria-label', 'Remove header');
-  removeButton.className = 'inline-flex h-9 w-9 items-center justify-center rounded-lg border border-white/10 bg-white/[0.03] text-white/50 hover:text-white hover:bg-white/[0.08] transition';
-  removeButton.innerHTML = '<svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" aria-hidden="true"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M6 18 18 6M6 6l12 12"/></svg>';
-  removeButton.addEventListener('click', () => row.remove());
-
-  row.append(nameInput, valueInput, removeButton);
-  container.appendChild(row);
-}
-
-function readHttpHeaderRows() {
-  const headers = {};
-  const seen = new Set();
-  const rows = document.querySelectorAll('#m-http-headers > div');
-  for (const row of rows) {
-    const name = row.querySelector('[data-http-header-name]')?.value?.trim() || '';
-    const value = row.querySelector('[data-http-header-value]')?.value ?? '';
-    if (!name && !value.trim()) continue;
-    if (!name || !value.trim()) return { error: 'Enter both a header name and value, or remove the empty row.' };
-    const key = name.toLowerCase();
-    if (seen.has(key)) return { error: `Header "${name}" is listed more than once.` };
-    seen.add(key);
-    headers[name] = value;
-  }
-  return { headers };
-}
-
-function hydrateHttpOptions(monitor) {
-  const method = document.getElementById('m-http-method');
-  const expected = document.getElementById('m-expected-status-codes');
-  const body = document.getElementById('m-http-body');
-  const keyword = document.getElementById('m-response-keyword');
-  const matchMode = document.getElementById('m-keyword-match-mode');
-  const followRedirects = document.getElementById('m-follow-redirects');
-  const ignoreTls = document.getElementById('m-ignore-tls-errors');
-  const degraded = document.getElementById('m-degraded-threshold-ms');
-
-  if (method) method.value = (monitor.http_method || 'GET').toUpperCase();
-  if (expected) expected.value = monitor.expected_status_codes || '200-299';
-  if (body) body.value = monitor.http_body || '';
-  if (keyword) keyword.value = monitor.response_keyword || '';
-  if (matchMode) matchMode.value = monitor.keyword_match_mode || 'contains';
-  if (followRedirects) followRedirects.checked = monitor.follow_redirects !== 0 && monitor.follow_redirects !== false;
-  if (ignoreTls) ignoreTls.checked = monitor.ignore_tls_errors === 1 || monitor.ignore_tls_errors === true;
-  if (degraded) degraded.value = monitor.degraded_threshold_ms ?? '';
-
-  clearHttpHeaderRows();
-  try {
-    const headers = typeof monitor.http_headers_json === 'string'
-      ? JSON.parse(monitor.http_headers_json || '{}')
-      : (monitor.http_headers_json || {});
-    if (headers && typeof headers === 'object' && !Array.isArray(headers)) {
-      Object.entries(headers).forEach(([name, value]) => addHttpHeaderRow(name, String(value ?? '')));
-    }
-  } catch (_) {
-    // Keep malformed legacy values visible through the advanced section without blocking the form.
-  }
-  handleHttpMethodChange();
-}
-
-function hasAdvancedHttpOptions(monitor) {
-  let hasHeaders = false;
-  try {
-    const headers = typeof monitor.http_headers_json === 'string'
-      ? JSON.parse(monitor.http_headers_json || '{}')
-      : (monitor.http_headers_json || {});
-    hasHeaders = headers && typeof headers === 'object' && Object.keys(headers).length > 0;
-  } catch (_) {
-    hasHeaders = Boolean(monitor.http_headers_json);
-  }
-  return (monitor.http_method || 'GET').toUpperCase() !== 'GET'
-    || hasHeaders
-    || Boolean(monitor.http_body)
-    || (monitor.expected_status_codes || '200-299') !== '200-299'
-    || Boolean(monitor.response_keyword)
-    || (monitor.keyword_match_mode || 'contains') !== 'contains'
-    || monitor.follow_redirects === 0
-    || monitor.follow_redirects === false
-    || monitor.ignore_tls_errors === 1
-    || monitor.ignore_tls_errors === true
-    || monitor.degraded_threshold_ms !== null && monitor.degraded_threshold_ms !== undefined;
-}
-
-window.toggleAdvancedHttpOptions = toggleAdvancedHttpOptions;
-window.addHttpHeaderRow = addHttpHeaderRow;
-window.handleHttpMethodChange = handleHttpMethodChange;
-
 // Helper to resolve modal DOM elements
 function getModalElements() {
   const backdrop = document.getElementById('modal-backdrop');
@@ -226,63 +86,26 @@ function toggleSslWarningInput() {
 }
 window.toggleSslWarningInput = toggleSslWarningInput;
 
-function sanitizeDomainTarget(target) {
-  let s = (target || '').trim();
-  if (s.includes('://')) {
-    s = s.split('://')[1];
-  } else if (s.startsWith('//')) {
-    s = s.slice(2);
-  }
-  s = s.split('/')[0];
-  s = s.split('?')[0];
-  s = s.split('#')[0];
-  if (s.includes('@')) {
-    s = s.split('@').pop();
-  }
-  if (s.includes(':')) {
-    s = s.split(':')[0];
-  }
-  return s.trim().replace(/\.+$/, '').toLowerCase();
-}
-window.sanitizeDomainTarget = sanitizeDomainTarget;
-
 function validateUrlInput(input) {
   const indicator = document.getElementById('url-validation-indicator');
   if (!indicator) return;
   const val = (input?.value || '').trim();
-  const type = (document.getElementById('m-type')?.value || 'http').toLowerCase();
-
-  if (type === 'expiry') {
-    if (!val) {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-white/30"></span><span class="text-white/40">DOMAIN / HOST</span>`;
-      return;
-    }
-    const clean = sanitizeDomainTarget(val);
-    const domainRegex = /^[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?(\.[a-z0-9]([a-z0-9-]{0,61}[a-z0-9])?)*$/i;
-    if (clean && (clean === 'localhost' || (clean.includes('.') && domainRegex.test(clean)))) {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#30d158]"></span><span class="text-[#30d158] font-semibold">VALID DOMAIN</span>`;
-    } else {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span><span class="text-amber-400">ENTER FQDN / HOST</span>`;
-    }
-    return;
-  }
-
   if (!val) {
-    indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-white/30"></span><span class="text-white/40">HTTP / HTTPS</span>`;
+    indicator.innerHTML = `HTTP / HTTPS`;
     return;
   }
   try {
     const parsed = new URL(val);
     if (parsed.protocol === 'http:' || parsed.protocol === 'https:') {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#30d158]"></span><span class="text-[#30d158] font-semibold">${parsed.protocol.toUpperCase().replace(':', '')} VALID</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#30d158;display:inline-block;"></span><span style="color:#30d158;font-weight:600;font-size:10px;font-family:var(--mono,monospace);">${parsed.protocol.toUpperCase().replace(':', '')} VALID</span></span>`;
     } else {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">INVALID PROTOCOL</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#f0707a;display:inline-block;"></span><span style="color:#f0707a;font-size:10px;font-family:var(--mono,monospace);">INVALID PROTOCOL</span></span>`;
     }
   } catch (_) {
     if (val.startsWith('http://') || val.startsWith('https://')) {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-amber-400"></span><span class="text-amber-400">INCOMPLETE</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#e5c07b;display:inline-block;"></span><span style="color:#e5c07b;font-size:10px;font-family:var(--mono,monospace);">INCOMPLETE</span></span>`;
     } else {
-      indicator.innerHTML = `<span class="w-1.5 h-1.5 rounded-full bg-[#ff453a]"></span><span class="text-[#ff453a]">MISSING PROTOCOL</span>`;
+      indicator.innerHTML = `<span style="display:inline-flex;align-items:center;gap:4px;"><span style="width:5px;height:5px;border-radius:50%;background:#f0707a;display:inline-block;"></span><span style="color:#f0707a;font-size:10px;font-family:var(--mono,monospace);">MISSING PROTOCOL</span></span>`;
     }
   }
 }
@@ -296,137 +119,101 @@ function handleMonitorTypeChange(type) {
   const urlDesc = document.getElementById('m-url-desc');
   const tcpFields = document.getElementById('m-tcp-fields');
   const dnsFields = document.getElementById('m-dns-fields');
-  const expiryFields = document.getElementById('m-expiry-fields');
-  const timingFields = document.getElementById('m-timing-fields');
-  const advancedHttpOptions = document.getElementById('m-advanced-http-options');
   const httpSecurityOptions = document.getElementById('m-http-security-options');
 
-  const domainExpiryEl = document.getElementById('m-domain-expiry');
-  const domainLabel = document.getElementById('m-domain-expiry-label') || domainExpiryEl?.closest('label');
-  const domainLockBadge = document.getElementById('m-domain-lock-badge');
-  const domainWarningContainer = document.getElementById('m-domain-warning-container');
-
-  const sslEl = document.getElementById('m-ssl');
-  const sslLabel = document.getElementById('m-ssl-label') || sslEl?.closest('label');
-  const sslLockBadge = document.getElementById('m-ssl-lock-badge');
-  const sslWarningContainer = document.getElementById('m-ssl-warning-container');
-
-  if (t === 'expiry') {
-    if (urlLabel) urlLabel.textContent = 'Target Domain / Host';
-    if (urlInput) urlInput.placeholder = 'e.g. example.com or api.example.com';
-    if (urlIndicator) {
-      urlIndicator.classList.remove('hidden');
-      validateUrlInput(urlInput);
-    }
-    if (urlDesc) urlDesc.textContent = 'Accepts bare domain names or HTTPS endpoints';
+  if (t === 'tcp') {
+    if (urlLabel) urlLabel.textContent = 'Host / IP Address';
+    if (urlInput) urlInput.placeholder = 'e.g. db.example.com or 192.168.1.100';
+    if (urlIndicator) urlIndicator.classList.add('hidden');
+    if (urlDesc) urlDesc.textContent = 'Target hostname or IP address without protocol';
+    if (tcpFields) tcpFields.classList.remove('hidden');
+    if (dnsFields) dnsFields.classList.add('hidden');
+    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+  } else if (t === 'dns') {
+    if (urlLabel) urlLabel.textContent = 'Domain / Hostname';
+    if (urlInput) urlInput.placeholder = 'e.g. example.com or one.one.one.one';
+    if (urlIndicator) urlIndicator.classList.add('hidden');
+    if (urlDesc) urlDesc.textContent = 'Target domain name to resolve via DNS queries';
+    if (tcpFields) tcpFields.classList.add('hidden');
+    if (dnsFields) dnsFields.classList.remove('hidden');
+    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
+  } else if (t === 'ping') {
+    if (urlLabel) urlLabel.textContent = 'Target Host / IP Address';
+    if (urlInput) urlInput.placeholder = 'e.g. 8.8.8.8 or router.local';
+    if (urlIndicator) urlIndicator.classList.add('hidden');
+    if (urlDesc) urlDesc.textContent = 'Target host or IPv4/IPv6 address to probe via ICMP ping';
     if (tcpFields) tcpFields.classList.add('hidden');
     if (dnsFields) dnsFields.classList.add('hidden');
-    if (expiryFields) expiryFields.classList.remove('hidden');
-    if (timingFields) timingFields.classList.add('hidden');
-    if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
-    if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
-
-    // Auto-activate & disable lock state for expiry toggles
-    if (domainExpiryEl) {
-      domainExpiryEl.checked = true;
-      domainExpiryEl.disabled = true;
-    }
-    if (domainLabel) {
-      domainLabel.classList.remove('cursor-pointer');
-      domainLabel.classList.add('cursor-not-allowed', 'opacity-70');
-      domainLabel.title = 'Required for SSL & Domain Expiry monitor type';
-    }
-    if (domainLockBadge) domainLockBadge.classList.remove('hidden');
-    if (domainWarningContainer) domainWarningContainer.classList.add('hidden');
-
-    if (sslEl) {
-      sslEl.checked = true;
-      sslEl.disabled = true;
-    }
-    if (sslLabel) {
-      sslLabel.classList.remove('cursor-pointer');
-      sslLabel.classList.add('cursor-not-allowed', 'opacity-70');
-      sslLabel.title = 'Required for SSL & Domain Expiry monitor type';
-    }
-    if (sslLockBadge) sslLockBadge.classList.remove('hidden');
-    if (sslWarningContainer) sslWarningContainer.classList.add('hidden');
-
+    if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
   } else {
-    // Unlock toggles for all other monitor types
-    if (domainExpiryEl) {
-      domainExpiryEl.disabled = false;
-    }
-    if (domainLabel) {
-      domainLabel.classList.remove('cursor-not-allowed', 'opacity-70');
-      domainLabel.classList.add('cursor-pointer');
-      domainLabel.removeAttribute('title');
-    }
-    if (domainLockBadge) domainLockBadge.classList.add('hidden');
-    toggleDomainWarningInput();
-
-    if (sslEl) {
-      sslEl.disabled = false;
-    }
-    if (sslLabel) {
-      sslLabel.classList.remove('cursor-not-allowed', 'opacity-70');
-      sslLabel.classList.add('cursor-pointer');
-      sslLabel.removeAttribute('title');
-    }
-    if (sslLockBadge) sslLockBadge.classList.add('hidden');
-    toggleSslWarningInput();
-
-    if (t === 'tcp') {
-      if (urlLabel) urlLabel.textContent = 'Host / IP Address';
-      if (urlInput) urlInput.placeholder = 'e.g. db.example.com or 192.168.1.100';
-      if (urlIndicator) urlIndicator.classList.add('hidden');
-      if (urlDesc) urlDesc.textContent = 'Target hostname or IP address without protocol';
-      if (tcpFields) tcpFields.classList.remove('hidden');
-      if (dnsFields) dnsFields.classList.add('hidden');
-      if (expiryFields) expiryFields.classList.add('hidden');
-      if (timingFields) timingFields.classList.remove('hidden');
-      if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
-      if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
-    } else if (t === 'dns') {
-      if (urlLabel) urlLabel.textContent = 'Domain / Hostname';
-      if (urlInput) urlInput.placeholder = 'e.g. example.com or one.one.one.one';
-      if (urlIndicator) urlIndicator.classList.add('hidden');
-      if (urlDesc) urlDesc.textContent = 'Target domain name to resolve via DNS queries';
-      if (tcpFields) tcpFields.classList.add('hidden');
-      if (dnsFields) dnsFields.classList.remove('hidden');
-      if (expiryFields) expiryFields.classList.add('hidden');
-      if (timingFields) timingFields.classList.remove('hidden');
-      if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
-      if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
-    } else if (t === 'ping') {
-      if (urlLabel) urlLabel.textContent = 'Target Host / IP Address';
-      if (urlInput) urlInput.placeholder = 'e.g. 8.8.8.8 or router.local';
-      if (urlIndicator) urlIndicator.classList.add('hidden');
-      if (urlDesc) urlDesc.textContent = 'Target host or IPv4/IPv6 address to probe via ICMP ping';
-      if (tcpFields) tcpFields.classList.add('hidden');
-      if (dnsFields) dnsFields.classList.add('hidden');
-      if (expiryFields) expiryFields.classList.add('hidden');
-      if (timingFields) timingFields.classList.remove('hidden');
-      if (httpSecurityOptions) httpSecurityOptions.classList.add('hidden');
-      if (advancedHttpOptions) advancedHttpOptions.classList.add('hidden');
-    } else {
-      // http
-      if (urlLabel) urlLabel.textContent = 'Target URL';
-      if (urlInput) urlInput.placeholder = 'https://api.example.com/health';
-      if (urlIndicator) urlIndicator.classList.remove('hidden');
-      if (urlDesc) urlDesc.textContent = 'Accepts standard HTTPS or HTTP endpoints with custom ports';
-      if (tcpFields) tcpFields.classList.add('hidden');
-      if (dnsFields) dnsFields.classList.add('hidden');
-      if (expiryFields) expiryFields.classList.add('hidden');
-      if (timingFields) timingFields.classList.remove('hidden');
-      if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
-      if (advancedHttpOptions) advancedHttpOptions.classList.remove('hidden');
-      if (urlInput) validateUrlInput(urlInput);
-    }
+    // http
+    if (urlLabel) urlLabel.textContent = 'Target URL';
+    if (urlInput) urlInput.placeholder = 'https://api.example.com/health';
+    if (urlIndicator) urlIndicator.classList.remove('hidden');
+    if (urlDesc) urlDesc.textContent = 'Accepts standard HTTPS or HTTP endpoints with custom ports';
+    if (tcpFields) tcpFields.classList.add('hidden');
+    if (dnsFields) dnsFields.classList.add('hidden');
+    if (httpSecurityOptions) httpSecurityOptions.classList.remove('hidden');
+    if (urlInput) validateUrlInput(urlInput);
   }
 }
 window.handleMonitorTypeChange = handleMonitorTypeChange;
 
 // ── Open Modals with Dynamic Data ────────────────────────────────────────────
+
+function onProbeTypeChange() {
+  const probeTypeEl = document.getElementById('m-probe-type');
+  const probeType = probeTypeEl ? probeTypeEl.value : 'http';
+
+  const httpOpts = document.getElementById('m-http-options');
+  const dnsOpts = document.getElementById('m-dns-options');
+  const pushOpts = document.getElementById('m-push-options');
+  const urlInput = document.getElementById('m-url');
+  const urlHint = document.getElementById('m-url-hint');
+
+  if (httpOpts) httpOpts.classList.toggle('hidden', probeType !== 'http');
+  if (dnsOpts) dnsOpts.classList.toggle('hidden', probeType !== 'dns');
+  if (pushOpts) pushOpts.classList.toggle('hidden', probeType !== 'push');
+
+  if (urlInput) {
+    if (probeType === 'http') {
+      urlInput.placeholder = 'https://api.example.com/health';
+      if (urlHint) urlHint.innerText = 'Accepts standard HTTPS or HTTP endpoints with custom ports';
+    } else if (probeType === 'tcp') {
+      urlInput.placeholder = 'tcp://db.example.com:5432';
+      if (urlHint) urlHint.innerText = 'TCP socket target in tcp://host:port format';
+    } else if (probeType === 'dns') {
+      urlInput.placeholder = 'dns://1.1.1.1:53/example.com';
+      if (urlHint) urlHint.innerText = 'DNS query target in dns://nameserver:port/hostname format';
+    } else if (probeType === 'push') {
+      urlInput.placeholder = 'push://heartbeat';
+      if (!urlInput.value || !urlInput.value.startsWith('push://')) {
+        urlInput.value = 'push://heartbeat';
+      }
+      if (urlHint) urlHint.innerText = 'Push Heartbeat: pings are received via HTTP push to unique token';
+    }
+  }
+}
+window.onProbeTypeChange = onProbeTypeChange;
+
+function copyPushUrl() {
+  const display = document.getElementById('m-push-url-display');
+  if (!display || !display.value || display.value.includes('Generated')) {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Push URL', message: 'Save the monitor first to generate the push token URL.', type: 'warning' });
+    }
+    return;
+  }
+  navigator.clipboard.writeText(display.value).then(() => {
+    if (typeof showToast === 'function') {
+      showToast({ title: 'Copied', message: 'Push heartbeat URL copied to clipboard.', type: 'success' });
+    }
+  }).catch(() => {
+    display.select();
+    document.execCommand('copy');
+  });
+}
+window.copyPushUrl = copyPushUrl;
 
 function openEditMonitorModal(data) {
   let monitor = null;
@@ -462,22 +249,62 @@ function openEditMonitorModal(data) {
 
     document.getElementById('m-interval').value = monitor.check_interval_secs;
     document.getElementById('m-timeout').value = monitor.timeout_secs;
-    const retriesEl = document.getElementById('monitor-max-retries') || document.getElementById('m-retries');
-    if (retriesEl) retriesEl.value = (monitor.max_retries !== undefined && monitor.max_retries !== null) ? monitor.max_retries : 3;
+    document.getElementById('m-retries').value = monitor.max_retries;
     document.getElementById('m-active').checked = monitor.is_active === 1;
     document.getElementById('m-public').checked = monitor.is_public === 1;
+
+    let probeType = 'http';
+    if (monitor.url.startsWith('push://')) probeType = 'push';
+    else if (monitor.url.startsWith('tcp://')) probeType = 'tcp';
+    else if (monitor.url.startsWith('dns://')) probeType = 'dns';
+
+    const probeTypeEl = document.getElementById('m-probe-type');
+    if (probeTypeEl) probeTypeEl.value = probeType;
+
+    const httpMethodEl = document.getElementById('m-http-method');
+    if (httpMethodEl) httpMethodEl.value = monitor.http_method || 'GET';
+
+    const expectedStatusEl = document.getElementById('m-expected-status');
+    if (expectedStatusEl) expectedStatusEl.value = monitor.expected_status || '200-299';
+
+    const headersEl = document.getElementById('m-request-headers');
+    if (headersEl) headersEl.value = monitor.request_headers || '';
+
+    const bodyKeywordEl = document.getElementById('m-body-keyword');
+    if (bodyKeywordEl) bodyKeywordEl.value = monitor.body_keyword || '';
+
+    const jsonPointerEl = document.getElementById('m-json-pointer');
+    if (jsonPointerEl) jsonPointerEl.value = monitor.json_pointer || '';
+
+    const jsonExpectedEl = document.getElementById('m-json-expected');
+    if (jsonExpectedEl) jsonExpectedEl.value = monitor.json_expected || '';
+
+    const degradedLatencyEl = document.getElementById('m-degraded-latency');
+    if (degradedLatencyEl) degradedLatencyEl.value = monitor.degraded_latency_ms || '';
+
+    const dnsExpectedEl = document.getElementById('m-dns-expected');
+    if (dnsExpectedEl) dnsExpectedEl.value = monitor.dns_expected || '';
+
+    const resendIntervalEl = document.getElementById('m-resend-interval');
+    if (resendIntervalEl) resendIntervalEl.value = monitor.resend_interval_mins || 0;
+
+    const graceSecsEl = document.getElementById('m-grace-secs');
+    if (graceSecsEl) graceSecsEl.value = monitor.grace_secs || 60;
+
+    const pushUrlDisplay = document.getElementById('m-push-url-display');
+    if (pushUrlDisplay) {
+      if (monitor.push_token) {
+        pushUrlDisplay.value = `${window.location.origin}/api/push/${monitor.push_token}`;
+      } else {
+        pushUrlDisplay.value = 'Generated upon saving as push monitor';
+      }
+    }
 
     const domainExpiryEl = document.getElementById('m-domain-expiry');
     const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
     if (domainExpiryEl) {
-      if (checkType === 'expiry') {
-        domainExpiryEl.checked = true;
-        domainExpiryEl.disabled = true;
-      } else {
-        domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
-        domainExpiryEl.disabled = false;
-        toggleDomainWarningInput();
-      }
+      domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
+      toggleDomainWarningInput();
     }
     if (domainWarningDaysEl) {
       domainWarningDaysEl.value = monitor.domain_warning_days || 30;
@@ -486,26 +313,15 @@ function openEditMonitorModal(data) {
     const sslEl = document.getElementById('m-ssl');
     const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
     if (sslEl) {
-      if (checkType === 'expiry') {
-        sslEl.checked = true;
-        sslEl.disabled = true;
-      } else {
-        sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
-        sslEl.disabled = false;
-        toggleSslWarningInput();
-      }
+      sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
+      toggleSslWarningInput();
     }
     if (sslWarningDaysEl) {
       sslWarningDaysEl.value = monitor.ssl_warning_days || 30;
     }
-    const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
-    if (expiryThresholdEl) {
-      expiryThresholdEl.value = monitor.expiry_threshold_days || 30;
-    }
-    hydrateHttpOptions(monitor);
-    setAdvancedHttpOptionsExpanded(checkType === 'http' && hasAdvancedHttpOptions(monitor));
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
+    onProbeTypeChange();
     loadMonitorChannelsChecklist(monitor.id);
   } else {
     if (title) title.innerText = 'Add New Monitor';
@@ -515,8 +331,6 @@ function openEditMonitorModal(data) {
     document.getElementById('edit-monitor-id').value = '';
     const form = document.getElementById('monitor-form');
     if (form) form.reset();
-    clearHttpHeaderRows();
-    setAdvancedHttpOptionsExpanded(false);
     const typeSelect = document.getElementById('m-type');
     if (typeSelect) typeSelect.value = 'http';
     handleMonitorTypeChange('http');
@@ -529,10 +343,34 @@ function openEditMonitorModal(data) {
 
     document.getElementById('m-interval').value = 60;
     document.getElementById('m-timeout').value = 5;
-    const createRetriesEl = document.getElementById('monitor-max-retries') || document.getElementById('m-retries');
-    if (createRetriesEl) createRetriesEl.value = 3;
+    document.getElementById('m-retries').value = 3;
     document.getElementById('m-active').checked = true;
     document.getElementById('m-public').checked = true;
+
+    const probeTypeEl = document.getElementById('m-probe-type');
+    if (probeTypeEl) probeTypeEl.value = 'http';
+    const httpMethodEl = document.getElementById('m-http-method');
+    if (httpMethodEl) httpMethodEl.value = 'GET';
+    const expectedStatusEl = document.getElementById('m-expected-status');
+    if (expectedStatusEl) expectedStatusEl.value = '200-299';
+    const headersEl = document.getElementById('m-request-headers');
+    if (headersEl) headersEl.value = '';
+    const bodyKeywordEl = document.getElementById('m-body-keyword');
+    if (bodyKeywordEl) bodyKeywordEl.value = '';
+    const jsonPointerEl = document.getElementById('m-json-pointer');
+    if (jsonPointerEl) jsonPointerEl.value = '';
+    const jsonExpectedEl = document.getElementById('m-json-expected');
+    if (jsonExpectedEl) jsonExpectedEl.value = '';
+    const degradedLatencyEl = document.getElementById('m-degraded-latency');
+    if (degradedLatencyEl) degradedLatencyEl.value = '';
+    const dnsExpectedEl = document.getElementById('m-dns-expected');
+    if (dnsExpectedEl) dnsExpectedEl.value = '';
+    const resendIntervalEl = document.getElementById('m-resend-interval');
+    if (resendIntervalEl) resendIntervalEl.value = 0;
+    const graceSecsEl = document.getElementById('m-grace-secs');
+    if (graceSecsEl) graceSecsEl.value = 60;
+    const pushUrlDisplay = document.getElementById('m-push-url-display');
+    if (pushUrlDisplay) pushUrlDisplay.value = 'Generated upon creation';
 
     const domainExpiryEl = document.getElementById('m-domain-expiry');
     const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
@@ -553,18 +391,33 @@ function openEditMonitorModal(data) {
     if (sslWarningDaysEl) {
       sslWarningDaysEl.value = 30;
     }
-    const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
-    if (expiryThresholdEl) {
-      expiryThresholdEl.value = 30;
-    }
-    handleHttpMethodChange();
     const urlInput = document.getElementById('m-url');
     if (urlInput) validateUrlInput(urlInput);
+    onProbeTypeChange();
     loadMonitorChannelsChecklist(null);
   }
 
   showModal();
 }
+
+function openCreateMonitorWithTemplate(type) {
+  openEditMonitorModal(null);
+  const probeSelect = document.getElementById('m-probe-type');
+  if (probeSelect) {
+    probeSelect.value = type;
+    if (typeof onProbeTypeChange === 'function') {
+      onProbeTypeChange();
+    }
+  }
+  const typeSelect = document.getElementById('m-type');
+  if (typeSelect) {
+    typeSelect.value = type;
+  }
+  if (typeof handleMonitorTypeChange === 'function') {
+    handleMonitorTypeChange(type);
+  }
+}
+window.openCreateMonitorWithTemplate = openCreateMonitorWithTemplate;
 
 function openCloneMonitorModal(monitor, channelIds = []) {
   if (!monitor) return;
@@ -580,10 +433,6 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   // Crucial: Clear edit ID so submitting creates a brand new monitor
   const idEl = document.getElementById('edit-monitor-id');
   if (idEl) idEl.value = '';
-  const form = document.getElementById('monitor-form');
-  if (form) form.reset();
-  clearHttpHeaderRows();
-  setAdvancedHttpOptionsExpanded(false);
 
   const nameEl = document.getElementById('m-name');
   if (nameEl) nameEl.value = monitor.name ? `${monitor.name} (Copy)` : 'New Monitor (Copy)';
@@ -611,7 +460,7 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   const timeoutEl = document.getElementById('m-timeout');
   if (timeoutEl) timeoutEl.value = monitor.timeout_secs || 5;
 
-  const retriesEl = document.getElementById('monitor-max-retries') || document.getElementById('m-retries');
+  const retriesEl = document.getElementById('m-retries');
   if (retriesEl) retriesEl.value = monitor.max_retries || 3;
 
   const activeEl = document.getElementById('m-active');
@@ -623,14 +472,8 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   const domainExpiryEl = document.getElementById('m-domain-expiry');
   const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
   if (domainExpiryEl) {
-    if (checkType === 'expiry') {
-      domainExpiryEl.checked = true;
-      domainExpiryEl.disabled = true;
-    } else {
-      domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
-      domainExpiryEl.disabled = false;
-      toggleDomainWarningInput();
-    }
+    domainExpiryEl.checked = monitor.check_domain_expiry === 1 || monitor.check_domain_expiry === true;
+    toggleDomainWarningInput();
   }
   if (domainWarningDaysEl) {
     domainWarningDaysEl.value = monitor.domain_warning_days || 30;
@@ -639,26 +482,12 @@ function openCloneMonitorModal(monitor, channelIds = []) {
   const sslEl = document.getElementById('m-ssl');
   const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
   if (sslEl) {
-    if (checkType === 'expiry') {
-      sslEl.checked = true;
-      sslEl.disabled = true;
-    } else {
-      sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
-      sslEl.disabled = false;
-      toggleSslWarningInput();
-    }
+    sslEl.checked = monitor.check_ssl === 1 || monitor.check_ssl === true;
+    toggleSslWarningInput();
   }
   if (sslWarningDaysEl) {
     sslWarningDaysEl.value = monitor.ssl_warning_days || 30;
   }
-
-  const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
-  if (expiryThresholdEl) {
-    expiryThresholdEl.value = monitor.expiry_threshold_days || 30;
-  }
-
-  hydrateHttpOptions(monitor);
-  setAdvancedHttpOptionsExpanded(checkType === 'http' && hasAdvancedHttpOptions(monitor));
 
   if (urlEl) validateUrlInput(urlEl);
 
@@ -846,7 +675,7 @@ async function handleMonitorSubmit(e) {
   }
   const id = document.getElementById('edit-monitor-id')?.value || '';
   const submitBtn = document.getElementById('save-monitor-btn');
-  const originalText = id ? 'Save Changes' : 'Create Target';
+  const originalText = id ? 'Save Changes' : 'Create Monitor';
   if (submitBtn) {
     submitBtn.disabled = true;
     submitBtn.innerText = id ? 'Saving...' : 'Creating...';
@@ -856,12 +685,16 @@ async function handleMonitorSubmit(e) {
   const domainWarningDaysEl = document.getElementById('m-domain-warning-days');
   const sslEl = document.getElementById('m-ssl');
   const sslWarningDaysEl = document.getElementById('m-ssl-warning-days');
-  const expiryThresholdEl = document.getElementById('m-expiry-threshold-days');
 
   const channelCheckboxes = document.querySelectorAll('input[name="monitor-channel"]:checked');
   const channel_ids = Array.from(channelCheckboxes).map((cb) => cb.value);
 
-  const check_type = document.getElementById('m-type')?.value || 'http';
+  const check_type = document.getElementById('m-probe-type')?.value || document.getElementById('m-type')?.value || 'http';
+  let url = document.getElementById('m-url')?.value?.trim() || '';
+  if (check_type === 'push' && !url.startsWith('push://')) {
+    url = 'push://heartbeat';
+  }
+
   let port = null;
   if (check_type === 'tcp') {
     const pVal = parseInt(document.getElementById('m-port')?.value || '');
@@ -871,60 +704,40 @@ async function handleMonitorSubmit(e) {
   let dns_expected_value = null;
   if (check_type === 'dns') {
     dns_record_type = document.getElementById('m-dns-record-type')?.value || 'A';
-    const expVal = document.getElementById('m-dns-expected-value')?.value?.trim() || '';
+    const expVal = document.getElementById('m-dns-expected')?.value?.trim() || document.getElementById('m-dns-expected-value')?.value?.trim() || '';
     dns_expected_value = expVal ? expVal : null;
   }
 
-  let targetUrl = document.getElementById('m-url')?.value?.trim() || '';
-  if (check_type === 'expiry') {
-    targetUrl = sanitizeDomainTarget(targetUrl);
-    const urlInput = document.getElementById('m-url');
-    if (urlInput) urlInput.value = targetUrl;
-  }
+  const degradedLatencyVal = document.getElementById('m-degraded-latency')?.value?.trim();
+  const degraded_latency_ms = degradedLatencyVal ? parseInt(degradedLatencyVal) : null;
 
-  const headerRows = readHttpHeaderRows();
-  if (headerRows.error) {
-    showToast({ title: 'Invalid HTTP Header', message: headerRows.error, type: 'error' });
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.innerText = originalText;
-    }
-    return;
-  }
-  const httpMethod = document.getElementById('m-http-method')?.value || 'GET';
-  const requestBody = ['POST', 'PUT', 'PATCH'].includes(httpMethod.toUpperCase())
-    ? (document.getElementById('m-http-body')?.value || '')
-    : '';
-  const degradedValue = document.getElementById('m-degraded-threshold-ms')?.value?.trim() || '';
-
-  const isExpiry = check_type === 'expiry';
   const payload = {
     name: document.getElementById('m-name')?.value?.trim() || '',
-    url: targetUrl,
-    check_interval_secs: isExpiry ? 43200 : parseInt(document.getElementById('m-interval')?.value || '60'),
+    url,
+    check_interval_secs: parseInt(document.getElementById('m-interval')?.value || '60'),
     timeout_secs: parseInt(document.getElementById('m-timeout')?.value || '5'),
-    max_retries: parseInt((document.getElementById('monitor-max-retries') || document.getElementById('m-retries'))?.value || '3', 10),
+    max_retries: parseInt(document.getElementById('m-retries')?.value || '3'),
     is_active: document.getElementById('m-active') ? document.getElementById('m-active').checked : true,
     is_public: document.getElementById('m-public') ? document.getElementById('m-public').checked : true,
-    check_domain_expiry: isExpiry || (check_type === 'http' && domainExpiryEl ? domainExpiryEl.checked : false),
-    domain_warning_days: isExpiry && expiryThresholdEl ? parseInt(expiryThresholdEl.value || '30') : (domainWarningDaysEl ? parseInt(domainWarningDaysEl.value || '30') : 30),
-    check_ssl: isExpiry || (check_type === 'http' && sslEl ? sslEl.checked : false),
-    ssl_warning_days: isExpiry && expiryThresholdEl ? parseInt(expiryThresholdEl.value || '30') : (sslWarningDaysEl ? parseInt(sslWarningDaysEl.value || '30') : 30),
-    expiry_threshold_days: expiryThresholdEl ? parseInt(expiryThresholdEl.value || '30') : 30,
+    check_domain_expiry: check_type === 'http' && domainExpiryEl ? domainExpiryEl.checked : false,
+    domain_warning_days: domainWarningDaysEl ? parseInt(domainWarningDaysEl.value || '30') : 30,
+    check_ssl: check_type === 'http' && sslEl ? sslEl.checked : false,
+    ssl_warning_days: sslWarningDaysEl ? parseInt(sslWarningDaysEl.value || '30') : 30,
     channel_ids,
     check_type,
     port,
-    dns_record_type,
+    dns_record_type: dns_record_type || 'A',
     dns_expected_value,
-    http_method: httpMethod,
-    http_headers_json: Object.keys(headerRows.headers).length ? JSON.stringify(headerRows.headers) : null,
-    http_body: requestBody || null,
-    expected_status_codes: document.getElementById('m-expected-status-codes')?.value?.trim() || '200-299',
-    response_keyword: document.getElementById('m-response-keyword')?.value?.trim() || null,
-    keyword_match_mode: document.getElementById('m-keyword-match-mode')?.value || 'contains',
-    follow_redirects: document.getElementById('m-follow-redirects')?.checked ?? true,
-    ignore_tls_errors: document.getElementById('m-ignore-tls-errors')?.checked ?? false,
-    degraded_threshold_ms: degradedValue ? parseInt(degradedValue, 10) : null,
+    dns_expected: dns_expected_value,
+    http_method: document.getElementById('m-http-method')?.value || 'GET',
+    expected_status: document.getElementById('m-expected-status')?.value?.trim() || '200-299',
+    request_headers: document.getElementById('m-request-headers')?.value?.trim() || null,
+    body_keyword: document.getElementById('m-body-keyword')?.value?.trim() || null,
+    json_pointer: document.getElementById('m-json-pointer')?.value?.trim() || null,
+    json_expected: document.getElementById('m-json-expected')?.value?.trim() || null,
+    degraded_latency_ms,
+    resend_interval_mins: parseInt(document.getElementById('m-resend-interval')?.value || '0'),
+    grace_secs: parseInt(document.getElementById('m-grace-secs')?.value || '60'),
   };
 
   try {
@@ -973,7 +786,7 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
   const container = document.getElementById('monitor-channels-checklist');
   if (!container) return;
 
-  container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">Loading channels...</div>`;
+  container.innerHTML = `<div class="empty">Loading channels...</div>`;
 
   try {
     let channels = window.cachedChannels || [];
@@ -986,7 +799,7 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
     }
 
     if (!channels || !channels.length) {
-      container.innerHTML = `<div class="text-[11px] text-neutral-500 dark:text-white/40 italic">No channels configured yet. Click "+ Create New Channel" above.</div>`;
+      container.innerHTML = `<div class="empty">No channels configured yet. Click "+ Create New Channel" above.</div>`;
       return;
     }
 
@@ -1011,19 +824,19 @@ async function loadMonitorChannelsChecklist(monitorIdOrSelectedIds) {
         const isChecked = selectedIds.has(c.id);
         const typeBadge = (c.type || 'webhook').toUpperCase();
         return `
-        <label class="flex items-center justify-between p-2 rounded-xl bg-white/5 hover:bg-white/10 border border-white/5 transition cursor-pointer select-none">
+        <label class="flex items-center justify-between p-2 rounded-xl bg-[#101011] hover:bg-[#1a1a1c] border border-[#2a2a2d] transition cursor-pointer select-none mb-1.5 last:mb-0">
           <div class="flex items-center gap-2.5 min-w-0">
-            <input type="checkbox" name="monitor-channel" value="${c.id}" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-white/20 text-[#30d158] bg-black/40 focus:ring-0 cursor-pointer accent-[#30d158]">
-            <span class="text-white font-medium text-xs truncate">${escapeHtml(c.name)}</span>
-            <span class="text-[10px] text-white/40 uppercase font-mono">(${typeBadge})</span>
+            <input type="checkbox" name="monitor-channel" value="${c.id}" ${isChecked ? 'checked' : ''} class="w-4 h-4 rounded border-[#2a2a2d] text-[#30d158] bg-[#101011] focus:ring-0 cursor-pointer accent-[#30d158]">
+            <span class="text-[#f2f2f3] font-medium text-xs truncate">${escapeHtml(c.name)}</span>
+            <span class="text-[10px] text-[#8b8b90] uppercase font-mono">(${typeBadge})</span>
           </div>
-          ${c.is_default ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-white/10 text-white/50 font-mono">DEFAULT</span>' : ''}
+          ${c.is_default ? '<span class="text-[9px] px-1.5 py-0.5 rounded bg-[#2a2a2d] text-[#8b8b90] font-mono">DEFAULT</span>' : ''}
         </label>
       `;
       })
       .join('');
   } catch (err) {
-    container.innerHTML = `<div class="text-[11px] text-rose-400">Failed to load channels checklist.</div>`;
+    container.innerHTML = `<div class="empty" style="color: #f0707a;">Failed to load channels checklist.</div>`;
   }
 }
 window.loadMonitorChannelsChecklist = loadMonitorChannelsChecklist;
@@ -1034,255 +847,6 @@ function openCreateChannelInline() {
   }
 }
 window.openCreateChannelInline = openCreateChannelInline;
-
-async function submitWebhookForm(e) {
-  if (e && typeof e.preventDefault === 'function') {
-    e.preventDefault();
-  }
-
-  const idEl = document.getElementById('edit-webhook-id');
-  const id = idEl ? idEl.value.trim() : '';
-  const submitBtn = document.getElementById('save-webhook-btn');
-  const originalText = id ? 'Save Webhook' : 'Add Webhook';
-
-  if (submitBtn) {
-    submitBtn.disabled = true;
-    submitBtn.innerText = id ? 'Saving...' : 'Adding...';
-  }
-
-  try {
-    const name = (document.getElementById('w-name')?.value || '').trim();
-    const provider = (document.getElementById('w-provider')?.value || 'discord').toLowerCase();
-    const url = (document.getElementById('w-url')?.value || '').trim();
-    const isEnabled = document.getElementById('w-enabled') ? document.getElementById('w-enabled').checked : true;
-    const notifyResolve = document.getElementById('w-notify-resolve') ? document.getElementById('w-notify-resolve').checked : true;
-    const useDefault = document.getElementById('w-use-default') ? document.getElementById('w-use-default').checked : true;
-    const customTemplateVal = (document.getElementById('w-template')?.value || '').trim();
-
-    if (!name || !url) {
-      showToast({
-        title: 'Validation Error',
-        message: 'Name and endpoint URL are required.',
-        type: 'warning',
-      });
-      return;
-    }
-
-    const payload = {
-      name,
-      provider,
-      url,
-      is_enabled: isEnabled,
-      use_default_template: useDefault,
-      notify_on_resolve: notifyResolve,
-      message_template: useDefault ? null : (customTemplateVal || null),
-    };
-
-    const endpoint = id ? `/api/webhooks/${id}` : '/api/webhooks';
-    const method = id ? 'PUT' : 'POST';
-
-    const res = await apiFetch(endpoint, {
-      method,
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (res && (res.ok || res.status === 201)) {
-      closeModal();
-      showToast({
-        title: id ? 'Webhook Updated' : 'Webhook Added',
-        message: id
-          ? `Webhook "${payload.name}" updated successfully`
-          : `Webhook "${payload.name}" registered successfully`,
-        type: 'success',
-      });
-
-      if (typeof fetchDashboardData === 'function') {
-        fetchDashboardData();
-      }
-      if (typeof fetchWebhooksForModal === 'function') {
-        fetchWebhooksForModal();
-      }
-    } else if (res && res.status !== 401 && res.status !== 429) {
-      const err = await res.json().catch(() => ({}));
-      showToast({
-        title: 'Save Failed',
-        message: err.error || 'Failed to save webhook.',
-        type: 'error',
-      });
-    }
-  } catch (err) {
-    showToast({
-      title: 'Submission Error',
-      message: err.message || 'An error occurred while saving webhook.',
-      type: 'error',
-    });
-  } finally {
-    if (submitBtn) {
-      submitBtn.disabled = false;
-      submitBtn.innerText = originalText;
-    }
-  }
-}
-
-// ── Test Webhook Action ──────────────────────────────────────────────────────
-
-async function testWebhook(e) {
-  if (e && typeof e.preventDefault === 'function') {
-    e.preventDefault();
-  }
-
-  const testBtn = document.getElementById('test-webhook-btn');
-  let originalHtml = '';
-  if (testBtn) {
-    originalHtml = testBtn.innerHTML;
-    testBtn.disabled = true;
-    testBtn.innerHTML = `
-      <svg class="w-4 h-4 animate-spin text-[#0a84ff]" fill="none" viewBox="0 0 24 24">
-        <circle class="opacity-25" cx="12" cy="12" r="10" stroke="currentColor" stroke-width="4"></circle>
-        <path class="opacity-75" fill="currentColor" d="M4 12a8 8 0 018-8v8H4z"></path>
-      </svg>
-      <span>Testing...</span>
-    `;
-  }
-
-  try {
-    const url = (document.getElementById('w-url')?.value || '').trim();
-    const provider = (document.getElementById('w-provider')?.value || 'discord').toLowerCase();
-    const useDefault = document.getElementById('w-use-default') ? document.getElementById('w-use-default').checked : true;
-    const templateVal = (document.getElementById('w-template')?.value || '').trim();
-
-    if (!url) {
-      showToast({
-        title: 'Endpoint Required',
-        message: 'Enter a webhook endpoint URL before sending a test notification.',
-        type: 'warning',
-      });
-      return;
-    }
-
-    const payload = {
-      url,
-      provider,
-      use_default_template: useDefault,
-      message_template: useDefault ? null : (templateVal || null),
-    };
-
-    const res = await apiFetch('/api/webhooks/test', {
-      method: 'POST',
-      headers: { 'Content-Type': 'application/json' },
-      body: JSON.stringify(payload),
-    });
-
-    if (res) {
-      const data = await res.json().catch(() => ({}));
-      if (res.ok) {
-        showToast({
-          title: 'Notification Delivered',
-          message: data.message || 'Test notification delivered successfully.',
-          type: 'success',
-        });
-      } else {
-        showToast({
-          title: 'Delivery Failed',
-          message: data.error || 'Failed to send test payload to webhook.',
-          type: 'warning',
-        });
-      }
-    }
-  } catch (err) {
-    showToast({
-      title: 'Test Failed',
-      message: err.message || 'Network error while dispatching test payload.',
-      type: 'error',
-    });
-  } finally {
-    if (testBtn) {
-      testBtn.disabled = false;
-      testBtn.innerHTML = originalHtml;
-    }
-  }
-}
-
-// ── Webhook List in Modal ────────────────────────────────────────────────────
-
-async function fetchWebhooksForModal() {
-  const listContainer = document.getElementById('modal-webhooks-list');
-  if (!listContainer) return;
-
-  try {
-    const res = await apiFetch('/api/webhooks');
-    if (res && res.ok) {
-      cachedWebhooks = await res.json();
-      if (cachedWebhooks.length === 0) {
-        listContainer.innerHTML = `
-          <div class="text-[11px] text-neutral-500 dark:text-neutral-400 text-center py-2">
-            No webhook channels configured yet. Fill out the form above to add one.
-          </div>
-        `;
-        return;
-      }
-
-      listContainer.innerHTML = cachedWebhooks
-        .map((w) => {
-          const isEnabled = w.is_enabled === 1 || w.is_enabled === true;
-          const providerBadge =
-            w.provider.toLowerCase() === 'discord'
-              ? 'bg-indigo-500/10 text-indigo-600 dark:text-indigo-400 border-indigo-500/20'
-              : w.provider.toLowerCase() === 'slack'
-              ? 'bg-amber-500/10 text-amber-600 dark:text-amber-400 border-amber-500/20'
-              : 'bg-emerald-500/10 text-emerald-600 dark:text-emerald-400 border-emerald-500/20';
-
-          return `
-          <div class="flex items-center justify-between p-2 rounded-xl bg-black/[0.03] dark:bg-black/40 border border-black/5 dark:border-white/10 hover:border-black/10 dark:hover:border-white/20 transition">
-            <div class="min-w-0 pr-2">
-              <div class="flex items-center gap-1.5">
-                <span class="font-medium text-neutral-900 dark:text-white text-xs truncate">${escapeHtml(w.name)}</span>
-                <span class="px-1.5 py-0.5 rounded text-[10px] uppercase font-mono border ${providerBadge}">${escapeHtml(w.provider)}</span>
-                ${!isEnabled ? '<span class="text-[10px] text-rose-600 dark:text-rose-400 font-medium">(Disabled)</span>' : ''}
-              </div>
-              <div class="text-[10px] text-neutral-500 dark:text-neutral-400 truncate max-w-xs font-mono">${escapeHtml(w.url)}</div>
-            </div>
-            <div class="flex items-center gap-1 shrink-0">
-              <button type="button" onclick="populateWebhookForm(cachedWebhooks.find(x => x.id === '${w.id}'))" class="text-xs text-neutral-600 hover:text-neutral-900 dark:text-neutral-400 dark:hover:text-white px-2 py-1 rounded hover:bg-black/5 dark:hover:bg-white/10 transition">Edit</button>
-              <button type="button" onclick="deleteWebhook('${w.id}', '${escapeHtml(w.name)}')" class="text-xs text-rose-600 hover:text-rose-700 dark:text-rose-400 dark:hover:text-rose-300 px-2 py-1 rounded hover:bg-rose-500/10 transition">Delete</button>
-            </div>
-          </div>
-        `;
-        })
-        .join('');
-    }
-  } catch (err) {
-    console.error('Error fetching webhooks:', err);
-  }
-}
-
-async function deleteWebhook(id, name) {
-  if (!confirm(`Delete alert webhook "${name}"?`)) return;
-
-  try {
-    const res = await apiFetch(`/api/webhooks/${id}`, { method: 'DELETE' });
-    if (res && res.ok) {
-      showToast({
-        title: 'Webhook Removed',
-        message: `Webhook "${name}" deleted successfully`,
-        type: 'success',
-      });
-      if (document.getElementById('edit-webhook-id').value === id) {
-        resetWebhookForm();
-      }
-      fetchWebhooksForModal();
-    } else if (res && res.status !== 401 && res.status !== 429) {
-      showToast({
-        title: 'Delete Failed',
-        message: 'Failed to delete webhook',
-        type: 'error',
-      });
-    }
-  } catch (err) {
-    // Already handled by apiFetch
-  }
-}
 
 // ── Global Listeners for Modal (Backdrop & Escape Key) ───────────────────────
 
@@ -1363,8 +927,18 @@ function renderStatusPagesList(pages) {
 
   if (pages.length === 0) {
     container.innerHTML = `
-      <div class="p-8 text-center text-white/40 text-xs glass-card rounded-2xl">
-        No status pages found.
+      <div class="rounded-2xl border border-dashed border-white/15 bg-[#0e0e11] py-10 px-6 text-center flex flex-col items-center justify-center">
+        <div class="w-12 h-12 rounded-full bg-[rgba(48,209,88,0.1)] border border-[rgba(48,209,88,0.25)] flex items-center justify-center text-[#30d158] mb-3 shadow-inner">
+          <svg class="w-6 h-6" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="1.8">
+            <path stroke-linecap="round" stroke-linejoin="round" d="M3.75 6A2.25 2.25 0 016 3.75h2.25A2.25 2.25 0 0110.5 6v2.25a2.25 2.25 0 01-2.25 2.25H6a2.25 2.25 0 01-2.25-2.25V6zM3.75 15.75A2.25 2.25 0 016 13.5h2.25a2.25 2.25 0 012.25 2.25V18a2.25 2.25 0 01-2.25 2.25H6A2.25 2.25 0 013.75 18v-2.25zM13.5 6a2.25 2.25 0 012.25-2.25H18A2.25 2.25 0 0120.25 6v2.25A2.25 2.25 0 0118 10.5h-2.25a2.25 2.25 0 01-2.25-2.25V6zM13.5 15.75a2.25 2.25 0 012.25-2.25H18a2.25 2.25 0 012.25 2.25V18A2.25 2.25 0 0118 20.25h-2.25A2.25 2.25 0 0113.5 18v-2.25z"/>
+          </svg>
+        </div>
+        <h4 class="text-sm font-bold text-white tracking-tight mb-1">No custom status pages</h4>
+        <p class="text-xs text-white/50 max-w-xs mx-auto leading-relaxed mb-4">Create customized public or private status pages with selected monitors.</p>
+        <button type="button" onclick="switchStatusPageTab('form')" class="h-9 px-4 rounded-xl bg-[#30d158] hover:bg-[#28b84d] text-[#0b0b0c] font-semibold text-xs inline-flex items-center gap-1.5 cursor-pointer shadow-sm transition">
+          <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor" stroke-width="2.5"><path stroke-linecap="round" stroke-linejoin="round" d="M12 4v16m8-8H4"/></svg>
+          <span>Create Status Page</span>
+        </button>
       </div>
     `;
     return;
@@ -1393,11 +967,11 @@ function renderStatusPagesList(pages) {
             ${p.description ? `<p class="text-[11px] text-white/40 truncate mt-1">${escapeHtml(p.description)}</p>` : ''}
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button type="button" onclick="openEditStatusPageForm('${escapeHtml(p.slug)}')" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white text-xs font-medium transition" title="Edit status page and monitor assignments">
+            <button type="button" data-action="edit-status-page" data-slug="${escapeHtml(p.slug)}" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/80 hover:text-white text-xs font-medium transition" title="Edit status page and monitor assignments">
               Edit
             </button>
             ${!isDefault ? `
-              <button type="button" onclick="deleteStatusPageConfirm('${escapeHtml(p.slug)}')" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/50 hover:text-[#ff453a] text-xs font-medium transition" title="Delete status page">
+              <button type="button" data-action="delete-status-page" data-slug="${escapeHtml(p.slug)}" class="px-2.5 py-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/50 hover:text-[#ff453a] text-xs font-medium transition" title="Delete status page">
                 Delete
               </button>
             ` : ''}
@@ -1875,8 +1449,9 @@ function renderMaintenanceList(windows) {
 
   if (!windows || windows.length === 0) {
     container.innerHTML = `
-      <div class="p-8 text-center text-white/40 text-xs glass-card rounded-2xl">
-        No scheduled maintenance windows found.
+      <div class="rounded-2xl border border-dashed border-white/15 bg-[#0e0e11] p-8 sm:p-10 text-center flex flex-col items-center justify-center">
+        <h4 class="text-sm font-semibold text-white tracking-tight mb-1.5">No scheduled maintenance</h4>
+        <p class="text-xs text-white/50 max-w-sm mx-auto leading-relaxed">Plan maintenance windows to temporarily pause alerts and notify users on status pages.</p>
       </div>
     `;
     return;
@@ -1918,11 +1493,11 @@ function renderMaintenanceList(windows) {
             </div>
           </div>
           <div class="flex items-center gap-1.5 shrink-0">
-            <button type="button" onclick="openEditMaintenanceForm('${w.id}')" class="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition" title="Edit Maintenance Window">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
+            <button type="button" data-action="edit-maintenance" data-id="${w.id}" class="p-1.5 rounded-lg bg-white/5 hover:bg-white/10 text-white/70 hover:text-white transition" title="Edit Maintenance Window">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M11 5H6a2 2 0 00-2 2v11a2 2 0 002 2h11a2 2 0 002-2v-5m-1.414-9.414a2 2 0 112.828 2.828L11.828 15H9v-2.828l8.586-8.586z"/></svg>
             </button>
-            <button type="button" onclick="deleteMaintenanceConfirm('${w.id}', '${escapeHtml(w.title.replace(/'/g, "\\'"))}')" class="p-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/70 hover:text-[#ff453a] transition" title="Delete Maintenance Window">
-              <svg class="w-3.5 h-3.5" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
+            <button type="button" data-action="delete-maintenance" data-id="${w.id}" data-title="${escapeHtml(w.title)}" class="p-1.5 rounded-lg bg-white/5 hover:bg-[#ff453a]/20 text-white/70 hover:text-[#ff453a] transition" title="Delete Maintenance Window">
+              <svg class="w-3.5 h-3.5 pointer-events-none" fill="none" viewBox="0 0 24 24" stroke="currentColor"><path stroke-linecap="round" stroke-linejoin="round" stroke-width="2" d="M19 7l-.867 12.142A2 2 0 0116.138 21H7.862a2 2 0 01-1.995-1.858L5 7m5 4v6m4-6v6m1-10V4a1 1 0 00-1-1h-4a1 1 0 00-1 1v3M4 7h16"/></svg>
             </button>
           </div>
         </div>
@@ -2162,8 +1737,6 @@ window.toggleAllMaintenanceMonitors = toggleAllMaintenanceMonitors;
 
 window.toggleTemplateMode = toggleTemplateMode;
 window.updateTemplatePreview = updateTemplatePreview;
-window.handleMonitorSubmit = handleMonitorSubmit;
-window.submitMonitorForm = handleMonitorSubmit;
 window.submitWebhookForm = submitWebhookForm;
 window.handleWebhookSubmit = submitWebhookForm;
 window.testWebhook = testWebhook;
@@ -2235,5 +1808,65 @@ document.addEventListener('DOMContentLoaded', () => {
         closeSingleDeleteModal();
       }
     }
+  });
+
+  document.addEventListener('click', (e) => {
+    const target = e.target.closest('[data-action]');
+    if (!target) return;
+    const action = target.dataset.action;
+    switch (action) {
+      case 'edit-status-page': {
+        const slug = target.dataset.slug;
+        if (slug) openEditStatusPageForm(slug);
+        break;
+      }
+      case 'delete-status-page': {
+        const slug = target.dataset.slug;
+        if (slug) deleteStatusPageConfirm(slug);
+        break;
+      }
+      case 'edit-maintenance': {
+        const id = target.dataset.id;
+        if (id) openEditMaintenanceForm(id);
+        break;
+      }
+      case 'delete-maintenance': {
+        const id = target.dataset.id;
+        const title = target.dataset.title;
+        if (id) deleteMaintenanceConfirm(id, title);
+        break;
+      }
+      case 'edit-webhook': {
+        const id = target.dataset.id;
+        if (id && Array.isArray(cachedWebhooks)) {
+          populateWebhookForm(cachedWebhooks.find(x => x.id === id));
+        }
+        break;
+      }
+      case 'delete-webhook': {
+        const id = target.dataset.id;
+        const name = target.dataset.name;
+        if (id) deleteWebhook(id, name);
+        break;
+      }
+    }
+  });
+
+  // Number input steppers (up/down)
+  document.addEventListener('click', (e) => {
+    const btn = e.target.closest('.stepper button');
+    if (!btn) return;
+    const wrap = btn.closest('.num');
+    if (!wrap) return;
+    const input = wrap.querySelector('input');
+    if (!input) return;
+    if (btn.dataset.dir === 'up') {
+      input.stepUp();
+    } else {
+      input.stepDown();
+    }
+    input.dispatchEvent(new Event('input', { bubbles: true }));
+    input.dispatchEvent(new Event('change', { bubbles: true }));
+    input.focus();
   });
 });
