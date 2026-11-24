@@ -7,36 +7,33 @@ RUN cargo chef prepare --recipe-path recipe.json
 # Stage 2: Dependency Builder
 FROM lukemathwalker/cargo-chef:latest-rust-alpine AS builder
 WORKDIR /app
-RUN apk add --no-cache build-base musl-dev sqlite-dev pkgconfig perl make bash linux-headers
-ENV JEMALLOC_SYS_WITH_LG_PAGE=16
+RUN apk add --no-cache build-base musl-dev sqlite-dev pkgconfig
 COPY --from=planner /app/recipe.json recipe.json
 RUN cargo chef cook --release --recipe-path recipe.json
 
 # Stage 3: Application Compiler
 COPY . .
-ENV JEMALLOC_SYS_WITH_LG_PAGE=16
 RUN cargo build --release --bin keepup
 
-# Final minimal & secure runtime image
+# Final minimal & hardened runtime image
 FROM alpine:3.21 AS runtime
 
-# Upgrade base OS packages & install minimal dependencies
 RUN apk upgrade --no-cache && \
     apk add --no-cache ca-certificates tzdata && \
     addgroup -S keepup && adduser -S keepup -G keepup && \
-    mkdir -p /data/profiles /data /app && \
-    chown -R keepup:keepup /data /app
+    mkdir -p /data /app && \
+    chown keepup:keepup /data && \
+    chmod 0700 /data
 
 WORKDIR /app
 
-# Copy single Rust release binary
-COPY --from=builder --chown=keepup:keepup /app/target/release/keepup /usr/local/bin/keepup
+# Binary is owned by root:root and read/execute-only (0555) so runtime user cannot modify it
+COPY --from=builder --chown=root:root --chmod=0555 /app/target/release/keepup /app/keepup
 
 USER keepup
 
 ENV PORT=8080
 ENV KEEPUP_DB_PATH=/data/keepup.db
-ENV MALLOC_CONF="prof:true,prof_active:true"
 EXPOSE 8080
 
-ENTRYPOINT ["/usr/local/bin/keepup"]
+ENTRYPOINT ["/app/keepup"]

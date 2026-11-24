@@ -4,22 +4,25 @@ services:
     build:
       context: .
       dockerfile: Dockerfile
-      platform:
-        - linux/amd64
-        - linux/arm64
     container_name: keepup
     restart: unless-stopped
     ports:
-      - "8080:8080"
+      - "8088:8080"
     volumes:
       - ./data:/data
     environment:
       - PORT=8080
-      - RUST_LOG=info,keepup=debug
+      - RUST_LOG=info,keepup=info
       - KEEPUP_DB_PATH=/data/keepup.db
-      - ADMIN_USER=admin
-      - ADMIN_PASSWORD=admin
-      - JWT_SECRET=change-this-in-production-keepup-jwt-secret
+      - ADMIN_USER=${ADMIN_USER:-admin}
+      # Leave ADMIN_PASSWORD and JWT_SECRET unset to auto-generate and persist strong secrets in /data/keepup.db,
+      # or supply strong values via your local .env file:
+      - ADMIN_PASSWORD=${ADMIN_PASSWORD:-admin}
+      - JWT_SECRET=${JWT_SECRET}
+    cap_drop:
+      - ALL
+    security_opt:
+      - no-new-privileges:true
     healthcheck:
       test:
         [
